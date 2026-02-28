@@ -38,28 +38,30 @@ pub struct SpawnResult {
 }
 
 pub fn spawn_agent(
-    task_id: &str,
+    _task_id: &str,
     skill: &SkillFile,
     rendered_prompt: &str,
-    cc_bin: &Path,
+    _cc_bin: &Path,
     work_dir: &Path,
 ) -> Result<SpawnResult> {
     if std::env::var("TMUX").is_err() {
-        bail!("cc spawn must be run inside a tmux session");
+        bail!("clat spawn must be run inside a tmux session");
     }
 
-    // Write prompt to temp file
-    let prompt_path = std::env::temp_dir().join(format!("cc-prompt-{task_id}.txt"));
-    std::fs::write(&prompt_path, rendered_prompt).context("failed to write prompt to temp file")?;
+    // Resolve claude absolute path while we're still in the nix shell
+    let claude_bin = resolve_binary("claude")?;
 
-    let output_path = std::env::temp_dir().join(format!("cc-task-{task_id}.out"));
+    // Write skill prompt to TASK.md in the worktree so claude has context
+    let task_md = work_dir.join("TASK.md");
+    std::fs::write(&task_md, rendered_prompt).context("failed to write TASK.md")?;
 
     let work_dir_str = work_dir.display().to_string();
     let window_name = format!("cc:{}", skill.skill.name);
 
-    // 1. Create new window (starts with a single pane — this becomes the top/nvim pane)
+    // 1. Create new window in background (-d) so current pane keeps focus
     let window_id = tmux_cmd(&[
         "new-window",
+        "-d",
         "-P",
         "-F",
         "#{window_id}",
@@ -89,16 +91,6 @@ pub fn spawn_agent(
     tmux_cmd(&["resize-pane", "-t", &top_pane, "-D", "8"])?;
 
     // 4. Split bottom pane horizontally → bottom-left (shell) and bottom-right (claude)
-    let tools = skill.agent.allowed_tools.join(",");
-    let model = &skill.agent.model;
-    let cc_bin_str = cc_bin.display();
-    let prompt_path_str = prompt_path.display();
-    let output_path_str = output_path.display();
-
-    let claude_cmd = format!(
-        r#"claude -p "$(cat {prompt_path_str})" --allowedTools '{tools}' --model {model} 2>&1 | tee {output_path_str}; {cc_bin_str} complete {task_id} $? {output_path_str}; read -p 'Press enter to close...'"#
-    );
-
     let claude_pane = tmux_cmd(&[
         "split-window",
         "-h",
@@ -109,16 +101,31 @@ pub fn spawn_agent(
         "#{pane_id}",
         "-c",
         &work_dir_str,
-        &claude_cmd,
     ])?;
 
-    // 5. Send nvim to top pane
+    // 5. Launch interactive claude in the agent pane (stays open for chatting)
+    tmux_cmd(&["send-keys", "-t", &claude_pane, &claude_bin, "Enter"])?;
+
+    // 6. Open nvim in top pane
     tmux_cmd(&["send-keys", "-t", &top_pane, "nvim .", "Enter"])?;
 
     Ok(SpawnResult {
         window_id,
         pane_id: claude_pane,
     })
+}
+
+fn resolve_binary(name: &str) -> Result<String> {
+    let output = Command::new("which")
+        .arg(name)
+        .output()
+        .with_context(|| format!("failed to find {name}"))?;
+
+    if !output.status.success() {
+        bail!("{name} not found in PATH");
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 pub(crate) fn tmux_cmd(args: &[&str]) -> Result<String> {

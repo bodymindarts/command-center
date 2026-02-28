@@ -5,6 +5,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct SkillFile {
     pub skill: SkillDef,
     pub agent: AgentConfig,
@@ -27,6 +28,7 @@ pub struct ParamDef {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct AgentConfig {
     pub allowed_tools: Vec<String>,
     #[serde(default = "default_model")]
