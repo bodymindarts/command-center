@@ -7,7 +7,6 @@ pub struct Paths {
     pub skills_dir: PathBuf,
     pub data_dir: PathBuf,
     pub db_path: PathBuf,
-    pub cc_bin: PathBuf,
 }
 
 impl Paths {
@@ -16,14 +15,12 @@ impl Paths {
         let skills_dir = root.join("skills");
         let data_dir = root.join("data");
         let db_path = data_dir.join("cc.db");
-        let cc_bin = std::env::current_exe().context("failed to resolve cc binary path")?;
 
         Ok(Self {
             root,
             skills_dir,
             data_dir,
             db_path,
-            cc_bin,
         })
     }
 

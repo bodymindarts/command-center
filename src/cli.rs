@@ -9,9 +9,13 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Spawn a worker agent to execute a skill
+    /// Spawn a worker agent for a task
     Spawn {
-        /// Name of the skill to execute
+        /// Human-friendly task name
+        name: String,
+
+        /// Skill to use (default: noop)
+        #[arg(short, long, default_value = "noop")]
         skill: String,
 
         /// Parameters as key=value pairs

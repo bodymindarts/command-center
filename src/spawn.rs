@@ -3,8 +3,6 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-use crate::skill::SkillFile;
-
 pub fn create_worktree(repo_root: &Path, name: &str) -> Result<PathBuf> {
     let worktree_dir = repo_root.join(".claude").join("worktrees");
     std::fs::create_dir_all(&worktree_dir)?;
@@ -37,13 +35,7 @@ pub struct SpawnResult {
     pub pane_id: String,
 }
 
-pub fn spawn_agent(
-    _task_id: &str,
-    skill: &SkillFile,
-    rendered_prompt: &str,
-    _cc_bin: &Path,
-    work_dir: &Path,
-) -> Result<SpawnResult> {
+pub fn spawn_agent(task_name: &str, rendered_prompt: &str, work_dir: &Path) -> Result<SpawnResult> {
     if std::env::var("TMUX").is_err() {
         bail!("clat spawn must be run inside a tmux session");
     }
@@ -56,7 +48,7 @@ pub fn spawn_agent(
     std::fs::write(&task_md, rendered_prompt).context("failed to write TASK.md")?;
 
     let work_dir_str = work_dir.display().to_string();
-    let window_name = format!("cc:{}", skill.skill.name);
+    let window_name = format!("cc:{task_name}");
 
     // 1. Create new window in background (-d) so current pane keeps focus
     let window_id = tmux_cmd(&[

@@ -7,6 +7,7 @@ use rusqlite::Connection;
 #[allow(dead_code)]
 pub struct Task {
     pub id: String,
+    pub name: String,
     pub skill_name: String,
     pub params_json: String,
     pub status: String,
@@ -48,19 +49,23 @@ impl Store {
                 output       TEXT
             );",
         )?;
-        // Migration: add tmux_window column to existing databases
+        // Migrations: add columns to existing databases
         let _ = self
             .conn
             .execute_batch("ALTER TABLE tasks ADD COLUMN tmux_window TEXT");
+        let _ = self
+            .conn
+            .execute_batch("ALTER TABLE tasks ADD COLUMN name TEXT NOT NULL DEFAULT ''");
         Ok(())
     }
 
     pub fn insert_task(&self, task: &Task) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO tasks (id, skill_name, params_json, status, tmux_pane, tmux_window, work_dir, started_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO tasks (id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir, started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             (
                 &task.id,
+                &task.name,
                 &task.skill_name,
                 &task.params_json,
                 &task.status,
@@ -90,23 +95,24 @@ impl Store {
 
     pub fn list_tasks(&self) -> Result<Vec<Task>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, skill_name, params_json, status, tmux_pane, tmux_window, work_dir,
+            "SELECT id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir,
                     started_at, completed_at, exit_code, output
              FROM tasks ORDER BY started_at DESC",
         )?;
 
         let tasks = stmt
             .query_map([], |row| {
-                let started_at: String = row.get(7)?;
-                let completed_at: Option<String> = row.get(8)?;
+                let started_at: String = row.get(8)?;
+                let completed_at: Option<String> = row.get(9)?;
                 Ok(Task {
                     id: row.get(0)?,
-                    skill_name: row.get(1)?,
-                    params_json: row.get(2)?,
-                    status: row.get(3)?,
-                    tmux_pane: row.get(4)?,
-                    tmux_window: row.get(5)?,
-                    work_dir: row.get(6)?,
+                    name: row.get(1)?,
+                    skill_name: row.get(2)?,
+                    params_json: row.get(3)?,
+                    status: row.get(4)?,
+                    tmux_pane: row.get(5)?,
+                    tmux_window: row.get(6)?,
+                    work_dir: row.get(7)?,
                     started_at: DateTime::parse_from_rfc3339(&started_at)
                         .unwrap_or_default()
                         .with_timezone(&Utc),
@@ -115,8 +121,8 @@ impl Store {
                             .ok()
                             .map(|dt| dt.with_timezone(&Utc))
                     }),
-                    exit_code: row.get(9)?,
-                    output: row.get(10)?,
+                    exit_code: row.get(10)?,
+                    output: row.get(11)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -143,23 +149,24 @@ impl Store {
     pub fn get_task_by_prefix(&self, prefix: &str) -> Result<Option<Task>> {
         let pattern = format!("{prefix}%");
         let mut stmt = self.conn.prepare(
-            "SELECT id, skill_name, params_json, status, tmux_pane, tmux_window, work_dir,
+            "SELECT id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir,
                     started_at, completed_at, exit_code, output
              FROM tasks WHERE id LIKE ?1",
         )?;
 
         let mut tasks: Vec<Task> = stmt
             .query_map([&pattern], |row| {
-                let started_at: String = row.get(7)?;
-                let completed_at: Option<String> = row.get(8)?;
+                let started_at: String = row.get(8)?;
+                let completed_at: Option<String> = row.get(9)?;
                 Ok(Task {
                     id: row.get(0)?,
-                    skill_name: row.get(1)?,
-                    params_json: row.get(2)?,
-                    status: row.get(3)?,
-                    tmux_pane: row.get(4)?,
-                    tmux_window: row.get(5)?,
-                    work_dir: row.get(6)?,
+                    name: row.get(1)?,
+                    skill_name: row.get(2)?,
+                    params_json: row.get(3)?,
+                    status: row.get(4)?,
+                    tmux_pane: row.get(5)?,
+                    tmux_window: row.get(6)?,
+                    work_dir: row.get(7)?,
                     started_at: DateTime::parse_from_rfc3339(&started_at)
                         .unwrap_or_default()
                         .with_timezone(&Utc),
@@ -168,8 +175,8 @@ impl Store {
                             .ok()
                             .map(|dt| dt.with_timezone(&Utc))
                     }),
-                    exit_code: row.get(9)?,
-                    output: row.get(10)?,
+                    exit_code: row.get(10)?,
+                    output: row.get(11)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;

@@ -24,7 +24,7 @@ fn main() -> Result<()> {
     let store = Store::open(&paths.db_path)?;
 
     match cli.command {
-        Command::Spawn { skill, param } => cmd_spawn(&paths, &store, &skill, param)?,
+        Command::Spawn { name, skill, param } => cmd_spawn(&paths, &store, &name, &skill, param)?,
         Command::List => cmd_list(&store)?,
         Command::Dash { resume } => tui::run(&store, resume.as_deref())?,
         Command::Start { resume } => cmd_start(resume.as_deref())?,
@@ -42,6 +42,7 @@ fn main() -> Result<()> {
 fn cmd_spawn(
     paths: &Paths,
     store: &Store,
+    task_name: &str,
     skill_name: &str,
     params: Vec<(String, String)>,
 ) -> Result<()> {
@@ -54,11 +55,12 @@ fn cmd_spawn(
 
     let task_id = uuid::Uuid::new_v4().to_string();
     let short_id = &task_id[..8];
-    let worktree_name = format!("{skill_name}-{short_id}");
+    let worktree_name = format!("{task_name}-{short_id}");
     let worktree_path = spawn::create_worktree(&paths.root, &worktree_name)?;
 
     let task = Task {
         id: task_id.clone(),
+        name: task_name.to_string(),
         skill_name: skill_name.to_string(),
         params_json: serde_json::to_string(&params_map)?,
         status: "running".to_string(),
@@ -73,11 +75,11 @@ fn cmd_spawn(
 
     store.insert_task(&task)?;
 
-    let result = spawn::spawn_agent(&task_id, &skill, &rendered, &paths.cc_bin, &worktree_path)?;
+    let result = spawn::spawn_agent(task_name, &rendered, &worktree_path)?;
     store.update_tmux_pane(&task_id, &result.pane_id)?;
     store.update_tmux_window(&task_id, &result.window_id)?;
 
-    println!("Spawned task {task_id}");
+    println!("Spawned task {task_name} ({short_id})");
     println!("  skill:  {skill_name}");
     println!("  window: {}", result.window_id);
 
@@ -96,6 +98,8 @@ fn cmd_list(store: &Store) -> Result<()> {
     struct Row {
         #[tabled(rename = "ID")]
         id: String,
+        #[tabled(rename = "Name")]
+        name: String,
         #[tabled(rename = "Skill")]
         skill: String,
         #[tabled(rename = "Status")]
@@ -112,6 +116,7 @@ fn cmd_list(store: &Store) -> Result<()> {
         .iter()
         .map(|t| Row {
             id: t.id[..8].to_string(),
+            name: t.name.clone(),
             skill: t.skill_name.clone(),
             status: t.status.clone(),
             window: t.tmux_window.clone().unwrap_or_default(),

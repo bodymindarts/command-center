@@ -52,7 +52,7 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
             let time = task.started_at.format("%H:%M");
             let line = Line::from(vec![
                 Span::styled(format!("{status_char} "), Style::default().fg(color)),
-                Span::raw(format!("{:<10} ", task.skill_name)),
+                Span::raw(format!("{:<10} ", task.name)),
                 Span::styled(format!("{time}"), Style::default().fg(Color::DarkGray)),
             ]);
             ListItem::new(line)
