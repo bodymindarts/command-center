@@ -155,26 +155,21 @@ fn cmd_start(resume: Option<&str>) -> Result<()> {
         .display()
         .to_string();
 
-    let mut dash_args = vec![exe.as_str(), "dash"];
-    let resume_flag;
+    let mut dash_cmd = format!("{exe} dash");
     if let Some(sid) = resume {
-        resume_flag = sid.to_string();
-        dash_args.push("--resume");
-        dash_args.push(&resume_flag);
+        dash_cmd.push_str(&format!(" --resume {sid}"));
     }
 
     if std::env::var("TMUX").is_ok() {
-        let mut new_window_args = vec!["new-window", "-P", "-F", "#{window_id}", "-n", "exo"];
-        new_window_args.extend(&dash_args);
-        let window_id = spawn::tmux_cmd(&new_window_args)?;
-        let top_pane = spawn::tmux_cmd(&["list-panes", "-t", &window_id, "-F", "#{pane_id}"])?;
-        spawn::tmux_cmd(&["split-window", "-v", "-t", &window_id])?;
+        // Use the current pane as the dashboard, split below for shell
+        let top_pane = spawn::tmux_cmd(&["display-message", "-p", "#{pane_id}"])?;
+        spawn::tmux_cmd(&["split-window", "-v", "-t", &top_pane])?;
         spawn::tmux_cmd(&["resize-pane", "-t", &top_pane, "-D", "8"])?;
+        spawn::tmux_cmd(&["send-keys", "-t", &top_pane, &dash_cmd, "Enter"])?;
     } else {
-        let mut new_session_args = vec!["new-session", "-d", "-s", "exo", "-n", "exo"];
-        new_session_args.extend(&dash_args);
-        spawn::tmux_cmd(&new_session_args)?;
+        spawn::tmux_cmd(&["new-session", "-d", "-s", "exo", "-n", "exo"])?;
         let top_pane = spawn::tmux_cmd(&["list-panes", "-t", "exo:exo", "-F", "#{pane_id}"])?;
+        spawn::tmux_cmd(&["send-keys", "-t", &top_pane, &dash_cmd, "Enter"])?;
         spawn::tmux_cmd(&["split-window", "-v", "-t", "exo:exo"])?;
         spawn::tmux_cmd(&["resize-pane", "-t", &top_pane, "-D", "8"])?;
 
