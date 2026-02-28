@@ -1,9 +1,36 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
 use crate::skill::SkillFile;
+
+pub fn create_worktree(repo_root: &Path, name: &str) -> Result<PathBuf> {
+    let worktree_dir = repo_root.join(".claude").join("worktrees");
+    std::fs::create_dir_all(&worktree_dir)?;
+
+    let worktree_path = worktree_dir.join(name);
+    let branch_name = format!("task/{name}");
+
+    let output = Command::new("git")
+        .args([
+            "worktree",
+            "add",
+            &worktree_path.display().to_string(),
+            "-b",
+            &branch_name,
+        ])
+        .current_dir(repo_root)
+        .output()
+        .context("failed to run git worktree add")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git worktree add failed: {stderr}");
+    }
+
+    Ok(worktree_path)
+}
 
 pub struct SpawnResult {
     pub window_id: String,
@@ -59,7 +86,7 @@ pub fn spawn_agent(
     ])?;
 
     // 3. Resize: push the divider down so top pane is bigger
-    tmux_cmd(&["resize-pane", "-D", "9", "-t", &top_pane])?;
+    tmux_cmd(&["resize-pane", "-t", &top_pane, "-D", "8"])?;
 
     // 4. Split bottom pane horizontally → bottom-left (shell) and bottom-right (claude)
     let tools = skill.agent.allowed_tools.join(",");
@@ -94,7 +121,7 @@ pub fn spawn_agent(
     })
 }
 
-fn tmux_cmd(args: &[&str]) -> Result<String> {
+pub(crate) fn tmux_cmd(args: &[&str]) -> Result<String> {
     let output = Command::new("tmux")
         .args(args)
         .output()

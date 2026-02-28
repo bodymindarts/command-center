@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "cc", about = "command-center: multi-agent coordination hub")]
+#[command(name = "clat", about = "clat: command line agent tool")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -26,6 +26,20 @@ pub enum Command {
     Goto {
         /// Task ID (prefix match)
         id: String,
+    },
+
+    /// Open the interactive TUI dashboard
+    Dash {
+        /// Resume an existing Claude session by ID
+        #[arg(long)]
+        resume: Option<String>,
+    },
+
+    /// Launch the ExO workspace (tmux + dashboard)
+    Start {
+        /// Resume an existing Claude session by ID
+        #[arg(long)]
+        resume: Option<String>,
     },
 
     /// Mark a task as completed (called by wrapper script)

@@ -96,6 +96,7 @@
           ];
 
           shellHook = ''
+            export PATH="$PWD/bin:$PATH"
             echo "command-center dev shell loaded"
           '';
         };
