@@ -2,3 +2,4 @@
 /result
 .direnv/
 data/
+.claude/settings.local.json
