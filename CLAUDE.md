@@ -25,3 +25,25 @@ command-center/
 ```sh
 nix develop   # or direnv allow
 ```
+
+## Standard Workflow
+
+Before committing, always:
+
+```sh
+cargo fmt                        # fix formatting
+git add -A                       # stage everything (nix flake only sees tracked files)
+nix flake check                  # runs fmt, clippy (--deny warnings), nextest
+```
+
+**Checks must pass before any commit.**
+
+Individual checks during development (inside `nix develop`):
+
+```sh
+cargo fmt --check                          # formatting
+cargo clippy --all-targets -- -D warnings  # lints
+cargo nextest run                          # tests
+```
+
+All check tooling is declared in `flake.nix` via crane — never run checks outside the nix shell.
