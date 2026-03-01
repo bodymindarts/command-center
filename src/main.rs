@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod permission;
+mod runtime;
 mod skill;
 mod spawn;
 mod store;
@@ -256,16 +257,16 @@ fn cmd_start(resume: Option<&str>) -> Result<()> {
 
     if std::env::var("TMUX").is_ok() {
         // Use the current pane as the dashboard, split below for shell
-        let top_pane = spawn::tmux_cmd(&["display-message", "-p", "#{pane_id}"])?;
-        spawn::tmux_cmd(&["split-window", "-v", "-t", &top_pane])?;
-        spawn::tmux_cmd(&["resize-pane", "-t", &top_pane, "-D", "8"])?;
-        spawn::tmux_cmd(&["send-keys", "-t", &top_pane, &dash_cmd, "Enter"])?;
+        let top_pane = runtime::tmux_cmd(&["display-message", "-p", "#{pane_id}"])?;
+        runtime::tmux_cmd(&["split-window", "-v", "-t", &top_pane])?;
+        runtime::tmux_cmd(&["resize-pane", "-t", &top_pane, "-D", "8"])?;
+        runtime::tmux_cmd(&["send-keys", "-t", &top_pane, &dash_cmd, "Enter"])?;
     } else {
-        spawn::tmux_cmd(&["new-session", "-d", "-s", "exo", "-n", "exo"])?;
-        let top_pane = spawn::tmux_cmd(&["list-panes", "-t", "exo:exo", "-F", "#{pane_id}"])?;
-        spawn::tmux_cmd(&["send-keys", "-t", &top_pane, &dash_cmd, "Enter"])?;
-        spawn::tmux_cmd(&["split-window", "-v", "-t", "exo:exo"])?;
-        spawn::tmux_cmd(&["resize-pane", "-t", &top_pane, "-D", "8"])?;
+        runtime::tmux_cmd(&["new-session", "-d", "-s", "exo", "-n", "exo"])?;
+        let top_pane = runtime::tmux_cmd(&["list-panes", "-t", "exo:exo", "-F", "#{pane_id}"])?;
+        runtime::tmux_cmd(&["send-keys", "-t", &top_pane, &dash_cmd, "Enter"])?;
+        runtime::tmux_cmd(&["split-window", "-v", "-t", "exo:exo"])?;
+        runtime::tmux_cmd(&["resize-pane", "-t", &top_pane, "-D", "8"])?;
 
         let status = std::process::Command::new("tmux")
             .args(["attach-session", "-t", "exo"])
