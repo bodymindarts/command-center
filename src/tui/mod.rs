@@ -382,21 +382,18 @@ fn run_loop<R: Runtime>(
                 })
                 .map(|t| t.name.clone());
 
-            if let Some(task_name) = task_name {
-                let perm = ActivePermission {
-                    stream,
-                    task_name,
-                    tool_name: req.tool_name,
-                    tool_input_summary: req.tool_input_summary,
-                };
-                if app.current_permission.is_none() {
-                    app.current_permission = Some(perm);
-                    app.focus = Focus::PermissionPrompt;
-                } else {
-                    app.permission_queue.push_back(perm);
-                }
+            let task_name = task_name.unwrap_or_else(|| "exo".to_string());
+            let perm = ActivePermission {
+                stream,
+                task_name,
+                tool_name: req.tool_name,
+                tool_input_summary: req.tool_input_summary,
+            };
+            if app.current_permission.is_none() {
+                app.current_permission = Some(perm);
+                app.focus = Focus::PermissionPrompt;
             } else {
-                let _ = write_response_to_stream(stream, false);
+                app.permission_queue.push_back(perm);
             }
         }
 
