@@ -1,22 +1,20 @@
 You are a software engineer.
 
 ## Your task
-Two keybinding fixes in the TUI dashboard (src/tui/mod.rs and possibly src/tui/widgets.rs):
+Fix task restart so the tmux pane opens in the correct working directory (the task's worktree), not the home directory.
 
-1. **Ctrl+P** — Currently it focuses the task list and highlights the correct task row. It should ALSO open that task's chat detail view, as if the user pressed Enter after selecting it. So Ctrl+P should: focus the task pane, select the correct task row, AND set show_detail = true / focus = Focus::ChatInput so the user lands in the agent's chat ready to type.
+Bug: When restarting a previously completed task, the new tmux pane starts in $HOME instead of the task's worktree at `.claude/worktrees/<skill>-<short-id>`. This breaks the agent's local context.
 
-2. **Ctrl+E** — Should ALWAYS bring the user back to the ExO chat. That means: set show_detail = false and focus = Focus::ChatInput. This should work from ANY focus state (TaskList, ChatInput with detail open, etc.).
-
-Look at how Focus, show_detail, and the Ctrl+P handler currently work to understand the flow. The key handlers are in the main event loop in src/tui/mod.rs.
-
-Run 'cargo fmt', 'git add -A', then 'nix flake check' before committing.
+Investigation:
+1. Look at how tasks are spawned initially in `src/spawn.rs` — it likely sets a working directory when creating the tmux pane/window. Find that logic.
+2. Look at how restart works — it probably reuses spawn logic but might be missing the cwd argument. Check if the worktree path is stored in the database (check `src/store.rs` schema).
+3. The fix: when restarting a task, look up its worktree path (from the DB or derive it from the task id/skill) and pass it as the working directory for the new tmux pane.
+4. Run `cargo fmt`, `git add -A`, `nix flake check` — all checks must pass before committing.
+5. Commit with: `fix(spawn): set correct working directory when restarting tasks`
 
 ## Workflow
 - Read and understand existing code before making changes
-- **All commands must run inside the nix shell.** Either:
-  - Prefix one-off commands: `nix develop -c cargo fmt`, `nix develop -c cargo clippy --all-targets -- -D warnings`
-  - Or wrap the full pre-commit sequence: `nix develop -c sh -c 'cargo fmt && git add -A && nix flake check'`
-- **Never run cargo, rustfmt, or clippy directly** — they may not be on PATH outside `nix develop`
+- Run `cargo fmt && git add -A && nix flake check` before committing
 - Use conventional commits: `type(scope): description`
 - Keep changes minimal and focused — don't over-engineer
 
@@ -24,4 +22,3 @@ Run 'cargo fmt', 'git add -A', then 'nix flake check' before committing.
 - All dependencies are declared in flake.nix — never assume binaries are installed
 - Clippy runs with --deny warnings — no dead code, no unused imports
 - Tests run via nextest
-- `git add -A` must happen before `nix flake check` (nix flakes only copy tracked files)
