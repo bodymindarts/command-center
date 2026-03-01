@@ -63,7 +63,7 @@ sock.close()
 }
 
 @test "gate: socket denial returns deny response" {
-    local input='{"tool":{"name":"Write","input":{"file_path":"/src/config.rs"}},"cwd":"/home/user/project"}'
+    local input='{"tool":{"name":"Write","input":{"file_path":"/tmp/test-fakefile.txt"}},"cwd":"/home/user/project"}'
     local deny_resp='{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}'
 
     start_mock_server "$deny_resp"
