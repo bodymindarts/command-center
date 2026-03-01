@@ -1,17 +1,16 @@
 You are a software engineer.
 
 ## Your task
-Simplify the Ctrl+P permission handling in the TUI dashboard.
+The ExO chat in the TUI dashboard does not persist across restarts. When you close the dashboard and reopen it, the chat history is gone and the Claude session starts fresh.
 
-Current behavior (broken): Ctrl+P focuses the task awaiting permissions but enters some special input mode that expects the user to press 1/2 keys directly.
+Fix this by:
+1. Persisting ExO chat messages to the SQLite DB — task messages already use insert_message/list_messages in store.rs, so follow that pattern. The ExO chat needs its own identifier (not a task ID). Store both user messages and assistant responses.
+2. On dashboard startup, reload the persisted ExO chat history and render it into the chat widget so the user sees their previous conversation.
+3. Wire up the --resume flag on clat dash so that when resuming, the Claude session continues AND the chat history is loaded from the DB.
 
-Desired behavior: Ctrl+P should simply focus the task pane that is awaiting permissions and put the cursor in the normal chat input. No special permission mode, no special key handling. The user just types '1' or '2' (or whatever) as a regular chat message and sends it with Enter.
+Investigate src/tui/ (mod.rs, app.rs, chat.rs, claude.rs) and src/store.rs to understand the current flow, then implement.
 
-Investigation:
-1. Look at `src/tui/app.rs` (and other tui modules) for the Ctrl+P handler — there was a recent refactor in commit 3b0cae7 ('replace permission mode with Ctrl+P focus-based approach'). Read that code to understand what it currently does.
-2. Remove any special permission input handling — Ctrl+P should just: (a) find the task that's awaiting permissions, (b) focus/select that task's pane, (c) put focus in the chat input. That's it. Normal chat mode from there.
-3. Run `cargo fmt`, `git add -A`, `nix flake check` — all checks must pass before committing.
-4. Commit with: `fix(tui): simplify Ctrl+P to just focus task pane in normal chat mode`
+Follow standard pre-commit workflow: cargo fmt, git add -A, nix flake check.
 
 ## Workflow
 - Read and understand existing code before making changes

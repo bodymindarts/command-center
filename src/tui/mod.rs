@@ -37,6 +37,9 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
     if let Some(sid) = resume_session {
         exo.session_id = Some(sid.to_string());
     }
+    if let Ok(messages) = service.exo_messages() {
+        exo.load_history(messages);
+    }
     let (tx, rx) = mpsc::channel::<ExoEvent>();
     let cancel = Arc::new(AtomicBool::new(false));
 
@@ -128,10 +131,22 @@ fn run_loop<R: Runtime>(
                 ExoEvent::SessionId(id) => exo.session_id = Some(id),
                 ExoEvent::Done => {
                     exo.finish_streaming();
+                    if let Some(msg) = exo.messages.last()
+                        && matches!(msg.role, chat::Role::Assistant)
+                        && !msg.content.is_empty()
+                    {
+                        let _ = service.insert_exo_message("assistant", &msg.content);
+                    }
                 }
                 ExoEvent::Error(e) => {
                     exo.append_text(&format!("\n[Error: {e}]"));
                     exo.finish_streaming();
+                    if let Some(msg) = exo.messages.last()
+                        && matches!(msg.role, chat::Role::Assistant)
+                        && !msg.content.is_empty()
+                    {
+                        let _ = service.insert_exo_message("assistant", &msg.content);
+                    }
                 }
             }
         }
@@ -340,6 +355,7 @@ fn run_loop<R: Runtime>(
                                             Arc::clone(cancel),
                                             tx.clone(),
                                         );
+                                        let _ = service.insert_exo_message("user", &msg);
                                         exo.add_user_message(msg);
                                     }
                                 }

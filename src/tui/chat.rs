@@ -1,3 +1,5 @@
+use crate::task::TaskMessage;
+
 pub enum Role {
     User,
     Assistant,
@@ -60,5 +62,27 @@ impl ExoState {
 
     pub fn finish_streaming(&mut self) {
         self.streaming = false;
+    }
+
+    pub fn load_history(&mut self, messages: Vec<TaskMessage>) {
+        for msg in messages {
+            match msg.role.as_str() {
+                "user" => {
+                    self.messages.push(ChatMessage {
+                        role: Role::User,
+                        content: msg.content,
+                        tool_activity: Vec::new(),
+                    });
+                }
+                "assistant" => {
+                    self.messages.push(ChatMessage {
+                        role: Role::Assistant,
+                        content: msg.content,
+                        tool_activity: Vec::new(),
+                    });
+                }
+                _ => {}
+            }
+        }
     }
 }

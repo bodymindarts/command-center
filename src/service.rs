@@ -43,6 +43,8 @@ pub struct LogOutput {
     pub live_output: Option<String>,
 }
 
+const EXO_CHAT_ID: &str = "exo";
+
 pub struct TaskService<'a, R: Runtime> {
     store: &'a Store,
     runtime: &'a R,
@@ -267,6 +269,14 @@ impl<'a, R: Runtime> TaskService<'a, R> {
 
     pub fn capture_pane(&self, pane_id: &str) -> Option<String> {
         self.runtime.capture_pane_output(pane_id).ok()
+    }
+
+    pub fn insert_exo_message(&self, role: &str, content: &str) -> Result<()> {
+        self.store.insert_message(EXO_CHAT_ID, role, content)
+    }
+
+    pub fn exo_messages(&self) -> Result<Vec<TaskMessage>> {
+        self.store.list_messages(EXO_CHAT_ID)
     }
 
     pub fn complete(&self, id: &str, exit_code: i32, output: Option<&str>) -> Result<()> {
