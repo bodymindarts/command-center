@@ -30,7 +30,7 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let tasks = service.list_active()?;
+    let tasks = service.list_all()?;
     let mut app = App::new(tasks);
     let mut exo = ExoState::new();
     if let Some(sid) = resume_session {
@@ -186,9 +186,9 @@ fn run_loop<R: Runtime>(
                             if let Some(task) = app.selected_task()
                                 && task.status.is_running()
                             {
-                                let short_id = task.id.short().to_string();
-                                let _ = service.close(&short_id);
-                                if let Ok(tasks) = service.list_active() {
+                                let id = task.id.as_str().to_string();
+                                let _ = service.close(&id);
+                                if let Ok(tasks) = service.list_all() {
                                     app.refresh_tasks(tasks);
                                 }
                             }
@@ -213,7 +213,7 @@ fn run_loop<R: Runtime>(
                                 if !app.input.is_empty() {
                                     let name = app.input.take();
                                     let _ = service.spawn(&name, "noop", vec![]);
-                                    if let Ok(tasks) = service.list_active() {
+                                    if let Ok(tasks) = service.list_all() {
                                         app.refresh_tasks(tasks);
                                     }
                                 }
@@ -305,7 +305,7 @@ fn run_loop<R: Runtime>(
         }
 
         if last_tick.elapsed() >= tick_rate {
-            if let Ok(tasks) = service.list_active() {
+            if let Ok(tasks) = service.list_all() {
                 app.refresh_tasks(tasks);
             }
             // Update selected messages and live output for detail view
