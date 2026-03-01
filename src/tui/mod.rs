@@ -331,17 +331,25 @@ fn poll_permission_requests(app: &mut App) {
         return;
     };
 
+    let req_cwd =
+        std::fs::canonicalize(&req.cwd).unwrap_or_else(|_| std::path::PathBuf::from(&req.cwd));
     let task_name = app
         .tasks
         .iter()
         .find(|t| {
-            t.work_dir
-                .as_deref()
-                .is_some_and(|wd| req.cwd.starts_with(wd))
+            t.work_dir.as_deref().is_some_and(|wd| {
+                let canon =
+                    std::fs::canonicalize(wd).unwrap_or_else(|_| std::path::PathBuf::from(wd));
+                req_cwd.starts_with(&canon)
+            })
         })
-        .map(|t| t.name.clone())
-        .unwrap_or_else(|| "unknown task".to_string());
+        .map(|t| t.name.clone());
 
+    let Some(task_name) = task_name else {
+        // Stale request from a dead/closed task — auto-deny and clean up
+        crate::permission::write_permission_response(&dir, &req.req_id, false);
+        return;
+    };
     app.pending_permission = Some(PendingPermission {
         req_id: req.req_id,
         task_name,
