@@ -35,14 +35,14 @@ pub fn make_response_json(allow: bool, message: Option<&str>) -> String {
 pub fn parse_request_json(json: &str) -> Option<PermissionRequest> {
     let parsed: Value = serde_json::from_str(json).ok()?;
 
+    // Claude Code sends tool_name and tool_input at top level
     let tool_name = parsed
-        .get("tool")
-        .and_then(|t| t.get("name"))
+        .get("tool_name")
         .and_then(|n| n.as_str())
         .unwrap_or("unknown")
         .to_string();
 
-    let tool_input = parsed.get("tool").and_then(|t| t.get("input"));
+    let tool_input = parsed.get("tool_input");
     let tool_input_summary = summarize_tool_input(&tool_name, tool_input);
 
     let cwd = parsed
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn parse_request_json_valid() {
-        let json = r#"{"tool":{"name":"Bash","input":{"command":"ls -la"}},"cwd":"/home/user"}"#;
+        let json = r#"{"tool_name":"Bash","tool_input":{"command":"ls -la"},"cwd":"/home/user"}"#;
         let req = parse_request_json(json).unwrap();
         assert_eq!(req.tool_name, "Bash");
         assert_eq!(req.tool_input_summary, "ls -la");
@@ -294,7 +294,8 @@ mod tests {
         let listener = UnixListener::bind(&sock_path).unwrap();
         listener.set_nonblocking(false).unwrap();
 
-        let request_json = r#"{"tool":{"name":"Bash","input":{"command":"echo hi"}},"cwd":"/tmp"}"#;
+        let request_json =
+            r#"{"tool_name":"Bash","tool_input":{"command":"echo hi"},"cwd":"/tmp"}"#;
         let req_json = request_json.to_string();
 
         let handle = std::thread::spawn(move || {

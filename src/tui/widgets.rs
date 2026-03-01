@@ -306,7 +306,7 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
         Focus::ChatInput => vec![
             Span::styled(" Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" send  "),
-            Span::styled("Tab", Style::default().fg(Color::Yellow)),
+            Span::styled("^L", Style::default().fg(Color::Yellow)),
             Span::raw(" tasks  "),
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::raw(" back"),
@@ -322,7 +322,7 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
             Span::raw(" new  "),
             Span::styled("x", Style::default().fg(Color::Yellow)),
             Span::raw(" close  "),
-            Span::styled("Tab", Style::default().fg(Color::Yellow)),
+            Span::styled("^H", Style::default().fg(Color::Yellow)),
             Span::raw(" exo  "),
             Span::styled("q", Style::default().fg(Color::Yellow)),
             Span::raw(" quit"),

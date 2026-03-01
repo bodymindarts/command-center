@@ -213,7 +213,10 @@ fn run_loop<R: Runtime>(
                                 app.focus = Focus::ConfirmDelete(id);
                             }
                         }
-                        KeyCode::Tab | KeyCode::Char('i') => {
+                        KeyCode::Tab => {
+                            app.focus = Focus::ChatInput;
+                        }
+                        KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             app.focus = Focus::ChatInput;
                         }
                         _ => {}
@@ -264,6 +267,9 @@ fn run_loop<R: Runtime>(
                                 app.show_detail = false;
                             }
                             KeyCode::Tab => {
+                                app.focus = Focus::TaskList;
+                            }
+                            KeyCode::Char('l') if ctrl => {
                                 app.focus = Focus::TaskList;
                             }
                             KeyCode::Enter => {
