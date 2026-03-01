@@ -196,7 +196,17 @@ fn run_loop<R: Runtime>(
                         app.detail_scroll = 0;
                     }
                     app.focus = Focus::ChatInput;
+                } else if app.list_state.selected().is_some() {
+                    app.show_detail = true;
+                    app.detail_scroll = 0;
+                    app.focus = Focus::ChatInput;
                 }
+            // Global: Ctrl+E returns to ExO chat
+            } else if key.modifiers.contains(KeyModifiers::CONTROL)
+                && key.code == KeyCode::Char('e')
+            {
+                app.show_detail = false;
+                app.focus = Focus::ChatInput;
             } else {
                 match &app.focus {
                     Focus::TaskList => match key.code {
@@ -300,7 +310,6 @@ fn run_loop<R: Runtime>(
                             KeyCode::Char('k') if ctrl => app.input.kill_line(),
                             KeyCode::Char('w') if ctrl => app.input.kill_word(),
                             KeyCode::Char('a') if ctrl => app.input.home(),
-                            KeyCode::Char('e') if ctrl => app.input.end(),
                             KeyCode::Char(c) => app.input.insert(c),
                             KeyCode::Backspace => app.input.backspace(),
                             KeyCode::Delete => app.input.delete(),
@@ -364,7 +373,6 @@ fn run_loop<R: Runtime>(
                             KeyCode::Char('k') if ctrl => app.input.kill_line(),
                             KeyCode::Char('w') if ctrl => app.input.kill_word(),
                             KeyCode::Char('a') if ctrl => app.input.home(),
-                            KeyCode::Char('e') if ctrl => app.input.end(),
                             KeyCode::Char(c) => app.input.insert(c),
                             KeyCode::Backspace => app.input.backspace(),
                             KeyCode::Delete => app.input.delete(),

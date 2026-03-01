@@ -1,20 +1,22 @@
 You are a software engineer.
 
 ## Your task
-The ExO chat in the TUI dashboard does not persist across restarts. When you close the dashboard and reopen it, the chat history is gone and the Claude session starts fresh.
+Two keybinding fixes in the TUI dashboard (src/tui/mod.rs and possibly src/tui/widgets.rs):
 
-Fix this by:
-1. Persisting ExO chat messages to the SQLite DB — task messages already use insert_message/list_messages in store.rs, so follow that pattern. The ExO chat needs its own identifier (not a task ID). Store both user messages and assistant responses.
-2. On dashboard startup, reload the persisted ExO chat history and render it into the chat widget so the user sees their previous conversation.
-3. Wire up the --resume flag on clat dash so that when resuming, the Claude session continues AND the chat history is loaded from the DB.
+1. **Ctrl+P** — Currently it focuses the task list and highlights the correct task row. It should ALSO open that task's chat detail view, as if the user pressed Enter after selecting it. So Ctrl+P should: focus the task pane, select the correct task row, AND set show_detail = true / focus = Focus::ChatInput so the user lands in the agent's chat ready to type.
 
-Investigate src/tui/ (mod.rs, app.rs, chat.rs, claude.rs) and src/store.rs to understand the current flow, then implement.
+2. **Ctrl+E** — Should ALWAYS bring the user back to the ExO chat. That means: set show_detail = false and focus = Focus::ChatInput. This should work from ANY focus state (TaskList, ChatInput with detail open, etc.).
 
-Follow standard pre-commit workflow: cargo fmt, git add -A, nix flake check.
+Look at how Focus, show_detail, and the Ctrl+P handler currently work to understand the flow. The key handlers are in the main event loop in src/tui/mod.rs.
+
+Run 'cargo fmt', 'git add -A', then 'nix flake check' before committing.
 
 ## Workflow
 - Read and understand existing code before making changes
-- Run `cargo fmt && git add -A && nix flake check` before committing
+- **All commands must run inside the nix shell.** Either:
+  - Prefix one-off commands: `nix develop -c cargo fmt`, `nix develop -c cargo clippy --all-targets -- -D warnings`
+  - Or wrap the full pre-commit sequence: `nix develop -c sh -c 'cargo fmt && git add -A && nix flake check'`
+- **Never run cargo, rustfmt, or clippy directly** — they may not be on PATH outside `nix develop`
 - Use conventional commits: `type(scope): description`
 - Keep changes minimal and focused — don't over-engineer
 
@@ -22,3 +24,4 @@ Follow standard pre-commit workflow: cargo fmt, git add -A, nix flake check.
 - All dependencies are declared in flake.nix — never assume binaries are installed
 - Clippy runs with --deny warnings — no dead code, no unused imports
 - Tests run via nextest
+- `git add -A` must happen before `nix flake check` (nix flakes only copy tracked files)
