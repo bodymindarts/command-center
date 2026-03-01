@@ -1,6 +1,15 @@
 #!/bin/bash
-# Only gate permissions when the dashboard socket is active.
+# Route permissions through the dashboard socket when active.
 # Without the socket, output nothing — Claude uses its normal permission flow.
+# Uses perl (ships with macOS) to avoid needing clat/cargo in PATH.
 SOCK="${TMPDIR:-/tmp}/cc-permissions.sock"
-[ -S "$SOCK" ] && exec clat permission gate
-exit 0
+[ -S "$SOCK" ] || exit 0
+
+exec perl -MIO::Socket::UNIX -e '
+  my $d = do { local $/; <STDIN> };
+  my $s = IO::Socket::UNIX->new(Peer => $ARGV[0], Type => SOCK_STREAM) or exit 0;
+  print $s $d;
+  shutdown($s, 1);
+  local $/;
+  print <$s>;
+' "$SOCK"
