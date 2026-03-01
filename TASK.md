@@ -1,30 +1,20 @@
 You are a software engineer.
 
 ## Your task
-Fix ExO chat text not appearing in the TUI.
+Add a 'Pane' column to the task list table in the TUI dashboard that shows the tmux pane number (the %N identifier or index) for each task.
 
-## Root cause (already diagnosed)
-In src/tui/claude.rs, the spawn_claude function parses stream-json output events. The code matches on 'content_block_delta' events to extract text, but the Claude Code CLI's stream-json format does NOT emit content_block_delta events. Instead, it sends complete 'assistant' event types with the full message content.
+Context:
+- Tasks are spawned via `clat spawn` which creates tmux panes for each task (see src/spawn.rs)
+- The TUI dashboard renders a task table in src/tui/widgets.rs (look at render_tasks or similar)
+- Task metadata is stored in SQLite via src/store.rs
+- The task list is refreshed periodically in src/tui/mod.rs
 
-The actual event structure is:
-{"type":"assistant","message":{"content":[{"type":"text","text":"response here"}],...}}
-
-The current code has a comment at line ~162 saying 'assistant' events are 'informational' and ignores them. This is wrong — the text content lives there.
-
-## Fix
-In the match on event_type in spawn_claude (around line 131):
-1. Add an 'assistant' arm that extracts text from message.content array
-2. For each content block where type=='text', send ExoEvent::TextDelta with the text
-3. Also handle tool_use content blocks by sending ExoEvent::ToolStart with the tool name
-
-The format for the content array is: message.content is an array of objects. Each has a 'type' field — either 'text' (with a 'text' field) or 'tool_use' (with a 'name' field).
-
-Keep the existing content_block_delta/content_block_start matching too as a fallback in case some versions of the CLI do emit those.
-
-## Test
-Run: CLAUDECODE= claude -p 'Say hi' --output-format stream-json --verbose --input-format stream-json
-(with a JSON message on stdin like: {"type":"user","message":{"role":"user","content":"Say hi"},"session_id":"test"})
-And verify the assistant event is parsed correctly.
+What to do:
+1. Explore how tasks are spawned (src/spawn.rs) and figure out how to capture/store the tmux pane identifier (e.g. the pane index or %N id). It may already be stored somewhere.
+2. If the pane ID isn't already stored in the DB, add it to the tasks table schema and populate it at spawn time.
+3. Add a 'Pane' column to the task table rendering in the TUI (src/tui/widgets.rs).
+4. Also add the pane info to the CLI `clat list` output if there's a table there (check src/cli.rs).
+5. Run the standard checks: cargo fmt, git add -A, nix flake check. Fix any issues. Commit with a conventional commit message.
 
 ## Workflow
 - Read and understand existing code before making changes
