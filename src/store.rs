@@ -136,6 +136,15 @@ impl Store {
         Ok(rows > 0)
     }
 
+    pub fn reopen_task(&self, id: &str, pane: &str, window: &str) -> Result<bool> {
+        let rows = self.conn.execute(
+            "UPDATE tasks SET status = 'running', tmux_pane = ?1, tmux_window = ?2, completed_at = NULL
+             WHERE id = ?3 AND status != 'running'",
+            (pane, window, id),
+        )?;
+        Ok(rows > 0)
+    }
+
     pub fn list_tasks(&self) -> Result<Vec<Task>> {
         let sql = format!("SELECT {TASK_COLUMNS} FROM tasks ORDER BY started_at DESC");
         let mut stmt = self.conn.prepare(&sql)?;

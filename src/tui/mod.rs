@@ -176,10 +176,20 @@ fn run_loop<R: Runtime>(
                             app.focus = Focus::ChatInput;
                         }
                         KeyCode::Char('g') => {
-                            if let Some(task) = app.selected_task()
-                                && let Some(window_id) = &task.tmux_window
-                            {
-                                service.goto_window(window_id);
+                            if let Some(task) = app.selected_task() {
+                                if task.status.is_running() {
+                                    if let Some(window_id) = &task.tmux_window {
+                                        service.goto_window(window_id);
+                                    }
+                                } else {
+                                    let id = task.id.as_str().to_string();
+                                    if let Ok(window_id) = service.reopen(&id) {
+                                        if let Ok(tasks) = service.list_all() {
+                                            app.refresh_tasks(tasks);
+                                        }
+                                        service.goto_window(&window_id);
+                                    }
+                                }
                             }
                         }
                         KeyCode::Char('x') => {

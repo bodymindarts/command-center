@@ -131,6 +131,32 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         })
     }
 
+    pub fn reopen(&self, task_id: &str) -> Result<String> {
+        let task = self.resolve_task(task_id)?;
+
+        if task.status.is_running() {
+            bail!(
+                "task {} ({}) is already running",
+                task.name,
+                task.id.short()
+            );
+        }
+
+        let work_dir = task
+            .work_dir
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("task {} has no work_dir", task.id.short()))?;
+
+        let result = self
+            .runtime
+            .spawn_agent(&task.name, "", std::path::Path::new(work_dir))?;
+
+        self.store
+            .reopen_task(task.id.as_str(), &result.pane_id, &result.window_id)?;
+
+        Ok(result.window_id)
+    }
+
     pub fn send(&self, id_prefix: &str, message: &str) -> Result<SendOutput> {
         let task = self.resolve_task(id_prefix)?;
 
