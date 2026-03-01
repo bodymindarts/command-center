@@ -180,7 +180,7 @@ fn run_loop<R: Runtime>(
                         app.show_detail = true;
                         app.detail_scroll = 0;
                     }
-                    app.focus = Focus::TaskList;
+                    app.focus = Focus::ChatInput;
                 }
             } else {
                 match &app.focus {
@@ -240,18 +240,6 @@ fn run_loop<R: Runtime>(
                                 if let Ok(tasks) = service.list_all() {
                                     app.refresh_tasks(tasks);
                                 }
-                            }
-                        }
-                        KeyCode::Char('1') => {
-                            let perm_key = app.focused_perm_key();
-                            if let Some(perm) = app.take_permission(&perm_key) {
-                                let _ = write_response_to_stream(perm.stream, true);
-                            }
-                        }
-                        KeyCode::Char('2') => {
-                            let perm_key = app.focused_perm_key();
-                            if let Some(perm) = app.take_permission(&perm_key) {
-                                let _ = write_response_to_stream(perm.stream, false);
                             }
                         }
                         KeyCode::Char('n') => {
@@ -325,7 +313,17 @@ fn run_loop<R: Runtime>(
                             }
                             KeyCode::Enter => {
                                 if !app.input.is_empty() {
-                                    if app.show_detail {
+                                    let perm_key = app.focused_perm_key();
+                                    let buf = app.input.buffer();
+                                    if app.peek_permission(&perm_key).is_some()
+                                        && (buf == "1" || buf == "2")
+                                    {
+                                        let allow = buf == "1";
+                                        app.input.take();
+                                        if let Some(perm) = app.take_permission(&perm_key) {
+                                            let _ = write_response_to_stream(perm.stream, allow);
+                                        }
+                                    } else if app.show_detail {
                                         // Send to task agent
                                         let msg = app.input.take();
                                         if let Some(task) = app.selected_task()
