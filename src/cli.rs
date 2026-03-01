@@ -33,6 +33,12 @@ pub enum Command {
     /// List all tasks (alias for list --all)
     History,
 
+    /// Show message log for a task
+    Log {
+        /// Task ID (prefix match)
+        id: String,
+    },
+
     /// Close a running task (capture output, kill tmux window)
     Close {
         /// Task ID (prefix match)

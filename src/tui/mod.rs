@@ -66,7 +66,7 @@ fn run_loop(
             Duration::from_millis(500)
         };
 
-        terminal.draw(|frame| widgets::ui(frame, app, exo))?;
+        terminal.draw(|frame| widgets::ui(frame, app, exo, store))?;
 
         // Drain channel events
         while let Ok(ev) = rx.try_recv() {
@@ -159,7 +159,7 @@ fn run_loop(
                             KeyCode::Enter => {
                                 if !app.input.is_empty() {
                                     let msg = app.input.take();
-                                    app.send_to_agent(&msg);
+                                    app.send_to_agent(&msg, store);
                                 }
                                 app.agent_target = None;
                                 app.focus = Focus::TaskList;

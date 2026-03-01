@@ -411,3 +411,42 @@ REQJSON
     [ "$status" -ne 0 ]
     [[ "$output" == *"no pending permission request"* ]]
 }
+
+# --- agent chat history / log ---
+
+@test "spawn records initial prompt in log" {
+    cd "$PROJECT_DIR"
+    clat spawn log-init --skill noop
+
+    local short_id
+    short_id=$(task_field "substr(id, 1, 8)" log-init)
+
+    run clat log "$short_id"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PROMPT:"* ]]
+    [[ "$output" == *"Task complete"* ]]
+}
+
+@test "send records message and log shows it" {
+    # Replace mock claude with cat (echoes stdin to pane)
+    printf '#!/bin/bash\nexec cat\n' > "$TEST_DIR/bin/claude"
+    chmod +x "$TEST_DIR/bin/claude"
+
+    cd "$PROJECT_DIR"
+    clat spawn log-send --skill noop
+
+    local short_id
+    short_id=$(task_field "substr(id, 1, 8)" log-send)
+
+    clat send "$short_id" "first message"
+    clat send "$short_id" "second message"
+
+    run clat log "$short_id"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PROMPT:"* ]]
+    [[ "$output" == *"YOU:"* ]]
+    [[ "$output" == *"first message"* ]]
+    [[ "$output" == *"second message"* ]]
+}

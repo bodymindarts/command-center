@@ -49,6 +49,15 @@ const TASK_COLUMNS: &str =
     "id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir,
      started_at, completed_at, exit_code, output";
 
+#[allow(dead_code)]
+pub struct TaskMessage {
+    pub id: String,
+    pub task_id: String,
+    pub role: String,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+}
+
 pub struct Store {
     conn: Connection,
 }
@@ -76,6 +85,15 @@ impl Store {
                 completed_at TEXT,
                 exit_code    INTEGER,
                 output       TEXT
+            );",
+        )?;
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS task_messages (
+                id         TEXT PRIMARY KEY,
+                task_id    TEXT NOT NULL,
+                role       TEXT NOT NULL,
+                content    TEXT NOT NULL,
+                created_at TEXT NOT NULL
             );",
         )?;
         // Migrations: add columns to existing databases
@@ -183,6 +201,41 @@ impl Store {
 
         Ok(tasks.pop())
     }
+
+    pub fn insert_message(&self, task_id: &str, role: &str, content: &str) -> Result<()> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO task_messages (id, task_id, role, content, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (&id, task_id, role, content, &now),
+        )?;
+        Ok(())
+    }
+
+    pub fn list_messages(&self, task_id: &str) -> Result<Vec<TaskMessage>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, task_id, role, content, created_at
+             FROM task_messages WHERE task_id = ?1 ORDER BY created_at ASC",
+        )?;
+
+        let messages = stmt
+            .query_map([task_id], |row| {
+                let created_at: String = row.get(4)?;
+                Ok(TaskMessage {
+                    id: row.get(0)?,
+                    task_id: row.get(1)?,
+                    role: row.get(2)?,
+                    content: row.get(3)?,
+                    created_at: DateTime::parse_from_rfc3339(&created_at)
+                        .unwrap_or_default()
+                        .with_timezone(&Utc),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(messages)
+    }
 }
 
 #[cfg(test)]
@@ -256,5 +309,47 @@ mod tests {
 
         let all = store.list_tasks().unwrap();
         assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn insert_and_list_messages() {
+        let store = test_store();
+        insert_running_task(&store, "msg-task", "t1");
+
+        store
+            .insert_message("msg-task", "system", "initial prompt")
+            .unwrap();
+        store
+            .insert_message("msg-task", "user", "hello agent")
+            .unwrap();
+
+        let messages = store.list_messages("msg-task").unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "system");
+        assert_eq!(messages[0].content, "initial prompt");
+        assert_eq!(messages[1].role, "user");
+        assert_eq!(messages[1].content, "hello agent");
+    }
+
+    #[test]
+    fn list_messages_empty_for_unknown_task() {
+        let store = test_store();
+        let messages = store.list_messages("nonexistent").unwrap();
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn messages_ordered_by_created_at() {
+        let store = test_store();
+        insert_running_task(&store, "ord-task", "t1");
+
+        store.insert_message("ord-task", "system", "first").unwrap();
+        store.insert_message("ord-task", "user", "second").unwrap();
+        store.insert_message("ord-task", "user", "third").unwrap();
+
+        let messages = store.list_messages("ord-task").unwrap();
+        assert_eq!(messages.len(), 3);
+        assert!(messages[0].created_at <= messages[1].created_at);
+        assert!(messages[1].created_at <= messages[2].created_at);
     }
 }

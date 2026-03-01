@@ -226,14 +226,16 @@ impl App {
         }
     }
 
-    pub fn send_to_agent(&self, message: &str) {
-        let pane_id = self
+    pub fn send_to_agent(&self, message: &str, store: &Store) {
+        let task = self
             .agent_target
             .as_deref()
-            .and_then(|id| self.tasks.iter().find(|t| t.id == id))
-            .and_then(|t| t.tmux_pane.as_deref());
-        if let Some(pane) = pane_id {
-            let _ = crate::spawn::send_keys_to_pane(pane, message);
+            .and_then(|id| self.tasks.iter().find(|t| t.id == id));
+        if let Some(task) = task {
+            if let Some(pane) = task.tmux_pane.as_deref() {
+                let _ = crate::spawn::send_keys_to_pane(pane, message);
+            }
+            let _ = store.insert_message(&task.id, "user", message);
         }
     }
 

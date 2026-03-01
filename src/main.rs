@@ -28,6 +28,7 @@ fn main() -> Result<()> {
         Command::Spawn { name, skill, param } => cmd_spawn(&paths, &store, &name, &skill, param)?,
         Command::List { all } => cmd_list(&store, all)?,
         Command::History => cmd_list(&store, true)?,
+        Command::Log { id } => cmd_log(&store, &id)?,
         Command::Close { id } => cmd_close(&store, &id)?,
         Command::Dash { resume } => tui::run(&store, resume.as_deref())?,
         Command::Start { resume } => cmd_start(resume.as_deref())?,
@@ -79,6 +80,7 @@ fn cmd_spawn(
     };
 
     store.insert_task(&task)?;
+    store.insert_message(&task_id, "system", &rendered)?;
 
     let result = spawn::spawn_agent(task_name, &rendered, &worktree_path)?;
     store.update_tmux_pane(&task_id, &result.pane_id)?;
@@ -173,6 +175,50 @@ fn cmd_close(store: &Store, id_prefix: &str) -> Result<()> {
     Ok(())
 }
 
+fn cmd_log(store: &Store, id_prefix: &str) -> Result<()> {
+    let task = store
+        .get_task_by_prefix(id_prefix)?
+        .ok_or_else(|| anyhow::anyhow!("no task found matching '{id_prefix}'"))?;
+
+    let messages = store.list_messages(&task.id)?;
+
+    if messages.is_empty() {
+        println!("No messages for task {} ({}).", task.name, &task.id[..8]);
+        return Ok(());
+    }
+
+    for msg in &messages {
+        let label = match msg.role.as_str() {
+            "system" => "PROMPT",
+            "user" => "YOU",
+            _ => &msg.role,
+        };
+        let time = msg.created_at.format("%H:%M:%S");
+        println!("[{time}] {label}:");
+        println!("{}", msg.content);
+        println!();
+    }
+
+    // For running tasks, append live pane scrollback
+    if task.status == "running"
+        && let Some(pane_id) = &task.tmux_pane
+        && let Ok(output) = spawn::capture_pane_output(pane_id)
+    {
+        let lines: Vec<&str> = output.lines().collect();
+        let tail = if lines.len() > 50 {
+            &lines[lines.len() - 50..]
+        } else {
+            &lines
+        };
+        println!("--- Live pane (last {} lines) ---", tail.len());
+        for line in tail {
+            println!("{line}");
+        }
+    }
+
+    Ok(())
+}
+
 fn cmd_goto(store: &Store, id_prefix: &str) -> Result<()> {
     let task = store
         .get_task_by_prefix(id_prefix)?
@@ -242,6 +288,7 @@ fn cmd_send(store: &Store, id_prefix: &str, message: &str) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("task {} has no tmux pane", &task.id[..8]))?;
 
     spawn::send_keys_to_pane(pane_id, message)?;
+    store.insert_message(&task.id, "user", message)?;
     println!("Sent message to {} ({})", task.name, &task.id[..8]);
 
     Ok(())
