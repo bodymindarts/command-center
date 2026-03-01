@@ -143,6 +143,22 @@ fn run_loop<R: Runtime>(
             // Global: Ctrl+C quits
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
                 app.should_quit = true;
+            // Global: Ctrl+Z suspends
+            } else if key.modifiers.contains(KeyModifiers::CONTROL)
+                && key.code == KeyCode::Char('z')
+            {
+                terminal::disable_raw_mode()?;
+                crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                terminal.show_cursor()?;
+                // SAFETY: raise(SIGTSTP) is safe to call; it suspends the process
+                // and returns when the process is resumed via SIGCONT (fg).
+                unsafe {
+                    libc::raise(libc::SIGTSTP);
+                }
+                terminal::enable_raw_mode()?;
+                crossterm::execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+                terminal.hide_cursor()?;
+                terminal.clear()?;
             } else {
                 match &app.focus {
                     Focus::TaskList => match key.code {
