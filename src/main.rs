@@ -4,6 +4,7 @@ mod permission;
 mod skill;
 mod spawn;
 mod store;
+mod task;
 mod tui;
 
 use std::collections::HashMap;
@@ -16,7 +17,8 @@ use tabled::{Table, Tabled};
 use crate::cli::{Cli, Command, PermissionAction};
 use crate::config::Paths;
 use crate::skill::SkillFile;
-use crate::store::{Store, Task};
+use crate::store::Store;
+use crate::task::Task;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();

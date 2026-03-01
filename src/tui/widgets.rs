@@ -3,7 +3,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 
-use crate::store::{Store, Task};
+use crate::store::Store;
+use crate::task::Task;
 
 use super::app::{App, Focus};
 use super::chat::{ExoState, Role};

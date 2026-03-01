@@ -1,6 +1,7 @@
 use ratatui::widgets::ListState;
 
-use crate::store::{Store, Task};
+use crate::store::Store;
+use crate::task::Task;
 
 pub enum Focus {
     TaskList,

@@ -4,21 +4,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, Row};
 
-#[allow(dead_code)]
-pub struct Task {
-    pub id: String,
-    pub name: String,
-    pub skill_name: String,
-    pub params_json: String,
-    pub status: String,
-    pub tmux_pane: Option<String>,
-    pub tmux_window: Option<String>,
-    pub work_dir: Option<String>,
-    pub started_at: DateTime<Utc>,
-    pub completed_at: Option<DateTime<Utc>>,
-    pub exit_code: Option<i32>,
-    pub output: Option<String>,
-}
+use crate::task::{Task, TaskMessage};
 
 fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
     let started_at: String = row.get(8)?;
@@ -49,20 +35,19 @@ const TASK_COLUMNS: &str =
     "id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir,
      started_at, completed_at, exit_code, output";
 
-#[allow(dead_code)]
-pub struct TaskMessage {
-    pub id: String,
-    pub task_id: String,
-    pub role: String,
-    pub content: String,
-    pub created_at: DateTime<Utc>,
-}
-
 pub struct Store {
     conn: Connection,
 }
 
 impl Store {
+    #[allow(dead_code)]
+    pub fn open_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory().context("failed to open in-memory database")?;
+        let store = Self { conn };
+        store.init_schema()?;
+        Ok(store)
+    }
+
     pub fn open(db_path: &Path) -> Result<Self> {
         let conn = Connection::open(db_path)
             .with_context(|| format!("failed to open database at {}", db_path.display()))?;
@@ -243,10 +228,7 @@ mod tests {
     use super::*;
 
     fn test_store() -> Store {
-        let conn = Connection::open_in_memory().unwrap();
-        let store = Store { conn };
-        store.init_schema().unwrap();
-        store
+        Store::open_in_memory().unwrap()
     }
 
     fn insert_running_task(store: &Store, id: &str, name: &str) {
