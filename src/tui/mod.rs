@@ -152,11 +152,47 @@ fn run_loop(
                                 app.focus = Focus::AgentInput;
                             }
                         }
+                        KeyCode::Char('n') => {
+                            app.input.take();
+                            app.focus = Focus::SpawnInput;
+                        }
                         KeyCode::Tab | KeyCode::Char('i') => {
                             app.focus = Focus::ChatInput;
                         }
                         _ => {}
                     },
+                    Focus::SpawnInput => {
+                        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                        match key.code {
+                            KeyCode::Esc => {
+                                app.input.take();
+                                app.focus = Focus::TaskList;
+                            }
+                            KeyCode::Enter => {
+                                if !app.input.is_empty() {
+                                    let name = app.input.take();
+                                    let _ = service.spawn(&name, "noop", vec![]);
+                                    if let Ok(tasks) = service.list_active() {
+                                        app.refresh_tasks(tasks);
+                                    }
+                                }
+                                app.focus = Focus::TaskList;
+                            }
+                            KeyCode::Char('u') if ctrl => app.input.kill_before(),
+                            KeyCode::Char('k') if ctrl => app.input.kill_line(),
+                            KeyCode::Char('w') if ctrl => app.input.kill_word(),
+                            KeyCode::Char('a') if ctrl => app.input.home(),
+                            KeyCode::Char('e') if ctrl => app.input.end(),
+                            KeyCode::Char(c) => app.input.insert(c),
+                            KeyCode::Backspace => app.input.backspace(),
+                            KeyCode::Delete => app.input.delete(),
+                            KeyCode::Left => app.input.left(),
+                            KeyCode::Right => app.input.right(),
+                            KeyCode::Home => app.input.home(),
+                            KeyCode::End => app.input.end(),
+                            _ => {}
+                        }
+                    }
                     Focus::ChatInput => {
                         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                         match key.code {

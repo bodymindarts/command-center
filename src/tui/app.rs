@@ -6,6 +6,7 @@ pub enum Focus {
     TaskList,
     ChatInput,
     AgentInput,
+    SpawnInput,
     PermissionPrompt,
 }
 

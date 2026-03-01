@@ -30,7 +30,10 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState) {
         render_chat(frame, app, exo, main_area[1]);
     }
 
-    let focused_input = matches!(app.focus, Focus::ChatInput | Focus::AgentInput);
+    let focused_input = matches!(
+        app.focus,
+        Focus::ChatInput | Focus::AgentInput | Focus::SpawnInput
+    );
     render_input(frame, app, outer[1], focused_input);
     render_prompt_bar(frame, app, outer[2]);
 }
@@ -259,7 +262,9 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool
     } else {
         Color::DarkGray
     };
-    let prefix = if let Some(name) = app.agent_target_name() {
+    let prefix = if matches!(app.focus, Focus::SpawnInput) {
+        "[spawn:noop] > ".to_string()
+    } else if let Some(name) = app.agent_target_name() {
         format!("[agent:{name}] > ")
     } else {
         "[ExO] > ".to_string()
@@ -305,7 +310,7 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
             Span::styled("n", Style::default().fg(Color::Red)),
             Span::raw(" deny"),
         ],
-        Focus::AgentInput => vec![
+        Focus::AgentInput | Focus::SpawnInput => vec![
             Span::styled(" Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" send  "),
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
@@ -318,6 +323,8 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
             Span::raw(" goto  "),
             Span::styled("d", Style::default().fg(Color::Yellow)),
             Span::raw(" detail  "),
+            Span::styled("n", Style::default().fg(Color::Yellow)),
+            Span::raw(" new  "),
             Span::styled("x", Style::default().fg(Color::Yellow)),
             Span::raw(" close  "),
             Span::styled("m", Style::default().fg(Color::Yellow)),
