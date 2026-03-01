@@ -243,7 +243,6 @@ fn run_loop<R: Runtime>(
                                     _stdin_handle = None;
                                 }
                                 app.show_detail = false;
-                                app.focus = Focus::TaskList;
                             }
                             KeyCode::Tab => {
                                 app.focus = Focus::TaskList;
