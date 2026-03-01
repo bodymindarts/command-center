@@ -160,6 +160,26 @@ pub fn spawn_claude(
                         }
                     }
                 }
+                "content_block_start" => {
+                    if let Some(cb) = parsed.get("content_block")
+                        && cb.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+                    {
+                        let name = cb
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("tool")
+                            .to_string();
+                        let _ = tx.send(ExoEvent::ToolStart(name));
+                    }
+                }
+                "content_block_delta" => {
+                    if let Some(delta) = parsed.get("delta")
+                        && delta.get("type").and_then(|t| t.as_str()) == Some("text_delta")
+                        && let Some(text) = delta.get("text").and_then(|t| t.as_str())
+                    {
+                        let _ = tx.send(ExoEvent::TextDelta(text.to_string()));
+                    }
+                }
                 "result" => {
                     if let Some(sid) = parsed.get("session_id").and_then(|s| s.as_str()) {
                         let _ = tx.send(ExoEvent::SessionId(sid.to_string()));
