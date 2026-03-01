@@ -149,7 +149,9 @@ impl Runtime for TmuxRuntime {
         let task_md = work_dir.join("TASK.md");
         std::fs::write(&task_md, rendered_prompt).context("failed to write TASK.md")?;
 
-        self.launch_agent_window(task_name, work_dir, &claude_bin)
+        let claude_cmd =
+            format!("{claude_bin} \"Read TASK.md and complete the task described in it.\"");
+        self.launch_agent_window(task_name, work_dir, &claude_cmd)
     }
 
     fn resume_agent(&self, task_name: &str, work_dir: &Path) -> Result<SpawnResult> {
