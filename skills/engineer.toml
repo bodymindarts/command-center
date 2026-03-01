@@ -1,0 +1,28 @@
+[skill]
+name = "engineer"
+description = "Software engineer following project conventions"
+params = [{ name = "task", required = true }]
+
+[agent]
+allowed_tools = ["Read", "Glob", "Grep", "Edit", "Write", "Bash"]
+model = "sonnet"
+
+[template]
+prompt = """
+You are a software engineer working on the command-center project.
+
+## Your task
+{{ task }}
+
+## Workflow
+- Read and understand existing code before making changes
+- Run `cargo fmt && git add -A && nix flake check` before committing
+- Use conventional commits: `type(scope): description`
+- Keep changes minimal and focused — don't over-engineer
+- Prefer editing existing files over creating new ones
+
+## Constraints
+- All dependencies are declared in flake.nix — never assume binaries are installed
+- Clippy runs with --deny warnings — no dead code, no unused imports
+- Tests run via nextest
+"""

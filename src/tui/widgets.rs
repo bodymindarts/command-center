@@ -243,7 +243,7 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool
         Color::DarkGray
     };
     let prefix = if matches!(app.focus, Focus::SpawnInput) {
-        "[spawn:noop] > ".to_string()
+        "[spawn] > ".to_string()
     } else if app.show_detail {
         let name = app.selected_task().map(|t| t.name.as_str()).unwrap_or("?");
         format!("[agent:{name}] > ")

@@ -232,7 +232,11 @@ fn run_loop<R: Runtime>(
                             KeyCode::Enter => {
                                 if !app.input.is_empty() {
                                     let name = app.input.take();
-                                    let _ = service.spawn(&name, "noop", vec![]);
+                                    let _ = service.spawn(
+                                        &name,
+                                        "engineer",
+                                        vec![("task".to_string(), name.clone())],
+                                    );
                                     if let Ok(tasks) = service.list_all() {
                                         app.refresh_tasks(tasks);
                                     }

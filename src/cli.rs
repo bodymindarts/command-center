@@ -14,8 +14,8 @@ pub enum Command {
         /// Human-friendly task name
         name: String,
 
-        /// Skill to use (default: noop)
-        #[arg(short, long, default_value = "noop")]
+        /// Skill to use (default: engineer)
+        #[arg(short, long, default_value = "engineer")]
         skill: String,
 
         /// Parameters as key=value pairs
