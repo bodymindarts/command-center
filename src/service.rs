@@ -160,9 +160,12 @@ impl<'a, R: Runtime> TaskService<'a, R> {
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("task {} has no work_dir", task.id.short()))?;
 
-        let result = self
-            .runtime
-            .resume_agent(&task.name, std::path::Path::new(work_dir))?;
+        let work_dir = std::path::Path::new(work_dir);
+        if !work_dir.is_dir() {
+            bail!("worktree directory {} no longer exists", work_dir.display(),);
+        }
+
+        let result = self.runtime.resume_agent(&task.name, work_dir)?;
 
         self.store
             .reopen_task(task.id.as_str(), &result.pane_id, &result.window_id)?;
@@ -297,12 +300,29 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq)]
     enum Call {
-        CreateWorktree { name: String },
-        SpawnAgent { task_name: String },
-        SendKeys { pane_id: String, message: String },
-        CaptureOutput { pane_id: String },
-        KillWindow { window_id: String },
-        SelectWindow { window_id: String },
+        CreateWorktree {
+            name: String,
+        },
+        SpawnAgent {
+            task_name: String,
+        },
+        ResumeAgent {
+            task_name: String,
+            work_dir: PathBuf,
+        },
+        SendKeys {
+            pane_id: String,
+            message: String,
+        },
+        CaptureOutput {
+            pane_id: String,
+        },
+        KillWindow {
+            window_id: String,
+        },
+        SelectWindow {
+            window_id: String,
+        },
     }
 
     struct FakeRuntime {
@@ -352,9 +372,10 @@ mod tests {
             })
         }
 
-        fn resume_agent(&self, task_name: &str, _work_dir: &Path) -> Result<SpawnResult> {
-            self.calls.borrow_mut().push(Call::SpawnAgent {
+        fn resume_agent(&self, task_name: &str, work_dir: &Path) -> Result<SpawnResult> {
+            self.calls.borrow_mut().push(Call::ResumeAgent {
                 task_name: task_name.to_string(),
+                work_dir: work_dir.to_path_buf(),
             });
             Ok(SpawnResult {
                 window_id: self.spawn_window_id.clone(),
@@ -702,5 +723,86 @@ prompt = "deploy to {{ env }}"
         assert_eq!(skills[0].description, "deploy to prod");
         assert_eq!(skills[0].params, vec!["env"]);
         assert_eq!(skills[1].name, "noop");
+    }
+
+    #[test]
+    fn reopen_passes_work_dir_to_resume_agent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        let service = TaskService::new(&store, &runtime, &paths);
+
+        let spawned = spawn_test_task(&service);
+        service.complete(spawned.task_id.as_str(), 0, None).unwrap();
+
+        let window_id = service.reopen(spawned.task_id.as_str()).unwrap();
+        assert_eq!(window_id, "@fake-win");
+
+        // Verify resume_agent was called with the task's work_dir
+        let calls = runtime.calls.borrow();
+        let resume_call = calls
+            .iter()
+            .find(|c| matches!(c, Call::ResumeAgent { .. }))
+            .expect("expected ResumeAgent call");
+        if let Call::ResumeAgent {
+            task_name,
+            work_dir,
+        } = resume_call
+        {
+            assert_eq!(task_name, "test-task");
+            assert!(
+                work_dir.starts_with(tmp.path()),
+                "work_dir should be inside the temp dir"
+            );
+        }
+
+        // Verify task is back to running with new pane/window
+        let task = store
+            .get_task_by_prefix(spawned.task_id.as_str())
+            .unwrap()
+            .unwrap();
+        assert_eq!(task.status, TaskStatus::Running);
+        assert_eq!(task.tmux_pane.as_deref(), Some("%fake-pane"));
+        assert_eq!(task.tmux_window.as_deref(), Some("@fake-win"));
+    }
+
+    #[test]
+    fn reopen_errors_if_work_dir_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        let service = TaskService::new(&store, &runtime, &paths);
+
+        let spawned = spawn_test_task(&service);
+        service.complete(spawned.task_id.as_str(), 0, None).unwrap();
+
+        // Delete the worktree directory
+        let task = store
+            .get_task_by_prefix(spawned.task_id.as_str())
+            .unwrap()
+            .unwrap();
+        let work_dir = task.work_dir.as_deref().unwrap();
+        std::fs::remove_dir_all(work_dir).unwrap();
+
+        let err = service.reopen(spawned.task_id.as_str());
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("no longer exists"));
+    }
+
+    #[test]
+    fn reopen_rejects_already_running_task() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        let service = TaskService::new(&store, &runtime, &paths);
+
+        let spawned = spawn_test_task(&service);
+
+        let err = service.reopen(spawned.task_id.as_str());
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("already running"));
     }
 }
