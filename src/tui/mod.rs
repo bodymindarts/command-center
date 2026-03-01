@@ -4,6 +4,7 @@ mod claude;
 mod widgets;
 
 use std::io;
+use std::os::unix::net::UnixStream;
 use std::process::ChildStdin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -15,8 +16,9 @@ use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
+use crate::permission::PermissionRequest;
 use crate::service::TaskService;
-use app::{App, Focus, PendingPermission};
+use app::{ActivePermission, App, Focus};
 use chat::ExoState;
 use claude::ExoEvent;
 
@@ -36,6 +38,29 @@ pub fn run(service: &TaskService, resume_session: Option<&str>) -> Result<()> {
     let (tx, rx) = mpsc::channel::<ExoEvent>();
     let cancel = Arc::new(AtomicBool::new(false));
 
+    // Permission socket listener
+    let (perm_tx, perm_rx) = mpsc::channel::<(UnixStream, PermissionRequest)>();
+    let perm_cancel = Arc::clone(&cancel);
+    let listener = crate::permission::start_socket_listener()?;
+    std::thread::spawn(move || {
+        while !perm_cancel.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut buf = String::new();
+                    if std::io::Read::read_to_string(&mut stream, &mut buf).is_ok()
+                        && let Some(req) = crate::permission::parse_request_json(&buf)
+                    {
+                        let _ = perm_tx.send((stream, req));
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
     let result = run_loop(
         &mut terminal,
         &mut app,
@@ -44,9 +69,19 @@ pub fn run(service: &TaskService, resume_session: Option<&str>) -> Result<()> {
         &rx,
         &tx,
         &cancel,
+        &perm_rx,
     );
 
     cancel.store(true, Ordering::Relaxed);
+
+    // Deny all pending permissions on exit
+    if let Some(perm) = app.current_permission.take() {
+        let _ = write_response_to_stream(perm.stream, false);
+    }
+    for perm in app.permission_queue.drain(..) {
+        let _ = write_response_to_stream(perm.stream, false);
+    }
+    let _ = std::fs::remove_file(crate::permission::socket_path());
 
     terminal::disable_raw_mode()?;
     crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -55,6 +90,14 @@ pub fn run(service: &TaskService, resume_session: Option<&str>) -> Result<()> {
     result
 }
 
+fn write_response_to_stream(mut stream: UnixStream, allow: bool) -> std::io::Result<()> {
+    use std::io::Write;
+    let response = crate::permission::make_response_json(allow, None);
+    stream.write_all(response.as_bytes())?;
+    stream.flush()
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
@@ -63,6 +106,7 @@ fn run_loop(
     rx: &mpsc::Receiver<ExoEvent>,
     tx: &mpsc::Sender<ExoEvent>,
     cancel: &Arc<AtomicBool>,
+    perm_rx: &mpsc::Receiver<(UnixStream, PermissionRequest)>,
 ) -> Result<()> {
     let mut last_tick = Instant::now();
     let mut _stdin_handle: Option<Arc<Mutex<ChildStdin>>> = None;
@@ -265,26 +309,16 @@ fn run_loop(
                     }
                     Focus::PermissionPrompt => match key.code {
                         KeyCode::Char('y') => {
-                            if let Some(req) = app.pending_permission.take() {
-                                let dir = crate::permission::permissions_dir();
-                                crate::permission::write_permission_response(
-                                    &dir,
-                                    &req.req_id,
-                                    true,
-                                );
+                            if let Some(perm) = app.current_permission.take() {
+                                let _ = write_response_to_stream(perm.stream, true);
                             }
-                            app.focus = Focus::ChatInput;
+                            advance_permission_queue(app);
                         }
                         KeyCode::Char('n') => {
-                            if let Some(req) = app.pending_permission.take() {
-                                let dir = crate::permission::permissions_dir();
-                                crate::permission::write_permission_response(
-                                    &dir,
-                                    &req.req_id,
-                                    false,
-                                );
+                            if let Some(perm) = app.current_permission.take() {
+                                let _ = write_response_to_stream(perm.stream, false);
                             }
-                            app.focus = Focus::ChatInput;
+                            advance_permission_queue(app);
                         }
                         _ => {}
                     },
@@ -313,10 +347,41 @@ fn run_loop(
                 app.selected_messages.clear();
                 app.detail_live_output = None;
             }
-            if app.pending_permission.is_none() {
-                poll_permission_requests(app);
-            }
             last_tick = Instant::now();
+        }
+
+        // Drain permission requests from socket
+        while let Ok((stream, req)) = perm_rx.try_recv() {
+            let req_cwd = std::fs::canonicalize(&req.cwd)
+                .unwrap_or_else(|_| std::path::PathBuf::from(&req.cwd));
+            let task_name = app
+                .tasks
+                .iter()
+                .find(|t| {
+                    t.work_dir.as_deref().is_some_and(|wd| {
+                        let canon = std::fs::canonicalize(wd)
+                            .unwrap_or_else(|_| std::path::PathBuf::from(wd));
+                        req_cwd.starts_with(&canon)
+                    })
+                })
+                .map(|t| t.name.clone());
+
+            if let Some(task_name) = task_name {
+                let perm = ActivePermission {
+                    stream,
+                    task_name,
+                    tool_name: req.tool_name,
+                    tool_input_summary: req.tool_input_summary,
+                };
+                if app.current_permission.is_none() {
+                    app.current_permission = Some(perm);
+                    app.focus = Focus::PermissionPrompt;
+                } else {
+                    app.permission_queue.push_back(perm);
+                }
+            } else {
+                let _ = write_response_to_stream(stream, false);
+            }
         }
 
         if app.should_quit {
@@ -325,36 +390,11 @@ fn run_loop(
     }
 }
 
-fn poll_permission_requests(app: &mut App) {
-    let dir = crate::permission::permissions_dir();
-    let Some(req) = crate::permission::scan_permission_requests(&dir) else {
-        return;
-    };
-
-    let req_cwd =
-        std::fs::canonicalize(&req.cwd).unwrap_or_else(|_| std::path::PathBuf::from(&req.cwd));
-    let task_name = app
-        .tasks
-        .iter()
-        .find(|t| {
-            t.work_dir.as_deref().is_some_and(|wd| {
-                let canon =
-                    std::fs::canonicalize(wd).unwrap_or_else(|_| std::path::PathBuf::from(wd));
-                req_cwd.starts_with(&canon)
-            })
-        })
-        .map(|t| t.name.clone());
-
-    let Some(task_name) = task_name else {
-        // Stale request from a dead/closed task — auto-deny and clean up
-        crate::permission::write_permission_response(&dir, &req.req_id, false);
-        return;
-    };
-    app.pending_permission = Some(PendingPermission {
-        req_id: req.req_id,
-        task_name,
-        tool_name: req.tool_name,
-        tool_input_summary: req.tool_input_summary,
-    });
-    app.focus = Focus::PermissionPrompt;
+fn advance_permission_queue(app: &mut App) {
+    if let Some(next) = app.permission_queue.pop_front() {
+        app.current_permission = Some(next);
+        app.focus = Focus::PermissionPrompt;
+    } else {
+        app.focus = Focus::ChatInput;
+    }
 }

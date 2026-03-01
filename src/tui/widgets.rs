@@ -205,7 +205,7 @@ fn render_chat(frame: &mut ratatui::Frame, app: &App, exo: &ExoState, area: Rect
     }
 
     // Show pending permission request from spawned tasks
-    if let Some(req) = &app.pending_permission {
+    if let Some(req) = &app.current_permission {
         lines.push(Line::from(Span::styled(
             format!(
                 "{} wants to use {}: {}",

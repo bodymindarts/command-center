@@ -1,3 +1,6 @@
+use std::collections::VecDeque;
+use std::os::unix::net::UnixStream;
+
 use ratatui::widgets::ListState;
 
 use crate::task::{Task, TaskMessage};
@@ -8,6 +11,13 @@ pub enum Focus {
     AgentInput,
     SpawnInput,
     PermissionPrompt,
+}
+
+pub struct ActivePermission {
+    pub stream: UnixStream,
+    pub task_name: String,
+    pub tool_name: String,
+    pub tool_input_summary: String,
 }
 
 pub struct InputState {
@@ -103,13 +113,6 @@ impl InputState {
     }
 }
 
-pub struct PendingPermission {
-    pub req_id: String,
-    pub task_name: String,
-    pub tool_name: String,
-    pub tool_input_summary: String,
-}
-
 pub struct App {
     pub tasks: Vec<Task>,
     pub list_state: ListState,
@@ -117,7 +120,8 @@ pub struct App {
     pub focus: Focus,
     pub input: InputState,
     pub show_detail: bool,
-    pub pending_permission: Option<PendingPermission>,
+    pub current_permission: Option<ActivePermission>,
+    pub permission_queue: VecDeque<ActivePermission>,
     pub agent_target: Option<String>,
     pub selected_messages: Vec<TaskMessage>,
     pub detail_scroll: u16,
@@ -137,7 +141,8 @@ impl App {
             focus: Focus::ChatInput,
             input: InputState::new(),
             show_detail: false,
-            pending_permission: None,
+            current_permission: None,
+            permission_queue: VecDeque::new(),
             agent_target: None,
             selected_messages: Vec::new(),
             detail_scroll: 0,

@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -186,6 +186,17 @@ pub fn prompt_request(tool: &str, input_summary: &str, response_file: &str) -> R
     Ok(())
 }
 
+pub fn start_socket_listener() -> Result<UnixListener> {
+    let sock = socket_path();
+    let _ = std::fs::remove_file(&sock);
+    let listener =
+        UnixListener::bind(&sock).with_context(|| format!("failed to bind {}", sock.display()))?;
+    listener
+        .set_nonblocking(true)
+        .context("failed to set socket non-blocking")?;
+    Ok(listener)
+}
+
 fn parse_req_file(path: &Path) -> Option<PermissionRequest> {
     let req_id = path.file_stem().and_then(|s| s.to_str())?.to_string();
     let content = std::fs::read_to_string(path).ok()?;
@@ -234,6 +245,7 @@ pub fn list_permission_requests(dir: &Path) -> Vec<PermissionRequest> {
     requests
 }
 
+#[allow(dead_code)] // Removed from TUI; will be deleted with file-based IPC
 pub fn scan_permission_requests(dir: &Path) -> Option<PermissionRequest> {
     list_permission_requests(dir).into_iter().next()
 }
@@ -485,5 +497,47 @@ mod tests {
     #[test]
     fn parse_request_json_invalid() {
         assert!(parse_request_json("not json {{{").is_none());
+    }
+
+    #[test]
+    fn socket_listener_roundtrip() {
+        use std::os::unix::net::UnixStream;
+
+        let dir = TempDir::new().unwrap();
+        let sock_path = dir.path().join("test.sock");
+
+        let listener = UnixListener::bind(&sock_path).unwrap();
+        listener.set_nonblocking(false).unwrap();
+
+        let request_json = r#"{"tool":{"name":"Bash","input":{"command":"echo hi"}},"cwd":"/tmp"}"#;
+        let req_json = request_json.to_string();
+
+        let handle = std::thread::spawn(move || {
+            let mut stream = UnixStream::connect(&sock_path).unwrap();
+            std::io::Write::write_all(&mut stream, req_json.as_bytes()).unwrap();
+            stream.shutdown(std::net::Shutdown::Write).unwrap();
+            let mut resp = String::new();
+            std::io::Read::read_to_string(&mut stream, &mut resp).unwrap();
+            resp
+        });
+
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = String::new();
+        std::io::Read::read_to_string(&mut stream, &mut buf).unwrap();
+        let req = parse_request_json(&buf).unwrap();
+        assert_eq!(req.tool_name, "Bash");
+
+        let response = make_response_json(true, None);
+        std::io::Write::write_all(&mut stream, response.as_bytes()).unwrap();
+        drop(stream);
+
+        let client_resp = handle.join().unwrap();
+        let parsed: Value = serde_json::from_str(&client_resp).unwrap();
+        assert_eq!(
+            parsed["hookSpecificOutput"]["decision"]["behavior"]
+                .as_str()
+                .unwrap(),
+            "allow"
+        );
     }
 }
