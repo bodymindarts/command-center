@@ -151,6 +151,10 @@ fn run_loop<R: Runtime>(
                 match &app.focus {
                     Focus::TaskList => match key.code {
                         KeyCode::Char('q') => app.should_quit = true,
+                        KeyCode::Esc => {
+                            app.show_detail = false;
+                            app.focus = Focus::ChatInput;
+                        }
                         KeyCode::Char('j') | KeyCode::Down => {
                             app.next();
                             app.detail_scroll = 0;
