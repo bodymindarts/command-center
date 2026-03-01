@@ -19,6 +19,8 @@ use crate::permission::PermissionRequest;
 use crate::runtime::Runtime;
 use crate::service::TaskService;
 use app::{ActivePermission, App, Focus};
+
+const EXO_PERM_KEY: &str = "exo";
 use chat::ExoState;
 use claude::ExoEvent;
 
@@ -75,11 +77,10 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
     cancel.store(true, Ordering::Relaxed);
 
     // Deny all pending permissions on exit
-    if let Some(perm) = app.current_permission.take() {
-        let _ = write_response_to_stream(perm.stream, false);
-    }
-    for perm in app.permission_queue.drain(..) {
-        let _ = write_response_to_stream(perm.stream, false);
+    for (_, mut queue) in app.pending_permissions.drain() {
+        for perm in queue.drain(..) {
+            let _ = write_response_to_stream(perm.stream, false);
+        }
     }
     let _ = std::fs::remove_file(crate::permission::socket_path());
 
@@ -160,202 +161,250 @@ fn run_loop<R: Runtime>(
                 terminal.hide_cursor()?;
                 terminal.clear()?;
             } else {
-                match &app.focus {
-                    Focus::TaskList => match key.code {
-                        KeyCode::Char('q') => app.should_quit = true,
-                        KeyCode::Esc => {
-                            app.show_detail = false;
-                            app.focus = Focus::ChatInput;
-                        }
-                        KeyCode::Char('j') | KeyCode::Down => {
-                            app.next();
-                            app.detail_scroll = 0;
-                        }
-                        KeyCode::Char('k') | KeyCode::Up => {
-                            app.previous();
-                            app.detail_scroll = 0;
-                        }
-                        KeyCode::PageDown => {
-                            app.detail_scroll = app.detail_scroll.saturating_add(10);
-                        }
-                        KeyCode::PageUp => {
-                            app.detail_scroll = app.detail_scroll.saturating_sub(10);
-                        }
-                        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            app.detail_scroll = app.detail_scroll.saturating_add(10);
-                        }
-                        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            app.detail_scroll = app.detail_scroll.saturating_sub(10);
-                        }
-                        KeyCode::Enter => {
-                            app.show_detail = true;
-                            app.focus = Focus::ChatInput;
-                        }
-                        KeyCode::Char('g') => {
-                            if let Some(task) = app.selected_task() {
-                                if task.status.is_running() {
-                                    if let Some(window_id) = &task.tmux_window {
-                                        service.goto_window(window_id);
-                                    }
-                                } else {
-                                    let id = task.id.as_str().to_string();
-                                    if let Ok(window_id) = service.reopen(&id) {
-                                        if let Ok(tasks) = service.list_all() {
-                                            app.refresh_tasks(tasks);
-                                        }
-                                        service.goto_window(&window_id);
-                                    }
-                                }
+                // Permission review guard: y/n/Esc handled before normal focus
+                let mut handled = false;
+                if let Some(ref name) = app.viewing_permission_for {
+                    let name = name.clone();
+                    match key.code {
+                        KeyCode::Char('y') => {
+                            if let Some(perm) = app.take_permission(&name) {
+                                let _ = write_response_to_stream(perm.stream, true);
                             }
-                        }
-                        KeyCode::Char('x') => {
-                            if let Some(task) = app.selected_task()
-                                && task.status.is_running()
-                            {
-                                let id = task.id.as_str().to_string();
-                                let _ = service.close(&id);
-                                if let Ok(tasks) = service.list_all() {
-                                    app.refresh_tasks(tasks);
-                                }
+                            if app.peek_permission(&name).is_none() {
+                                app.viewing_permission_for = None;
                             }
+                            handled = true;
                         }
                         KeyCode::Char('n') => {
-                            app.input.take();
-                            app.focus = Focus::SpawnInput;
-                        }
-                        KeyCode::Backspace => {
-                            if let Some(task) = app.selected_task() {
-                                let id = task.id.clone();
-                                app.focus = Focus::ConfirmDelete(id);
+                            if let Some(perm) = app.take_permission(&name) {
+                                let _ = write_response_to_stream(perm.stream, false);
                             }
+                            if app.peek_permission(&name).is_none() {
+                                app.viewing_permission_for = None;
+                            }
+                            handled = true;
                         }
-                        KeyCode::Tab => {
-                            app.focus = Focus::ChatInput;
-                        }
-                        KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            app.focus = Focus::ChatInput;
+                        KeyCode::Esc => {
+                            app.viewing_permission_for = None;
+                            handled = true;
                         }
                         _ => {}
-                    },
-                    Focus::SpawnInput => {
-                        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                        match key.code {
+                    }
+                }
+
+                if !handled {
+                    match &app.focus {
+                        Focus::TaskList => match key.code {
+                            KeyCode::Char('q') => app.should_quit = true,
                             KeyCode::Esc => {
-                                app.input.take();
-                                app.focus = Focus::TaskList;
+                                app.show_detail = false;
+                                app.focus = Focus::ChatInput;
+                            }
+                            KeyCode::Char('j') | KeyCode::Down => {
+                                app.next();
+                                app.detail_scroll = 0;
+                            }
+                            KeyCode::Char('k') | KeyCode::Up => {
+                                app.previous();
+                                app.detail_scroll = 0;
+                            }
+                            KeyCode::PageDown => {
+                                app.detail_scroll = app.detail_scroll.saturating_add(10);
+                            }
+                            KeyCode::PageUp => {
+                                app.detail_scroll = app.detail_scroll.saturating_sub(10);
+                            }
+                            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                app.detail_scroll = app.detail_scroll.saturating_add(10);
+                            }
+                            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                app.detail_scroll = app.detail_scroll.saturating_sub(10);
                             }
                             KeyCode::Enter => {
-                                if !app.input.is_empty() {
-                                    let name = app.input.take();
-                                    let _ = service.spawn(
-                                        &name,
-                                        "engineer",
-                                        vec![("task".to_string(), name.clone())],
-                                    );
+                                app.show_detail = true;
+                                app.focus = Focus::ChatInput;
+                            }
+                            KeyCode::Char('g') => {
+                                if let Some(task) = app.selected_task() {
+                                    if task.status.is_running() {
+                                        if let Some(window_id) = &task.tmux_window {
+                                            service.goto_window(window_id);
+                                        }
+                                    } else {
+                                        let id = task.id.as_str().to_string();
+                                        if let Ok(window_id) = service.reopen(&id) {
+                                            if let Ok(tasks) = service.list_all() {
+                                                app.refresh_tasks(tasks);
+                                            }
+                                            service.goto_window(&window_id);
+                                        }
+                                    }
+                                }
+                            }
+                            KeyCode::Char('x') => {
+                                if let Some(task) = app.selected_task()
+                                    && task.status.is_running()
+                                {
+                                    let id = task.id.as_str().to_string();
+                                    let _ = service.close(&id);
                                     if let Ok(tasks) = service.list_all() {
                                         app.refresh_tasks(tasks);
                                     }
                                 }
-                                app.focus = Focus::TaskList;
                             }
-                            KeyCode::Char('u') if ctrl => app.input.kill_before(),
-                            KeyCode::Char('k') if ctrl => app.input.kill_line(),
-                            KeyCode::Char('w') if ctrl => app.input.kill_word(),
-                            KeyCode::Char('a') if ctrl => app.input.home(),
-                            KeyCode::Char('e') if ctrl => app.input.end(),
-                            KeyCode::Char(c) => app.input.insert(c),
-                            KeyCode::Backspace => app.input.backspace(),
-                            KeyCode::Delete => app.input.delete(),
-                            KeyCode::Left => app.input.left(),
-                            KeyCode::Right => app.input.right(),
-                            KeyCode::Home => app.input.home(),
-                            KeyCode::End => app.input.end(),
-                            _ => {}
-                        }
-                    }
-                    Focus::ChatInput => {
-                        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                        match key.code {
-                            KeyCode::Esc => {
-                                if exo.streaming {
-                                    exo.finish_streaming();
+                            KeyCode::Char('p') => {
+                                let names = app.tasks_with_permissions();
+                                if !names.is_empty() {
+                                    // Cycle: find next after current viewing_permission_for
+                                    let idx = app
+                                        .viewing_permission_for
+                                        .as_ref()
+                                        .and_then(|cur| names.iter().position(|n| n == cur))
+                                        .map(|i| (i + 1) % names.len())
+                                        .unwrap_or(0);
+                                    let name = names[idx].clone();
+
+                                    if name == EXO_PERM_KEY {
+                                        // Switch to ExO view
+                                        app.show_detail = false;
+                                        app.focus = Focus::ChatInput;
+                                    } else {
+                                        // Navigate to the task
+                                        if let Some(pos) =
+                                            app.tasks.iter().position(|t| t.name == name)
+                                        {
+                                            app.list_state.select(Some(pos));
+                                            app.show_detail = true;
+                                            app.focus = Focus::ChatInput;
+                                            app.detail_scroll = 0;
+                                        }
+                                    }
+                                    app.viewing_permission_for = Some(name);
                                 }
-                                app.show_detail = false;
+                            }
+                            KeyCode::Char('n') => {
+                                app.input.take();
+                                app.focus = Focus::SpawnInput;
+                            }
+                            KeyCode::Backspace => {
+                                if let Some(task) = app.selected_task() {
+                                    let id = task.id.clone();
+                                    app.focus = Focus::ConfirmDelete(id);
+                                }
                             }
                             KeyCode::Tab => {
-                                app.focus = Focus::TaskList;
+                                app.focus = Focus::ChatInput;
                             }
-                            KeyCode::Char('l') if ctrl => {
-                                app.focus = Focus::TaskList;
+                            KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                app.focus = Focus::ChatInput;
                             }
-                            KeyCode::Enter => {
-                                if !app.input.is_empty() {
-                                    if app.show_detail {
-                                        // Send to task agent
-                                        let msg = app.input.take();
-                                        if let Some(task) = app.selected_task()
-                                            && let Some(pane) = task.tmux_pane.as_deref()
-                                        {
-                                            service.send_by_id(task.id.as_str(), pane, &msg);
-                                        }
-                                    } else if !exo.streaming {
-                                        // Send to ExO
-                                        let msg = app.input.take();
-                                        claude::spawn_claude(
-                                            &msg,
-                                            exo.session_id.as_deref(),
-                                            Arc::clone(cancel),
-                                            tx.clone(),
+                            _ => {}
+                        },
+                        Focus::SpawnInput => {
+                            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                            match key.code {
+                                KeyCode::Esc => {
+                                    app.input.take();
+                                    app.focus = Focus::TaskList;
+                                }
+                                KeyCode::Enter => {
+                                    if !app.input.is_empty() {
+                                        let name = app.input.take();
+                                        let _ = service.spawn(
+                                            &name,
+                                            "engineer",
+                                            vec![("task".to_string(), name.clone())],
                                         );
-                                        exo.add_user_message(msg);
+                                        if let Ok(tasks) = service.list_all() {
+                                            app.refresh_tasks(tasks);
+                                        }
+                                    }
+                                    app.focus = Focus::TaskList;
+                                }
+                                KeyCode::Char('u') if ctrl => app.input.kill_before(),
+                                KeyCode::Char('k') if ctrl => app.input.kill_line(),
+                                KeyCode::Char('w') if ctrl => app.input.kill_word(),
+                                KeyCode::Char('a') if ctrl => app.input.home(),
+                                KeyCode::Char('e') if ctrl => app.input.end(),
+                                KeyCode::Char(c) => app.input.insert(c),
+                                KeyCode::Backspace => app.input.backspace(),
+                                KeyCode::Delete => app.input.delete(),
+                                KeyCode::Left => app.input.left(),
+                                KeyCode::Right => app.input.right(),
+                                KeyCode::Home => app.input.home(),
+                                KeyCode::End => app.input.end(),
+                                _ => {}
+                            }
+                        }
+                        Focus::ChatInput => {
+                            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                            match key.code {
+                                KeyCode::Esc => {
+                                    if exo.streaming {
+                                        exo.finish_streaming();
+                                    }
+                                    app.show_detail = false;
+                                }
+                                KeyCode::Tab => {
+                                    app.focus = Focus::TaskList;
+                                }
+                                KeyCode::Char('l') if ctrl => {
+                                    app.focus = Focus::TaskList;
+                                }
+                                KeyCode::Enter => {
+                                    if !app.input.is_empty() {
+                                        if app.show_detail {
+                                            // Send to task agent
+                                            let msg = app.input.take();
+                                            if let Some(task) = app.selected_task()
+                                                && let Some(pane) = task.tmux_pane.as_deref()
+                                            {
+                                                service.send_by_id(task.id.as_str(), pane, &msg);
+                                            }
+                                        } else if !exo.streaming {
+                                            // Send to ExO
+                                            let msg = app.input.take();
+                                            claude::spawn_claude(
+                                                &msg,
+                                                exo.session_id.as_deref(),
+                                                Arc::clone(cancel),
+                                                tx.clone(),
+                                            );
+                                            exo.add_user_message(msg);
+                                        }
                                     }
                                 }
+                                KeyCode::Char('u') if ctrl => app.input.kill_before(),
+                                KeyCode::Char('k') if ctrl => app.input.kill_line(),
+                                KeyCode::Char('w') if ctrl => app.input.kill_word(),
+                                KeyCode::Char('a') if ctrl => app.input.home(),
+                                KeyCode::Char('e') if ctrl => app.input.end(),
+                                KeyCode::Char(c) => app.input.insert(c),
+                                KeyCode::Backspace => app.input.backspace(),
+                                KeyCode::Delete => app.input.delete(),
+                                KeyCode::Left => app.input.left(),
+                                KeyCode::Right => app.input.right(),
+                                KeyCode::Home => app.input.home(),
+                                KeyCode::End => app.input.end(),
+                                _ => {}
                             }
-                            KeyCode::Char('u') if ctrl => app.input.kill_before(),
-                            KeyCode::Char('k') if ctrl => app.input.kill_line(),
-                            KeyCode::Char('w') if ctrl => app.input.kill_word(),
-                            KeyCode::Char('a') if ctrl => app.input.home(),
-                            KeyCode::Char('e') if ctrl => app.input.end(),
-                            KeyCode::Char(c) => app.input.insert(c),
-                            KeyCode::Backspace => app.input.backspace(),
-                            KeyCode::Delete => app.input.delete(),
-                            KeyCode::Left => app.input.left(),
-                            KeyCode::Right => app.input.right(),
-                            KeyCode::Home => app.input.home(),
-                            KeyCode::End => app.input.end(),
+                        }
+                        Focus::ConfirmDelete(task_id) => match key.code {
+                            KeyCode::Char('y') => {
+                                let id = task_id.clone();
+                                let _ = service.delete(id.as_str());
+                                if let Ok(tasks) = service.list_all() {
+                                    app.refresh_tasks(tasks);
+                                }
+                                app.focus = Focus::TaskList;
+                            }
+                            KeyCode::Char('n') | KeyCode::Esc => {
+                                app.focus = Focus::TaskList;
+                            }
                             _ => {}
-                        }
+                        },
                     }
-                    Focus::ConfirmDelete(task_id) => match key.code {
-                        KeyCode::Char('y') => {
-                            let id = task_id.clone();
-                            let _ = service.delete(id.as_str());
-                            if let Ok(tasks) = service.list_all() {
-                                app.refresh_tasks(tasks);
-                            }
-                            app.focus = Focus::TaskList;
-                        }
-                        KeyCode::Char('n') | KeyCode::Esc => {
-                            app.focus = Focus::TaskList;
-                        }
-                        _ => {}
-                    },
-                    Focus::PermissionPrompt => match key.code {
-                        KeyCode::Char('y') => {
-                            if let Some(perm) = app.current_permission.take() {
-                                let _ = write_response_to_stream(perm.stream, true);
-                            }
-                            advance_permission_queue(app);
-                        }
-                        KeyCode::Char('n') => {
-                            if let Some(perm) = app.current_permission.take() {
-                                let _ = write_response_to_stream(perm.stream, false);
-                            }
-                            advance_permission_queue(app);
-                        }
-                        _ => {}
-                    },
-                }
+                } // !handled
             }
         }
 
@@ -383,7 +432,7 @@ fn run_loop<R: Runtime>(
             last_tick = Instant::now();
         }
 
-        // Drain permission requests from socket
+        // Drain permission requests from socket — non-blocking, no focus change
         while let Ok((stream, req)) = perm_rx.try_recv() {
             let req_cwd = std::fs::canonicalize(&req.cwd)
                 .unwrap_or_else(|_| std::path::PathBuf::from(&req.cwd));
@@ -399,32 +448,22 @@ fn run_loop<R: Runtime>(
                 })
                 .map(|t| t.name.clone());
 
-            let task_name = task_name.unwrap_or_else(|| "exo".to_string());
+            let task_name = task_name.unwrap_or_else(|| EXO_PERM_KEY.to_string());
+            let auto_view = app.viewing_permission_for.is_none();
             let perm = ActivePermission {
                 stream,
-                task_name,
+                task_name: task_name.clone(),
                 tool_name: req.tool_name,
                 tool_input_summary: req.tool_input_summary,
             };
-            if app.current_permission.is_none() {
-                app.current_permission = Some(perm);
-                app.focus = Focus::PermissionPrompt;
-            } else {
-                app.permission_queue.push_back(perm);
+            app.add_permission(perm);
+            if auto_view {
+                app.viewing_permission_for = Some(task_name);
             }
         }
 
         if app.should_quit {
             return Ok(());
         }
-    }
-}
-
-fn advance_permission_queue(app: &mut App) {
-    if let Some(next) = app.permission_queue.pop_front() {
-        app.current_permission = Some(next);
-        app.focus = Focus::PermissionPrompt;
-    } else {
-        app.focus = Focus::ChatInput;
     }
 }

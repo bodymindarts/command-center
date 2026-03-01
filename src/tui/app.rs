@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::os::unix::net::UnixStream;
 
 use ratatui::widgets::ListState;
@@ -10,7 +10,6 @@ pub enum Focus {
     TaskList,
     ChatInput,
     SpawnInput,
-    PermissionPrompt,
     ConfirmDelete(TaskId),
 }
 
@@ -121,8 +120,8 @@ pub struct App {
     pub focus: Focus,
     pub input: InputState,
     pub show_detail: bool,
-    pub current_permission: Option<ActivePermission>,
-    pub permission_queue: VecDeque<ActivePermission>,
+    pub pending_permissions: HashMap<String, VecDeque<ActivePermission>>,
+    pub viewing_permission_for: Option<String>,
     pub selected_messages: Vec<TaskMessage>,
     pub detail_scroll: u16,
     pub detail_live_output: Option<String>,
@@ -141,8 +140,8 @@ impl App {
             focus: Focus::ChatInput,
             input: InputState::new(),
             show_detail: false,
-            current_permission: None,
-            permission_queue: VecDeque::new(),
+            pending_permissions: HashMap::new(),
+            viewing_permission_for: None,
             selected_messages: Vec::new(),
             detail_scroll: 0,
             detail_live_output: None,
@@ -203,5 +202,35 @@ impl App {
         } else if !self.tasks.is_empty() && self.list_state.selected().is_none() {
             self.list_state.select(Some(0));
         }
+    }
+
+    pub fn add_permission(&mut self, perm: ActivePermission) {
+        self.pending_permissions
+            .entry(perm.task_name.clone())
+            .or_default()
+            .push_back(perm);
+    }
+
+    pub fn take_permission(&mut self, name: &str) -> Option<ActivePermission> {
+        let queue = self.pending_permissions.get_mut(name)?;
+        let perm = queue.pop_front();
+        if queue.is_empty() {
+            self.pending_permissions.remove(name);
+        }
+        perm
+    }
+
+    pub fn peek_permission(&self, name: &str) -> Option<&ActivePermission> {
+        self.pending_permissions.get(name)?.front()
+    }
+
+    pub fn tasks_with_permissions(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.pending_permissions.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    pub fn total_pending_permissions(&self) -> usize {
+        self.pending_permissions.values().map(|q| q.len()).sum()
     }
 }

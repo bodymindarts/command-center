@@ -50,7 +50,7 @@ sock.close()
 }
 
 @test "gate: socket approval returns allow response" {
-    local input='{"tool":{"name":"Bash","input":{"command":"cargo test"}},"cwd":"/home/user/project"}'
+    local input='{"tool_name":"Bash","tool_input":{"command":"cargo test"},"cwd":"/home/user/project"}'
     local allow_resp='{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
 
     start_mock_server "$allow_resp"
@@ -63,7 +63,7 @@ sock.close()
 }
 
 @test "gate: socket denial returns deny response" {
-    local input='{"tool":{"name":"Write","input":{"file_path":"/tmp/test-fakefile.txt"}},"cwd":"/home/user/project"}'
+    local input='{"tool_name":"Write","tool_input":{"file_path":"/tmp/test-fakefile.txt"},"cwd":"/home/user/project"}'
     local deny_resp='{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}'
 
     start_mock_server "$deny_resp"
@@ -76,7 +76,7 @@ sock.close()
 }
 
 @test "gate: no socket + no tmux auto-denies" {
-    local input='{"tool":{"name":"Bash","input":{"command":"echo timeout"}},"cwd":"/tmp"}'
+    local input='{"tool_name":"Bash","tool_input":{"command":"echo timeout"},"cwd":"/tmp"}'
 
     run bash -c "echo '$input' | TMPDIR='$TMPDIR' clat permission gate"
     [ "$status" -eq 0 ]

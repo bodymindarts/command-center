@@ -61,6 +61,12 @@ allowed_tools = ["Bash"]
 prompt = "Say 'Task complete.' and nothing else."
 TOML
 
+    # .claude dir with hooks (spawn copies this into worktrees)
+    mkdir -p "$PROJECT_DIR/.claude/hooks"
+    cat > "$PROJECT_DIR/.claude/settings.local.json" << 'JSON'
+{"hooks":{"PreToolUse":[{"matcher":".*","hooks":[{"type":"command","command":"clat permission gate"}]}]}}
+JSON
+
     # Git repo (needed for worktree creation)
     git -C "$PROJECT_DIR" init -q
     git -C "$PROJECT_DIR" -c user.name="Test" -c user.email="test@test.com" add -A
@@ -107,16 +113,17 @@ task_field() {
     grep -q "Task complete" "$worktree/TASK.md"
 }
 
-@test "spawn symlinks .claude into worktree" {
+@test "spawn copies .claude hooks into worktree" {
     cd "$PROJECT_DIR"
     clat spawn sym-test --skill noop
 
     local worktree
     worktree=$(find_worktree sym-test)
-    [ -L "$worktree/.claude" ]
-    # Symlink target is a valid directory (skip literal path compare — macOS
-    # resolves /tmp → /private/tmp which makes paths mismatch)
+    # .claude is a real directory (not symlink) with hooks settings copied
     [ -d "$worktree/.claude" ]
+    ! [ -L "$worktree/.claude" ]
+    [ -f "$worktree/.claude/settings.local.json" ]
+    grep -q '"hooks"' "$worktree/.claude/settings.local.json"
 }
 
 @test "spawn creates tmux window with 3 panes" {
@@ -242,7 +249,7 @@ DASHSCRIPT
     # Pipe request JSON to gate in background — it connects to socket
     local req_json
     req_json=$(cat <<REQJSON
-{"tool":{"name":"Bash","input":{"command":"echo hi"}},"cwd":"$worktree"}
+{"tool_name":"Bash","tool_input":{"command":"echo hi"},"cwd":"$worktree"}
 REQJSON
     )
     printf '%s' "$req_json" | TMPDIR="$TMPDIR" clat permission gate > "$TEST_DIR/gate-stdout" &

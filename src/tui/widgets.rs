@@ -48,12 +48,33 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
             };
             let color = status_color(&task.status);
             let time = task.started_at.format("%H:%M");
-            let line = Line::from(vec![
+            let main_line = Line::from(vec![
                 Span::styled(format!("{status_char} "), Style::default().fg(color)),
                 Span::raw(format!("{:<10} ", task.name)),
                 Span::styled(format!("{time}"), Style::default().fg(Color::DarkGray)),
             ]);
-            ListItem::new(line)
+
+            // Permission sub-line if this task has pending permissions
+            if let Some(queue) = app.pending_permissions.get(&task.name)
+                && let Some(front) = queue.front()
+            {
+                let extra = queue.len().saturating_sub(1);
+                let more = if extra > 0 {
+                    format!(" (+{extra} more)")
+                } else {
+                    String::new()
+                };
+                let sub_line = Line::from(Span::styled(
+                    format!(
+                        "    ! {}: {}{more}",
+                        front.tool_name, front.tool_input_summary
+                    ),
+                    Style::default().fg(Color::Yellow),
+                ));
+                return ListItem::new(vec![main_line, sub_line]);
+            }
+
+            ListItem::new(main_line)
         })
         .collect();
 
@@ -62,10 +83,18 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
     } else {
         Color::DarkGray
     };
+
+    let total_perm = app.total_pending_permissions();
+    let title = if total_perm > 0 {
+        format!(" Tasks ({total_perm} perm) ")
+    } else {
+        " Tasks ".to_string()
+    };
+
     let list = List::new(items)
         .block(
             Block::default()
-                .title(" Tasks ")
+                .title(title)
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color)),
         )
@@ -80,13 +109,26 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
 }
 
 fn render_chat(frame: &mut ratatui::Frame, app: &App, exo: &ExoState, area: Rect) {
+    let in_task_chat = app.show_detail && app.selected_task().is_some();
     let mut lines: Vec<Line> = Vec::new();
 
-    // Permission prompt — always visible regardless of chat view
-    if let Some(req) = &app.current_permission {
+    // Permission banner — always visible when reviewing a permission
+    if let Some(viewing) = &app.viewing_permission_for
+        && let Some(req) = app.peek_permission(viewing)
+    {
+        let extra = app
+            .pending_permissions
+            .get(viewing)
+            .map(|q| q.len().saturating_sub(1))
+            .unwrap_or(0);
+        let more = if extra > 0 {
+            format!(" (+{extra} more)")
+        } else {
+            String::new()
+        };
         lines.push(Line::from(Span::styled(
             format!(
-                "[{}] wants to use {}: {}",
+                "[{}] wants to use {}: {}{more}",
                 req.task_name, req.tool_name, req.tool_input_summary
             ),
             Style::default()
@@ -94,7 +136,7 @@ fn render_chat(frame: &mut ratatui::Frame, app: &App, exo: &ExoState, area: Rect
                 .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(Span::styled(
-            "  [y] approve  [n] deny",
+            "  [y] approve  [n] deny  [Esc] dismiss",
             Style::default().fg(Color::Yellow),
         )));
         lines.push(Line::from(""));
@@ -112,8 +154,6 @@ fn render_chat(frame: &mut ratatui::Frame, app: &App, exo: &ExoState, area: Rect
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )));
     }
-
-    let in_task_chat = app.show_detail && app.selected_task().is_some();
 
     let title = if in_task_chat {
         let name = app.selected_task().map(|t| t.name.as_str()).unwrap_or("?");
@@ -288,13 +328,7 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool
 }
 
 fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
-    let spans = match &app.focus {
-        Focus::PermissionPrompt => vec![
-            Span::styled(" y", Style::default().fg(Color::Green)),
-            Span::raw(" approve  "),
-            Span::styled("n", Style::default().fg(Color::Red)),
-            Span::raw(" deny"),
-        ],
+    let mut spans = match &app.focus {
         Focus::ConfirmDelete(_) => vec![
             Span::styled(" y", Style::default().fg(Color::Red)),
             Span::raw(" delete  "),
@@ -307,31 +341,53 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::raw(" cancel"),
         ],
-        Focus::ChatInput => vec![
-            Span::styled(" Enter", Style::default().fg(Color::Yellow)),
-            Span::raw(" send  "),
-            Span::styled("^L", Style::default().fg(Color::Yellow)),
-            Span::raw(" tasks  "),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::raw(" back"),
-        ],
-        Focus::TaskList => vec![
-            Span::styled(" j/k", Style::default().fg(Color::Yellow)),
-            Span::raw(" navigate  "),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::raw(" chat  "),
-            Span::styled("g", Style::default().fg(Color::Yellow)),
-            Span::raw(" goto  "),
-            Span::styled("n", Style::default().fg(Color::Yellow)),
-            Span::raw(" new  "),
-            Span::styled("x", Style::default().fg(Color::Yellow)),
-            Span::raw(" close  "),
-            Span::styled("^H", Style::default().fg(Color::Yellow)),
-            Span::raw(" exo  "),
-            Span::styled("q", Style::default().fg(Color::Yellow)),
-            Span::raw(" quit"),
-        ],
+        Focus::ChatInput => {
+            let mut s = vec![
+                Span::styled(" Enter", Style::default().fg(Color::Yellow)),
+                Span::raw(" send  "),
+                Span::styled("^L", Style::default().fg(Color::Yellow)),
+                Span::raw(" tasks  "),
+                Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                Span::raw(" back"),
+            ];
+            if app.viewing_permission_for.is_some() {
+                s.push(Span::raw("  "));
+                s.push(Span::styled("y/n", Style::default().fg(Color::Green)));
+                s.push(Span::raw(" perm"));
+            }
+            s
+        }
+        Focus::TaskList => {
+            let mut s = vec![
+                Span::styled(" j/k", Style::default().fg(Color::Yellow)),
+                Span::raw(" navigate  "),
+                Span::styled("Enter", Style::default().fg(Color::Yellow)),
+                Span::raw(" chat  "),
+                Span::styled("g", Style::default().fg(Color::Yellow)),
+                Span::raw(" goto  "),
+                Span::styled("n", Style::default().fg(Color::Yellow)),
+                Span::raw(" new  "),
+                Span::styled("x", Style::default().fg(Color::Yellow)),
+                Span::raw(" close  "),
+                Span::styled("^H", Style::default().fg(Color::Yellow)),
+                Span::raw(" exo  "),
+                Span::styled("q", Style::default().fg(Color::Yellow)),
+                Span::raw(" quit"),
+            ];
+            if app.total_pending_permissions() > 0 {
+                s.push(Span::raw("  "));
+                s.push(Span::styled("p", Style::default().fg(Color::Green)));
+                s.push(Span::raw(" perm"));
+            }
+            s
+        }
     };
+    // When reviewing a permission from TaskList, also show y/n hint
+    if matches!(app.focus, Focus::TaskList) && app.viewing_permission_for.is_some() {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled("y/n", Style::default().fg(Color::Green)));
+        spans.push(Span::raw(" perm"));
+    }
 
     let bar = Paragraph::new(Line::from(spans)).style(Style::default().fg(Color::DarkGray));
 
