@@ -38,6 +38,14 @@ nix flake check                  # runs fmt, clippy (--deny warnings), nextest
 
 **Checks must pass before any commit.**
 
+Commit messages must follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+<type>(<optional scope>): <description>
+```
+
+Common types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `ci`.
+
 Individual checks during development (inside `nix develop`):
 
 ```sh
