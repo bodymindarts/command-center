@@ -3,8 +3,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 
-use crate::task::Task;
-
 use super::app::{App, Focus};
 use super::chat::{ExoState, Role};
 
@@ -112,31 +110,10 @@ fn render_detail(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     ];
 
     if app.selected_messages.is_empty() {
-        // Fallback: show prompt file + output for tasks with no messages
-        let prompt_text = read_prompt_file(&task.id);
-        let output_text = read_task_output(task);
-
         lines.push(Line::from(Span::styled(
-            "--- Prompt ---",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            "No messages yet.",
+            Style::default().fg(Color::DarkGray),
         )));
-        for l in prompt_text.lines() {
-            lines.push(Line::from(l.to_string()));
-        }
-
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "--- Output ---",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )));
-        let tail = tail_lines(&output_text, 50);
-        for l in tail.lines() {
-            lines.push(Line::from(l.to_string()));
-        }
     } else {
         for msg in &app.selected_messages {
             let (label, label_color) = match msg.role.as_str() {
@@ -158,6 +135,20 @@ fn render_detail(frame: &mut ratatui::Frame, app: &App, area: Rect) {
         }
     }
 
+    if let Some(output) = &app.detail_live_output {
+        lines.push(Line::from(Span::styled(
+            "--- Live (last 50 lines) ---",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+        let tail: Vec<&str> = output.lines().collect();
+        let start = tail.len().saturating_sub(50);
+        for l in &tail[start..] {
+            lines.push(Line::from(l.to_string()));
+        }
+    }
+
     let detail = Paragraph::new(lines)
         .block(
             Block::default()
@@ -165,7 +156,8 @@ fn render_detail(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray)),
         )
-        .wrap(Wrap { trim: false });
+        .wrap(Wrap { trim: false })
+        .scroll((app.detail_scroll, 0));
 
     frame.render_widget(detail, area);
 }
@@ -340,29 +332,6 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     let bar = Paragraph::new(Line::from(spans)).style(Style::default().fg(Color::DarkGray));
 
     frame.render_widget(bar, area);
-}
-
-fn read_prompt_file(task_id: &str) -> String {
-    let path = std::env::temp_dir().join(format!("cc-prompt-{task_id}.txt"));
-    std::fs::read_to_string(path).unwrap_or_default()
-}
-
-fn read_task_output(task: &Task) -> String {
-    if task.status == "running" {
-        let path = std::env::temp_dir().join(format!("cc-task-{}.out", task.id));
-        std::fs::read_to_string(path).unwrap_or_default()
-    } else {
-        task.output.clone().unwrap_or_default()
-    }
-}
-
-fn tail_lines(text: &str, n: usize) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.len() <= n {
-        text.to_string()
-    } else {
-        lines[lines.len() - n..].join("\n")
-    }
 }
 
 fn status_color(status: &str) -> Color {

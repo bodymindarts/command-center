@@ -106,8 +106,26 @@ fn run_loop(
                 match &app.focus {
                     Focus::TaskList => match key.code {
                         KeyCode::Char('q') => app.should_quit = true,
-                        KeyCode::Char('j') | KeyCode::Down => app.next(),
-                        KeyCode::Char('k') | KeyCode::Up => app.previous(),
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            app.next();
+                            app.detail_scroll = 0;
+                        }
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            app.previous();
+                            app.detail_scroll = 0;
+                        }
+                        KeyCode::PageDown => {
+                            app.detail_scroll = app.detail_scroll.saturating_add(10);
+                        }
+                        KeyCode::PageUp => {
+                            app.detail_scroll = app.detail_scroll.saturating_sub(10);
+                        }
+                        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            app.detail_scroll = app.detail_scroll.saturating_add(10);
+                        }
+                        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            app.detail_scroll = app.detail_scroll.saturating_sub(10);
+                        }
                         KeyCode::Enter => {
                             if let Some(task) = app.selected_task()
                                 && let Some(window_id) = &task.tmux_window
@@ -242,13 +260,22 @@ fn run_loop(
             if let Ok(tasks) = service.list_active() {
                 app.refresh_tasks(tasks);
             }
-            // Update selected messages for detail view
+            // Update selected messages and live output for detail view
             if let Some(task) = app.selected_task() {
-                if let Ok(messages) = service.messages(&task.id) {
+                let task_id = task.id.clone();
+                let is_running = task.status == "running";
+                let pane = task.tmux_pane.clone();
+                if let Ok(messages) = service.messages(&task_id) {
                     app.selected_messages = messages;
+                }
+                if is_running {
+                    app.detail_live_output = pane.as_deref().and_then(|p| service.capture_pane(p));
+                } else {
+                    app.detail_live_output = None;
                 }
             } else {
                 app.selected_messages.clear();
+                app.detail_live_output = None;
             }
             if app.pending_permission.is_none() {
                 poll_permission_requests(app);

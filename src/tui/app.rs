@@ -119,6 +119,8 @@ pub struct App {
     pub pending_permission: Option<PendingPermission>,
     pub agent_target: Option<String>,
     pub selected_messages: Vec<TaskMessage>,
+    pub detail_scroll: u16,
+    pub detail_live_output: Option<String>,
 }
 
 impl App {
@@ -137,6 +139,8 @@ impl App {
             pending_permission: None,
             agent_target: None,
             selected_messages: Vec::new(),
+            detail_scroll: 0,
+            detail_live_output: None,
         }
     }
 
@@ -179,6 +183,8 @@ impl App {
             if let Some(pos) = self.tasks.iter().position(|t| t.id == id) {
                 self.list_state.select(Some(pos));
             } else if !self.tasks.is_empty() {
+                // Selection changed — reset scroll
+                self.detail_scroll = 0;
                 let clamped = self
                     .list_state
                     .selected()
@@ -186,6 +192,7 @@ impl App {
                     .min(self.tasks.len() - 1);
                 self.list_state.select(Some(clamped));
             } else {
+                self.detail_scroll = 0;
                 self.list_state.select(None);
             }
         } else if !self.tasks.is_empty() && self.list_state.selected().is_none() {

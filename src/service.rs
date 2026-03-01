@@ -203,6 +203,10 @@ impl<'a> TaskService<'a> {
         self.store.list_messages(task_id)
     }
 
+    pub fn capture_pane(&self, pane_id: &str) -> Option<String> {
+        self.runtime.capture_pane_output(pane_id).ok()
+    }
+
     pub fn complete(&self, id: &str, exit_code: i32, output: Option<&str>) -> Result<()> {
         self.store.complete_task(id, exit_code, output)
     }
