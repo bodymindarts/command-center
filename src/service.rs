@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use anyhow::{Result, bail};
-use chrono::Utc;
 
 use crate::config::Paths;
+use crate::primitives::TaskId;
 use crate::runtime::Runtime;
 use crate::skill::SkillFile;
 use crate::store::Store;
@@ -18,22 +18,22 @@ pub struct SkillSummary {
 
 #[derive(Debug)]
 pub struct SpawnOutput {
+    pub task_id: TaskId,
     pub task_name: String,
-    pub short_id: String,
     pub skill_name: String,
     pub window_id: String,
 }
 
 #[derive(Debug)]
 pub struct CloseOutput {
+    pub task_id: TaskId,
     pub task_name: String,
-    pub short_id: String,
 }
 
 #[derive(Debug)]
 pub struct SendOutput {
+    pub task_id: TaskId,
     pub task_name: String,
-    pub short_id: String,
 }
 
 #[derive(Debug)]
@@ -43,14 +43,14 @@ pub struct LogOutput {
     pub live_output: Option<String>,
 }
 
-pub struct TaskService<'a> {
+pub struct TaskService<'a, R: Runtime> {
     store: &'a Store,
-    runtime: &'a dyn Runtime,
+    runtime: &'a R,
     paths: &'a Paths,
 }
 
-impl<'a> TaskService<'a> {
-    pub fn new(store: &'a Store, runtime: &'a dyn Runtime, paths: &'a Paths) -> Self {
+impl<'a, R: Runtime> TaskService<'a, R> {
+    pub fn new(store: &'a Store, runtime: &'a R, paths: &'a Paths) -> Self {
         Self {
             store,
             runtime,
@@ -71,40 +71,29 @@ impl<'a> TaskService<'a> {
 
         let rendered = skill.render_prompt(&params_map)?;
 
-        let task_id = uuid::Uuid::new_v4().to_string();
-        let short_id = task_id[..8].to_string();
-        let worktree_name = format!("{task_name}-{short_id}");
+        let id = TaskId::generate();
+        let worktree_name = format!("{task_name}-{}", id.short());
         let worktree_path = self
             .runtime
             .create_worktree(&self.paths.root, &worktree_name)?;
 
-        let task = Task {
-            id: task_id.clone(),
-            name: task_name.to_string(),
-            skill_name: skill_name.to_string(),
-            params_json: serde_json::to_string(&params_map)?,
-            status: "running".to_string(),
-            tmux_pane: None,
-            tmux_window: None,
-            work_dir: Some(worktree_path.display().to_string()),
-            started_at: Utc::now(),
-            completed_at: None,
-            exit_code: None,
-            output: None,
-        };
+        let task = Task::new(id, task_name, skill_name, &params_map, &worktree_path);
 
         self.store.insert_task(&task)?;
-        self.store.insert_message(&task_id, "system", &rendered)?;
+        self.store
+            .insert_message(task.id.as_str(), "system", &rendered)?;
 
         let result = self
             .runtime
             .spawn_agent(task_name, &rendered, &worktree_path)?;
-        self.store.update_tmux_pane(&task_id, &result.pane_id)?;
-        self.store.update_tmux_window(&task_id, &result.window_id)?;
+        self.store
+            .update_tmux_pane(task.id.as_str(), &result.pane_id)?;
+        self.store
+            .update_tmux_window(task.id.as_str(), &result.window_id)?;
 
         Ok(SpawnOutput {
+            task_id: task.id,
             task_name: task_name.to_string(),
-            short_id,
             skill_name: skill_name.to_string(),
             window_id: result.window_id,
         })
@@ -113,11 +102,11 @@ impl<'a> TaskService<'a> {
     pub fn close(&self, id_prefix: &str) -> Result<CloseOutput> {
         let task = self.resolve_task(id_prefix)?;
 
-        if task.status != "running" {
+        if !task.status.is_running() {
             bail!(
                 "task {} ({}) is '{}', not 'running'",
                 task.name,
-                &task.id[..8],
+                task.id.short(),
                 task.status
             );
         }
@@ -131,14 +120,14 @@ impl<'a> TaskService<'a> {
             let _ = self.runtime.kill_tmux_window(window_id);
         }
 
-        let closed = self.store.close_task(&task.id, output.as_deref())?;
+        let closed = self.store.close_task(task.id.as_str(), output.as_deref())?;
         if !closed {
-            bail!("failed to close task {} ({})", task.name, &task.id[..8]);
+            bail!("failed to close task {} ({})", task.name, task.id.short());
         }
 
         Ok(CloseOutput {
+            task_id: task.id,
             task_name: task.name,
-            short_id: task.id[..8].to_string(),
         })
     }
 
@@ -148,14 +137,15 @@ impl<'a> TaskService<'a> {
         let pane_id = task
             .tmux_pane
             .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("task {} has no tmux pane", &task.id[..8]))?;
+            .ok_or_else(|| anyhow::anyhow!("task {} has no tmux pane", task.id.short()))?;
 
         self.runtime.send_keys_to_pane(pane_id, message)?;
-        self.store.insert_message(&task.id, "user", message)?;
+        self.store
+            .insert_message(task.id.as_str(), "user", message)?;
 
         Ok(SendOutput {
+            task_id: task.id,
             task_name: task.name,
-            short_id: task.id[..8].to_string(),
         })
     }
 
@@ -170,7 +160,7 @@ impl<'a> TaskService<'a> {
         let window_id = task
             .tmux_window
             .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("task {} has no tmux window", &task.id[..8]))?;
+            .ok_or_else(|| anyhow::anyhow!("task {} has no tmux window", task.id.short()))?;
 
         self.runtime.select_window(window_id)
     }
@@ -181,9 +171,9 @@ impl<'a> TaskService<'a> {
 
     pub fn log(&self, id_prefix: &str) -> Result<LogOutput> {
         let task = self.resolve_task(id_prefix)?;
-        let messages = self.store.list_messages(&task.id)?;
+        let messages = self.store.list_messages(task.id.as_str())?;
 
-        let live_output = if task.status == "running" {
+        let live_output = if task.status.is_running() {
             task.tmux_pane
                 .as_deref()
                 .and_then(|pane| self.runtime.capture_pane_output(pane).ok())
@@ -258,6 +248,9 @@ mod tests {
 
     use anyhow::{Result, bail};
 
+    use chrono::Utc;
+
+    use crate::primitives::{TaskId, TaskStatus};
     use crate::runtime::{Runtime, SpawnResult};
     use crate::store::Store;
 
@@ -385,7 +378,7 @@ prompt = "noop prompt"
         }
     }
 
-    fn spawn_test_task(service: &TaskService) -> SpawnOutput {
+    fn spawn_test_task(service: &TaskService<impl Runtime>) -> SpawnOutput {
         service
             .spawn("test-task", "noop", vec![])
             .expect("spawn should succeed")
@@ -412,7 +405,7 @@ prompt = "noop prompt"
         assert_eq!(tasks[0].tmux_pane.as_deref(), Some("%fake-pane"));
 
         // Verify system message recorded
-        let messages = store.list_messages(&tasks[0].id).unwrap();
+        let messages = store.list_messages(tasks[0].id.as_str()).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, "system");
 
@@ -431,16 +424,16 @@ prompt = "noop prompt"
         let service = TaskService::new(&store, &runtime, &paths);
 
         let spawned = spawn_test_task(&service);
-        let result = service.close(&spawned.short_id).unwrap();
+        let result = service.close(spawned.task_id.as_str()).unwrap();
 
         assert_eq!(result.task_name, "test-task");
 
         // Verify task is closed with output
         let task = store
-            .get_task_by_prefix(&spawned.short_id)
+            .get_task_by_prefix(spawned.task_id.as_str())
             .unwrap()
             .unwrap();
-        assert_eq!(task.status, "closed");
+        assert_eq!(task.status, TaskStatus::Closed);
         assert_eq!(task.output.as_deref(), Some("captured output"));
 
         // Verify call order: CaptureOutput before KillWindow
@@ -465,19 +458,13 @@ prompt = "noop prompt"
         let service = TaskService::new(&store, &runtime, &paths);
 
         let spawned = spawn_test_task(&service);
-        service
-            .complete(
-                &store
-                    .get_task_by_prefix(&spawned.short_id)
-                    .unwrap()
-                    .unwrap()
-                    .id,
-                0,
-                None,
-            )
+        let task = store
+            .get_task_by_prefix(spawned.task_id.as_str())
+            .unwrap()
             .unwrap();
+        service.complete(task.id.as_str(), 0, None).unwrap();
 
-        let err = service.close(&spawned.short_id);
+        let err = service.close(spawned.task_id.as_str());
         assert!(err.is_err());
         assert!(err.unwrap_err().to_string().contains("not 'running'"));
     }
@@ -492,7 +479,7 @@ prompt = "noop prompt"
         let service = TaskService::new(&store, &runtime, &paths);
 
         let spawned = spawn_test_task(&service);
-        let result = service.close(&spawned.short_id);
+        let result = service.close(spawned.task_id.as_str());
         assert!(result.is_ok());
     }
 
@@ -505,7 +492,9 @@ prompt = "noop prompt"
         let service = TaskService::new(&store, &runtime, &paths);
 
         let spawned = spawn_test_task(&service);
-        let result = service.send(&spawned.short_id, "hello agent").unwrap();
+        let result = service
+            .send(spawned.task_id.as_str(), "hello agent")
+            .unwrap();
 
         assert_eq!(result.task_name, "test-task");
 
@@ -518,10 +507,10 @@ prompt = "noop prompt"
 
         // Verify user message in store
         let task = store
-            .get_task_by_prefix(&spawned.short_id)
+            .get_task_by_prefix(spawned.task_id.as_str())
             .unwrap()
             .unwrap();
-        let messages = store.list_messages(&task.id).unwrap();
+        let messages = store.list_messages(task.id.as_str()).unwrap();
         assert!(
             messages
                 .iter()
@@ -538,7 +527,7 @@ prompt = "noop prompt"
         let service = TaskService::new(&store, &runtime, &paths);
 
         let spawned = spawn_test_task(&service);
-        service.goto(&spawned.short_id).unwrap();
+        service.goto(spawned.task_id.as_str()).unwrap();
 
         let calls = runtime.calls.borrow();
         assert!(calls.iter().any(|c| matches!(c,
@@ -556,11 +545,11 @@ prompt = "noop prompt"
 
         // Insert a task with no tmux_window directly
         let task = Task {
-            id: "aaaa-bbbb".to_string(),
+            id: TaskId::from("aaaa-bbbb".to_string()),
             name: "no-window".to_string(),
             skill_name: "noop".to_string(),
             params_json: "{}".to_string(),
-            status: "running".to_string(),
+            status: TaskStatus::Running,
             tmux_pane: None,
             tmux_window: None,
             work_dir: None,
@@ -585,9 +574,9 @@ prompt = "noop prompt"
         let service = TaskService::new(&store, &runtime, &paths);
 
         let spawned = spawn_test_task(&service);
-        service.send(&spawned.short_id, "hello").unwrap();
+        service.send(spawned.task_id.as_str(), "hello").unwrap();
 
-        let log = service.log(&spawned.short_id).unwrap();
+        let log = service.log(spawned.task_id.as_str()).unwrap();
         assert_eq!(log.task.name, "test-task");
         assert_eq!(log.messages.len(), 2); // system + user
         assert!(log.live_output.is_some());
@@ -607,10 +596,10 @@ prompt = "noop prompt"
 
         // Complete one
         let task1 = store
-            .get_task_by_prefix(&spawned1.short_id)
+            .get_task_by_prefix(spawned1.task_id.as_str())
             .unwrap()
             .unwrap();
-        service.complete(&task1.id, 0, None).unwrap();
+        service.complete(task1.id.as_str(), 0, None).unwrap();
 
         let active = service.list_active().unwrap();
         assert_eq!(active.len(), 1);

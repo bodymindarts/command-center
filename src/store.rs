@@ -4,17 +4,18 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, Row};
 
+use crate::primitives::{TaskId, TaskStatus};
 use crate::task::{Task, TaskMessage};
 
 fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
     let started_at: String = row.get(8)?;
     let completed_at: Option<String> = row.get(9)?;
     Ok(Task {
-        id: row.get(0)?,
+        id: TaskId::from(row.get::<_, String>(0)?),
         name: row.get(1)?,
         skill_name: row.get(2)?,
         params_json: row.get(3)?,
-        status: row.get(4)?,
+        status: TaskStatus::from(row.get::<_, String>(4)?),
         tmux_pane: row.get(5)?,
         tmux_window: row.get(6)?,
         work_dir: row.get(7)?,
@@ -40,7 +41,7 @@ pub struct Store {
 }
 
 impl Store {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().context("failed to open in-memory database")?;
         let store = Self { conn };
@@ -96,11 +97,11 @@ impl Store {
             "INSERT INTO tasks (id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir, started_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             (
-                &task.id,
+                task.id.as_str(),
                 &task.name,
                 &task.skill_name,
                 &task.params_json,
-                &task.status,
+                task.status.as_str(),
                 &task.tmux_pane,
                 &task.tmux_window,
                 &task.work_dir,
@@ -188,7 +189,7 @@ impl Store {
     }
 
     pub fn insert_message(&self, task_id: &str, role: &str, content: &str) -> Result<()> {
-        let id = uuid::Uuid::new_v4().to_string();
+        let id = uuid::Uuid::now_v7().to_string();
         let now = Utc::now().to_rfc3339();
         self.conn.execute(
             "INSERT INTO task_messages (id, task_id, role, content, created_at)
@@ -233,11 +234,11 @@ mod tests {
 
     fn insert_running_task(store: &Store, id: &str, name: &str) {
         let task = Task {
-            id: id.to_string(),
+            id: TaskId::from(id.to_string()),
             name: name.to_string(),
             skill_name: "noop".to_string(),
             params_json: "{}".to_string(),
-            status: "running".to_string(),
+            status: TaskStatus::Running,
             tmux_pane: Some("%1".to_string()),
             tmux_window: Some("@1".to_string()),
             work_dir: None,
@@ -258,7 +259,7 @@ mod tests {
         assert!(ok);
 
         let task = store.get_task_by_prefix("aaa").unwrap().unwrap();
-        assert_eq!(task.status, "closed");
+        assert_eq!(task.status, TaskStatus::Closed);
         assert!(task.completed_at.is_some());
         assert_eq!(task.output.as_deref(), Some("output text"));
     }
@@ -273,7 +274,7 @@ mod tests {
         assert!(!ok);
 
         let task = store.get_task_by_prefix("bbb").unwrap().unwrap();
-        assert_eq!(task.status, "completed");
+        assert_eq!(task.status, TaskStatus::Completed);
     }
 
     #[test]

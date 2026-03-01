@@ -3,6 +3,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 
+use crate::primitives::TaskStatus;
+
 use super::app::{App, Focus};
 use super::chat::{ExoState, Role};
 
@@ -43,12 +45,11 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
         .tasks
         .iter()
         .map(|task| {
-            let status_char = match task.status.as_str() {
-                "running" => "r",
-                "completed" => "c",
-                "failed" => "f",
-                "closed" => "x",
-                _ => "?",
+            let status_char = match task.status {
+                TaskStatus::Running => "r",
+                TaskStatus::Completed => "c",
+                TaskStatus::Failed => "f",
+                TaskStatus::Closed => "x",
             };
             let color = status_color(&task.status);
             let time = task.started_at.format("%H:%M");
@@ -98,7 +99,7 @@ fn render_detail(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     };
 
     let color = status_color(&task.status);
-    let short_id = &task.id[..8.min(task.id.len())];
+    let short_id = task.id.short();
 
     let mut lines: Vec<Line> = vec![
         Line::from(vec![
@@ -107,7 +108,7 @@ fn render_detail(frame: &mut ratatui::Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(&task.status, Style::default().fg(color)),
+            Span::styled(task.status.as_str(), Style::default().fg(color)),
         ]),
         Line::from(""),
     ];
@@ -341,12 +342,11 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     frame.render_widget(bar, area);
 }
 
-fn status_color(status: &str) -> Color {
+fn status_color(status: &TaskStatus) -> Color {
     match status {
-        "running" => Color::Yellow,
-        "completed" => Color::Green,
-        "failed" => Color::Red,
-        "closed" => Color::Magenta,
-        _ => Color::White,
+        TaskStatus::Running => Color::Yellow,
+        TaskStatus::Completed => Color::Green,
+        TaskStatus::Failed => Color::Red,
+        TaskStatus::Closed => Color::Magenta,
     }
 }

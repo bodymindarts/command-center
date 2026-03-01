@@ -3,6 +3,7 @@ use std::os::unix::net::UnixStream;
 
 use ratatui::widgets::ListState;
 
+use crate::primitives::TaskId;
 use crate::task::{Task, TaskMessage};
 
 pub enum Focus {
@@ -122,7 +123,7 @@ pub struct App {
     pub show_detail: bool,
     pub current_permission: Option<ActivePermission>,
     pub permission_queue: VecDeque<ActivePermission>,
-    pub agent_target: Option<String>,
+    pub agent_target: Option<TaskId>,
     pub selected_messages: Vec<TaskMessage>,
     pub detail_scroll: u16,
     pub detail_live_output: Option<String>,
@@ -208,8 +209,8 @@ impl App {
 
     pub fn agent_target_name(&self) -> Option<&str> {
         self.agent_target
-            .as_deref()
-            .and_then(|id| self.tasks.iter().find(|t| t.id == id))
+            .as_ref()
+            .and_then(|id| self.tasks.iter().find(|t| t.id == *id))
             .map(|t| t.name.as_str())
     }
 }

@@ -85,6 +85,7 @@
             # Rust
             rustToolchain
             pkgs.cargo-nextest
+            pkgs.bacon
 
             # Build deps
             pkgs.pkg-config

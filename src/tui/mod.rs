@@ -17,12 +17,13 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use crate::permission::PermissionRequest;
+use crate::runtime::Runtime;
 use crate::service::TaskService;
 use app::{ActivePermission, App, Focus};
 use chat::ExoState;
 use claude::ExoEvent;
 
-pub fn run(service: &TaskService, resume_session: Option<&str>) -> Result<()> {
+pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -> Result<()> {
     terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
     crossterm::execute!(stdout, EnterAlternateScreen)?;
@@ -98,11 +99,11 @@ fn write_response_to_stream(mut stream: UnixStream, allow: bool) -> std::io::Res
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_loop(
+fn run_loop<R: Runtime>(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     exo: &mut ExoState,
-    service: &TaskService,
+    service: &TaskService<R>,
     rx: &mpsc::Receiver<ExoEvent>,
     tx: &mpsc::Sender<ExoEvent>,
     cancel: &Arc<AtomicBool>,
@@ -180,9 +181,9 @@ fn run_loop(
                         KeyCode::Char('d') => app.show_detail = !app.show_detail,
                         KeyCode::Char('x') => {
                             if let Some(task) = app.selected_task()
-                                && task.status == "running"
+                                && task.status.is_running()
                             {
-                                let short_id = task.id[..8].to_string();
+                                let short_id = task.id.short().to_string();
                                 let _ = service.close(&short_id);
                                 if let Ok(tasks) = service.list_active() {
                                     app.refresh_tasks(tasks);
@@ -191,7 +192,8 @@ fn run_loop(
                         }
                         KeyCode::Char('m') => {
                             if let Some(task) = app.selected_task() {
-                                app.agent_target = Some(task.id.clone());
+                                let id = task.id.clone();
+                                app.agent_target = Some(id);
                                 app.input.take();
                                 app.focus = Focus::AgentInput;
                             }
@@ -281,12 +283,12 @@ fn run_loop(
                             KeyCode::Enter => {
                                 if !app.input.is_empty() {
                                     let msg = app.input.take();
-                                    if let Some(task_id) = &app.agent_target
+                                    if let Some(target_id) = &app.agent_target
                                         && let Some(task) =
-                                            app.tasks.iter().find(|t| t.id == *task_id)
+                                            app.tasks.iter().find(|t| t.id == *target_id)
                                         && let Some(pane) = task.tmux_pane.as_deref()
                                     {
-                                        service.send_by_id(&task.id, pane, &msg);
+                                        service.send_by_id(task.id.as_str(), pane, &msg);
                                     }
                                 }
                                 app.agent_target = None;
@@ -332,8 +334,8 @@ fn run_loop(
             }
             // Update selected messages and live output for detail view
             if let Some(task) = app.selected_task() {
-                let task_id = task.id.clone();
-                let is_running = task.status == "running";
+                let task_id = task.id.as_str().to_string();
+                let is_running = task.status.is_running();
                 let pane = task.tmux_pane.clone();
                 if let Ok(messages) = service.messages(&task_id) {
                     app.selected_messages = messages;

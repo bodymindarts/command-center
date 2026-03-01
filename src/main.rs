@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod permission;
+mod primitives;
 mod runtime;
 mod service;
 mod skill;
@@ -14,7 +15,7 @@ use tabled::{Table, Tabled};
 
 use crate::cli::{Cli, Command, PermissionAction, SkillAction};
 use crate::config::Paths;
-use crate::runtime::TmuxRuntime;
+use crate::runtime::{Runtime, TmuxRuntime};
 use crate::service::TaskService;
 use crate::store::Store;
 
@@ -56,19 +57,23 @@ fn main() -> Result<()> {
 }
 
 fn cmd_spawn(
-    service: &TaskService,
+    service: &TaskService<impl Runtime>,
     task_name: &str,
     skill_name: &str,
     params: Vec<(String, String)>,
 ) -> Result<()> {
     let result = service.spawn(task_name, skill_name, params)?;
-    println!("Spawned task {} ({})", result.task_name, result.short_id);
+    println!(
+        "Spawned task {} ({})",
+        result.task_name,
+        result.task_id.short()
+    );
     println!("  skill:  {}", result.skill_name);
     println!("  window: {}", result.window_id);
     Ok(())
 }
 
-fn cmd_list(service: &TaskService, all: bool) -> Result<()> {
+fn cmd_list(service: &TaskService<impl Runtime>, all: bool) -> Result<()> {
     let tasks = if all {
         service.list_all()?
     } else {
@@ -101,15 +106,15 @@ fn cmd_list(service: &TaskService, all: bool) -> Result<()> {
     let rows: Vec<Row> = tasks
         .iter()
         .map(|t| Row {
-            id: t.id[..8].to_string(),
+            id: t.id.short().to_string(),
             name: t.name.clone(),
             skill: t.skill_name.clone(),
-            status: t.status.clone(),
+            status: t.status.to_string(),
             window: t.tmux_window.clone().unwrap_or_default(),
             started: t.started_at.format("%H:%M:%S").to_string(),
             exit_code: t
                 .exit_code
-                .map(|c| c.to_string())
+                .map(|c: i32| c.to_string())
                 .unwrap_or_else(|| "-".to_string()),
         })
         .collect();
@@ -118,20 +123,24 @@ fn cmd_list(service: &TaskService, all: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_close(service: &TaskService, id: &str) -> Result<()> {
+fn cmd_close(service: &TaskService<impl Runtime>, id: &str) -> Result<()> {
     let result = service.close(id)?;
-    println!("Closed task {} ({})", result.task_name, result.short_id);
+    println!(
+        "Closed task {} ({})",
+        result.task_name,
+        result.task_id.short()
+    );
     Ok(())
 }
 
-fn cmd_log(service: &TaskService, id_prefix: &str) -> Result<()> {
+fn cmd_log(service: &TaskService<impl Runtime>, id_prefix: &str) -> Result<()> {
     let log = service.log(id_prefix)?;
 
     if log.messages.is_empty() {
         println!(
             "No messages for task {} ({}).",
             log.task.name,
-            &log.task.id[..8]
+            log.task.id.short()
         );
         return Ok(());
     }
@@ -149,11 +158,11 @@ fn cmd_log(service: &TaskService, id_prefix: &str) -> Result<()> {
     }
 
     if let Some(output) = &log.live_output {
-        let lines: Vec<&str> = output.lines().collect();
-        let tail = if lines.len() > 50 {
-            &lines[lines.len() - 50..]
+        let all_lines: Vec<&str> = output.lines().collect();
+        let tail = if all_lines.len() > 50 {
+            &all_lines[all_lines.len() - 50..]
         } else {
-            &lines
+            &all_lines
         };
         println!("--- Live pane (last {} lines) ---", tail.len());
         for line in tail {
@@ -164,7 +173,7 @@ fn cmd_log(service: &TaskService, id_prefix: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_goto(service: &TaskService, id: &str) -> Result<()> {
+fn cmd_goto(service: &TaskService<impl Runtime>, id: &str) -> Result<()> {
     service.goto(id)
 }
 
@@ -203,14 +212,18 @@ fn cmd_start(resume: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_send(service: &TaskService, id: &str, message: &str) -> Result<()> {
+fn cmd_send(service: &TaskService<impl Runtime>, id: &str, message: &str) -> Result<()> {
     let result = service.send(id, message)?;
-    println!("Sent message to {} ({})", result.task_name, result.short_id);
+    println!(
+        "Sent message to {} ({})",
+        result.task_name,
+        result.task_id.short()
+    );
     Ok(())
 }
 
 fn cmd_complete(
-    service: &TaskService,
+    service: &TaskService<impl Runtime>,
     id: &str,
     exit_code: i32,
     output_file: Option<&str>,
@@ -228,7 +241,7 @@ fn cmd_complete(
     Ok(())
 }
 
-fn cmd_skill(action: SkillAction, service: &TaskService) -> Result<()> {
+fn cmd_skill(action: SkillAction, service: &TaskService<impl Runtime>) -> Result<()> {
     match action {
         SkillAction::List => {
             let skills = service.list_skills()?;
