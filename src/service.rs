@@ -131,6 +131,19 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         })
     }
 
+    pub fn delete(&self, task_id: &str) -> Result<()> {
+        let task = self.resolve_task(task_id)?;
+
+        if task.status.is_running() {
+            if let Some(window_id) = &task.tmux_window {
+                let _ = self.runtime.kill_tmux_window(window_id);
+            }
+            let _ = self.store.close_task(task.id.as_str(), None);
+        }
+
+        self.store.delete_task(task.id.as_str())
+    }
+
     pub fn reopen(&self, task_id: &str) -> Result<String> {
         let task = self.resolve_task(task_id)?;
 

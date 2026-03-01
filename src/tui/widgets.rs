@@ -81,6 +81,20 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
 
 fn render_chat(frame: &mut ratatui::Frame, app: &App, exo: &ExoState, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
+
+    if let Focus::ConfirmDelete(id) = &app.focus {
+        let name = app
+            .tasks
+            .iter()
+            .find(|t| t.id == *id)
+            .map(|t| t.name.as_str())
+            .unwrap_or("?");
+        lines.push(Line::from(Span::styled(
+            format!("Delete task '{name}'?"),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )));
+    }
+
     let in_task_chat = app.show_detail && app.selected_task().is_some();
 
     let title = if in_task_chat {
@@ -276,6 +290,12 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
             Span::raw(" approve  "),
             Span::styled("n", Style::default().fg(Color::Red)),
             Span::raw(" deny"),
+        ],
+        Focus::ConfirmDelete(_) => vec![
+            Span::styled(" y", Style::default().fg(Color::Red)),
+            Span::raw(" delete  "),
+            Span::styled("n", Style::default().fg(Color::Green)),
+            Span::raw(" cancel"),
         ],
         Focus::SpawnInput => vec![
             Span::styled(" Enter", Style::default().fg(Color::Yellow)),

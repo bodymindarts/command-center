@@ -3,6 +3,7 @@ use std::os::unix::net::UnixStream;
 
 use ratatui::widgets::ListState;
 
+use crate::primitives::TaskId;
 use crate::task::{Task, TaskMessage};
 
 pub enum Focus {
@@ -10,6 +11,7 @@ pub enum Focus {
     ChatInput,
     SpawnInput,
     PermissionPrompt,
+    ConfirmDelete(TaskId),
 }
 
 pub struct ActivePermission {

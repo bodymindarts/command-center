@@ -211,6 +211,12 @@ fn run_loop<R: Runtime>(
                             app.input.take();
                             app.focus = Focus::SpawnInput;
                         }
+                        KeyCode::Backspace => {
+                            if let Some(task) = app.selected_task() {
+                                let id = task.id.clone();
+                                app.focus = Focus::ConfirmDelete(id);
+                            }
+                        }
                         KeyCode::Tab | KeyCode::Char('i') => {
                             app.focus = Focus::ChatInput;
                         }
@@ -299,6 +305,20 @@ fn run_loop<R: Runtime>(
                             _ => {}
                         }
                     }
+                    Focus::ConfirmDelete(task_id) => match key.code {
+                        KeyCode::Char('y') => {
+                            let id = task_id.clone();
+                            let _ = service.delete(id.as_str());
+                            if let Ok(tasks) = service.list_all() {
+                                app.refresh_tasks(tasks);
+                            }
+                            app.focus = Focus::TaskList;
+                        }
+                        KeyCode::Char('n') | KeyCode::Esc => {
+                            app.focus = Focus::TaskList;
+                        }
+                        _ => {}
+                    },
                     Focus::PermissionPrompt => match key.code {
                         KeyCode::Char('y') => {
                             if let Some(perm) = app.current_permission.take() {

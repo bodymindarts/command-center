@@ -145,6 +145,13 @@ impl Store {
         Ok(rows > 0)
     }
 
+    pub fn delete_task(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM task_messages WHERE task_id = ?1", [id])?;
+        self.conn.execute("DELETE FROM tasks WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
     pub fn list_tasks(&self) -> Result<Vec<Task>> {
         let sql = format!("SELECT {TASK_COLUMNS} FROM tasks ORDER BY started_at DESC");
         let mut stmt = self.conn.prepare(&sql)?;
