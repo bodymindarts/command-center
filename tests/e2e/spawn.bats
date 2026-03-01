@@ -341,3 +341,73 @@ REQJSON
     [[ "$output" == *"active-one"* ]]
     [[ "$output" == *"active-two"* ]]
 }
+
+# --- permission CLI commands ---
+
+@test "permission list shows pending requests" {
+    cd "$PROJECT_DIR"
+
+    local perm_dir
+    perm_dir="$(mktemp -d)/cc-permissions"
+    mkdir -p "$perm_dir"
+
+    local req_json='{"tool":{"name":"Bash","input":{"command":"cargo test"}},"cwd":"/project"}'
+    printf '%s' "$req_json" > "$perm_dir/perm-cli-1.req"
+
+    run env TMPDIR="$(dirname "$perm_dir")" clat permission list
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"perm-cli-1"* ]]
+    [[ "$output" == *"Bash"* ]]
+    [[ "$output" == *"cargo test"* ]]
+}
+
+@test "permission approve writes allow response" {
+    cd "$PROJECT_DIR"
+
+    local perm_dir
+    perm_dir="$(mktemp -d)/cc-permissions"
+    mkdir -p "$perm_dir"
+
+    local req_json='{"tool":{"name":"Bash","input":{"command":"echo ok"}},"cwd":"/project"}'
+    printf '%s' "$req_json" > "$perm_dir/perm-approve-1.req"
+
+    run env TMPDIR="$(dirname "$perm_dir")" clat permission approve perm-approve-1
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Approved"* ]]
+
+    [ -f "$perm_dir/perm-approve-1.resp" ]
+    grep -q '"allow"' "$perm_dir/perm-approve-1.resp"
+}
+
+@test "permission deny writes deny response" {
+    cd "$PROJECT_DIR"
+
+    local perm_dir
+    perm_dir="$(mktemp -d)/cc-permissions"
+    mkdir -p "$perm_dir"
+
+    local req_json='{"tool":{"name":"Write","input":{"file_path":"/etc/passwd"}},"cwd":"/danger"}'
+    printf '%s' "$req_json" > "$perm_dir/perm-deny-1.req"
+
+    run env TMPDIR="$(dirname "$perm_dir")" clat permission deny perm-deny-1
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Denied"* ]]
+
+    [ -f "$perm_dir/perm-deny-1.resp" ]
+    grep -q '"deny"' "$perm_dir/perm-deny-1.resp"
+}
+
+@test "permission approve with no match fails" {
+    cd "$PROJECT_DIR"
+
+    local perm_dir
+    perm_dir="$(mktemp -d)/cc-permissions"
+    mkdir -p "$perm_dir"
+
+    run env TMPDIR="$(dirname "$perm_dir")" clat permission approve nonexistent
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"no pending permission request"* ]]
+}

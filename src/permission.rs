@@ -2,60 +2,71 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-pub(crate) struct PermissionRequest {
+pub struct PermissionRequest {
     pub req_id: String,
     pub tool_name: String,
     pub tool_input_summary: String,
     pub cwd: String,
 }
 
-pub(crate) fn permissions_dir() -> PathBuf {
+pub fn permissions_dir() -> PathBuf {
     let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
     PathBuf::from(tmpdir).join("cc-permissions")
 }
 
-pub(crate) fn scan_permission_requests(dir: &Path) -> Option<PermissionRequest> {
-    let entries = std::fs::read_dir(dir).ok()?;
+fn parse_req_file(path: &Path) -> Option<PermissionRequest> {
+    let req_id = path.file_stem().and_then(|s| s.to_str())?.to_string();
+    let content = std::fs::read_to_string(path).ok()?;
+    let parsed: Value = serde_json::from_str(&content).ok()?;
 
+    let tool_name = parsed
+        .get("tool")
+        .and_then(|t| t.get("name"))
+        .and_then(|n| n.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let tool_input = parsed.get("tool").and_then(|t| t.get("input"));
+    let tool_input_summary = summarize_tool_input(&tool_name, tool_input);
+
+    let cwd = parsed
+        .get("cwd")
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    Some(PermissionRequest {
+        req_id,
+        tool_name,
+        tool_input_summary,
+        cwd,
+    })
+}
+
+pub fn list_permission_requests(dir: &Path) -> Vec<PermissionRequest> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut requests = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("req") {
             continue;
         }
-
-        let req_id = path.file_stem().and_then(|s| s.to_str())?.to_string();
-
-        let content = std::fs::read_to_string(&path).ok()?;
-        let parsed: Value = serde_json::from_str(&content).ok()?;
-
-        let tool_name = parsed
-            .get("tool")
-            .and_then(|t| t.get("name"))
-            .and_then(|n| n.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-
-        let tool_input = parsed.get("tool").and_then(|t| t.get("input"));
-        let tool_input_summary = summarize_tool_input(&tool_name, tool_input);
-
-        let cwd = parsed
-            .get("cwd")
-            .and_then(|c| c.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        return Some(PermissionRequest {
-            req_id,
-            tool_name,
-            tool_input_summary,
-            cwd,
-        });
+        if let Some(req) = parse_req_file(&path) {
+            requests.push(req);
+        }
     }
-
-    None
+    requests
 }
 
-pub(crate) fn write_permission_response(dir: &Path, req_id: &str, allow: bool) {
+pub fn scan_permission_requests(dir: &Path) -> Option<PermissionRequest> {
+    list_permission_requests(dir).into_iter().next()
+}
+
+pub fn write_permission_response(dir: &Path, req_id: &str, allow: bool) {
     let resp_path = dir.join(format!("{req_id}.resp"));
 
     let behavior = if allow { "allow" } else { "deny" };
@@ -236,5 +247,37 @@ mod tests {
                 .unwrap(),
             "allow"
         );
+    }
+
+    #[test]
+    fn list_returns_all_requests() {
+        let dir = TempDir::new().unwrap();
+        let req1 = serde_json::json!({
+            "tool": {"name": "Bash", "input": {"command": "ls"}},
+            "cwd": "/a"
+        });
+        let req2 = serde_json::json!({
+            "tool": {"name": "Write", "input": {"file_path": "/b.rs"}},
+            "cwd": "/b"
+        });
+        std::fs::write(dir.path().join("req-1.req"), req1.to_string()).unwrap();
+        std::fs::write(dir.path().join("req-2.req"), req2.to_string()).unwrap();
+
+        let requests = list_permission_requests(dir.path());
+        assert_eq!(requests.len(), 2);
+    }
+
+    #[test]
+    fn list_empty_dir() {
+        let dir = TempDir::new().unwrap();
+        let requests = list_permission_requests(dir.path());
+        assert!(requests.is_empty());
+    }
+
+    #[test]
+    fn list_nonexistent_dir() {
+        let dir = PathBuf::from("/tmp/cc-test-nonexistent-list-dir");
+        let requests = list_permission_requests(&dir);
+        assert!(requests.is_empty());
     }
 }

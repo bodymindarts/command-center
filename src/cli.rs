@@ -68,6 +68,12 @@ pub enum Command {
         message: String,
     },
 
+    /// Manage permission requests from spawned agents
+    Permission {
+        #[command(subcommand)]
+        action: PermissionAction,
+    },
+
     /// Mark a task as completed (called by wrapper script)
     #[command(hide = true)]
     Complete {
@@ -79,6 +85,24 @@ pub enum Command {
 
         /// Path to output file
         output_file: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PermissionAction {
+    /// List pending permission requests
+    List,
+
+    /// Approve a pending permission request
+    Approve {
+        /// Request ID (prefix match)
+        req_id: String,
+    },
+
+    /// Deny a pending permission request
+    Deny {
+        /// Request ID (prefix match)
+        req_id: String,
     },
 }
 

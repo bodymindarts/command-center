@@ -13,7 +13,7 @@ use chrono::Utc;
 use clap::Parser;
 use tabled::{Table, Tabled};
 
-use crate::cli::{Cli, Command};
+use crate::cli::{Cli, Command, PermissionAction};
 use crate::config::Paths;
 use crate::skill::SkillFile;
 use crate::store::{Store, Task};
@@ -33,6 +33,7 @@ fn main() -> Result<()> {
         Command::Start { resume } => cmd_start(resume.as_deref())?,
         Command::Goto { id } => cmd_goto(&store, &id)?,
         Command::Send { id, message } => cmd_send(&store, &id, &message)?,
+        Command::Permission { action } => cmd_permission(action)?,
         Command::Complete {
             id,
             exit_code,
@@ -256,6 +257,74 @@ fn cmd_complete(store: &Store, id: &str, exit_code: i32, output_file: Option<&st
         "failed"
     };
     println!("Task {id} marked as {status} (exit code: {exit_code})");
+
+    Ok(())
+}
+
+fn cmd_permission(action: PermissionAction) -> Result<()> {
+    let dir = permission::permissions_dir();
+
+    match action {
+        PermissionAction::List => {
+            let requests = permission::list_permission_requests(&dir);
+            if requests.is_empty() {
+                println!("No pending permission requests.");
+                return Ok(());
+            }
+
+            #[derive(Tabled)]
+            struct Row {
+                #[tabled(rename = "ID")]
+                id: String,
+                #[tabled(rename = "Tool")]
+                tool: String,
+                #[tabled(rename = "Input")]
+                input: String,
+                #[tabled(rename = "CWD")]
+                cwd: String,
+            }
+
+            let rows: Vec<Row> = requests
+                .iter()
+                .map(|r| Row {
+                    id: r.req_id.clone(),
+                    tool: r.tool_name.clone(),
+                    input: r.tool_input_summary.clone(),
+                    cwd: r.cwd.clone(),
+                })
+                .collect();
+
+            println!("{}", Table::new(rows));
+        }
+        PermissionAction::Approve { req_id } => {
+            cmd_permission_respond(&dir, &req_id, true)?;
+        }
+        PermissionAction::Deny { req_id } => {
+            cmd_permission_respond(&dir, &req_id, false)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_permission_respond(dir: &std::path::Path, req_id_prefix: &str, allow: bool) -> Result<()> {
+    let requests = permission::list_permission_requests(dir);
+
+    let matched: Vec<_> = requests
+        .iter()
+        .filter(|r| r.req_id.starts_with(req_id_prefix))
+        .collect();
+
+    match matched.len() {
+        0 => bail!("no pending permission request matching '{req_id_prefix}'"),
+        1 => {
+            let req = &matched[0];
+            permission::write_permission_response(dir, &req.req_id, allow);
+            let action = if allow { "Approved" } else { "Denied" };
+            println!("{action} {} ({})", req.tool_name, req.req_id);
+        }
+        n => bail!("ambiguous prefix '{req_id_prefix}': matches {n} requests"),
+    }
 
     Ok(())
 }
