@@ -1,5 +1,8 @@
+use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
+use anyhow::{Context, Result};
 use serde_json::Value;
 
 pub struct PermissionRequest {
@@ -12,6 +15,175 @@ pub struct PermissionRequest {
 pub fn permissions_dir() -> PathBuf {
     let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
     PathBuf::from(tmpdir).join("cc-permissions")
+}
+
+pub fn socket_path() -> PathBuf {
+    let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+    let base = std::fs::canonicalize(&tmpdir).unwrap_or_else(|_| PathBuf::from(&tmpdir));
+    base.join("cc-permissions.sock")
+}
+
+pub fn make_response_json(allow: bool, message: Option<&str>) -> String {
+    let behavior = if allow { "allow" } else { "deny" };
+    let mut decision = serde_json::json!({ "behavior": behavior });
+    if let Some(msg) = message {
+        decision["message"] = Value::String(msg.to_string());
+    }
+    serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PermissionRequest",
+            "decision": decision
+        }
+    })
+    .to_string()
+}
+
+pub fn parse_request_json(json: &str) -> Option<PermissionRequest> {
+    let parsed: Value = serde_json::from_str(json).ok()?;
+
+    let tool_name = parsed
+        .get("tool")
+        .and_then(|t| t.get("name"))
+        .and_then(|n| n.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let tool_input = parsed.get("tool").and_then(|t| t.get("input"));
+    let tool_input_summary = summarize_tool_input(&tool_name, tool_input);
+
+    let cwd = parsed
+        .get("cwd")
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    Some(PermissionRequest {
+        req_id: String::new(),
+        tool_name,
+        tool_input_summary,
+        cwd,
+    })
+}
+
+pub fn gate_request() -> Result<()> {
+    let mut input = String::new();
+    std::io::stdin()
+        .read_to_string(&mut input)
+        .context("failed to read request from stdin")?;
+
+    let sock = socket_path();
+    match UnixStream::connect(&sock) {
+        Ok(mut stream) => {
+            stream
+                .write_all(input.as_bytes())
+                .context("failed to write to socket")?;
+            stream
+                .shutdown(std::net::Shutdown::Write)
+                .context("failed to shutdown write")?;
+            let mut response = String::new();
+            stream
+                .read_to_string(&mut response)
+                .context("failed to read response from socket")?;
+            print!("{response}");
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+            let _ = std::fs::remove_file(&sock);
+            popup_fallback(&input)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => popup_fallback(&input),
+        Err(e) => Err(e).context("failed to connect to permission socket"),
+    }
+}
+
+fn popup_fallback(request_json: &str) -> Result<()> {
+    let Some(req) = parse_request_json(request_json) else {
+        print!(
+            "{}",
+            make_response_json(false, Some("Invalid request JSON"))
+        );
+        return Ok(());
+    };
+
+    // Check if tmux is available
+    let in_tmux = std::env::var("TMUX").is_ok();
+    if !in_tmux {
+        print!(
+            "{}",
+            make_response_json(false, Some("No approval UI available"))
+        );
+        return Ok(());
+    }
+
+    let exe = std::env::current_exe().context("failed to resolve current executable")?;
+    let resp_file = std::env::temp_dir().join(format!("cc-perm-{}.resp", std::process::id()));
+
+    let popup_cmd = format!(
+        "{} permission prompt --tool {} --input {} --response-file {}",
+        shell_escape::unix::escape(exe.display().to_string().into()),
+        shell_escape::unix::escape(req.tool_name.clone().into()),
+        shell_escape::unix::escape(req.tool_input_summary.clone().into()),
+        shell_escape::unix::escape(resp_file.display().to_string().into()),
+    );
+
+    let status = std::process::Command::new("tmux")
+        .args(["display-popup", "-E", "-w", "70", "-h", "8", &popup_cmd])
+        .status()
+        .context("failed to run tmux display-popup")?;
+
+    if status.success()
+        && let Ok(response) = std::fs::read_to_string(&resp_file)
+    {
+        print!("{response}");
+        let _ = std::fs::remove_file(&resp_file);
+        return Ok(());
+    }
+
+    // Popup dismissed or failed — deny
+    let _ = std::fs::remove_file(&resp_file);
+    print!(
+        "{}",
+        make_response_json(false, Some("Popup dismissed or unavailable"))
+    );
+    Ok(())
+}
+
+pub fn prompt_request(tool: &str, input_summary: &str, response_file: &str) -> Result<()> {
+    use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+
+    crossterm::terminal::enable_raw_mode().context("failed to enable raw mode")?;
+
+    // Print prompt info
+    let mut stdout = std::io::stdout();
+    write!(stdout, "\r\n  Tool:  {tool}\r\n")?;
+    write!(stdout, "  Input: {input_summary}\r\n\r\n")?;
+    write!(stdout, "  [y] approve   [n] deny\r\n")?;
+    stdout.flush()?;
+
+    let allow = loop {
+        if event::poll(std::time::Duration::from_secs(300))? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                match key.code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') => break true,
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => break false,
+                    _ => {}
+                }
+            }
+        } else {
+            break false; // timeout
+        }
+    };
+
+    crossterm::terminal::disable_raw_mode().context("failed to disable raw mode")?;
+
+    let response = make_response_json(allow, None);
+    std::fs::write(response_file, &response)
+        .with_context(|| format!("failed to write response to {response_file}"))?;
+
+    Ok(())
 }
 
 fn parse_req_file(path: &Path) -> Option<PermissionRequest> {
@@ -68,18 +240,7 @@ pub fn scan_permission_requests(dir: &Path) -> Option<PermissionRequest> {
 
 pub fn write_permission_response(dir: &Path, req_id: &str, allow: bool) {
     let resp_path = dir.join(format!("{req_id}.resp"));
-
-    let behavior = if allow { "allow" } else { "deny" };
-    let json = serde_json::json!({
-        "hookSpecificOutput": {
-            "hookEventName": "PermissionRequest",
-            "decision": {
-                "behavior": behavior
-            }
-        }
-    });
-
-    let _ = std::fs::write(resp_path, json.to_string());
+    let _ = std::fs::write(resp_path, make_response_json(allow, None));
 }
 
 pub(crate) fn summarize_tool_input(tool_name: &str, input: Option<&Value>) -> String {
@@ -279,5 +440,50 @@ mod tests {
         let dir = PathBuf::from("/tmp/cc-test-nonexistent-list-dir");
         let requests = list_permission_requests(&dir);
         assert!(requests.is_empty());
+    }
+
+    #[test]
+    fn make_response_json_allow() {
+        let json = make_response_json(true, None);
+        let parsed: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed["hookSpecificOutput"]["decision"]["behavior"]
+                .as_str()
+                .unwrap(),
+            "allow"
+        );
+        assert!(parsed["hookSpecificOutput"]["decision"]["message"].is_null());
+    }
+
+    #[test]
+    fn make_response_json_deny_with_message() {
+        let json = make_response_json(false, Some("Timed out"));
+        let parsed: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed["hookSpecificOutput"]["decision"]["behavior"]
+                .as_str()
+                .unwrap(),
+            "deny"
+        );
+        assert_eq!(
+            parsed["hookSpecificOutput"]["decision"]["message"]
+                .as_str()
+                .unwrap(),
+            "Timed out"
+        );
+    }
+
+    #[test]
+    fn parse_request_json_valid() {
+        let json = r#"{"tool":{"name":"Bash","input":{"command":"ls -la"}},"cwd":"/home/user"}"#;
+        let req = parse_request_json(json).unwrap();
+        assert_eq!(req.tool_name, "Bash");
+        assert_eq!(req.tool_input_summary, "ls -la");
+        assert_eq!(req.cwd, "/home/user");
+    }
+
+    #[test]
+    fn parse_request_json_invalid() {
+        assert!(parse_request_json("not json {{{").is_none());
     }
 }

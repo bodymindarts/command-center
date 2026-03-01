@@ -296,6 +296,16 @@ fn cmd_permission(action: PermissionAction) -> Result<()> {
         PermissionAction::Deny { req_id } => {
             cmd_permission_respond(&dir, &req_id, false)?;
         }
+        PermissionAction::Gate => {
+            permission::gate_request()?;
+        }
+        PermissionAction::Prompt {
+            tool,
+            input,
+            response_file,
+        } => {
+            permission::prompt_request(&tool, &input, &response_file)?;
+        }
     }
 
     Ok(())

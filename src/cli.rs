@@ -122,6 +122,21 @@ pub enum PermissionAction {
         /// Request ID (prefix match)
         req_id: String,
     },
+
+    /// Gate a permission request (stdin→socket/popup→stdout)
+    #[command(hide = true)]
+    Gate,
+
+    /// Interactive y/n prompt inside tmux popup
+    #[command(hide = true)]
+    Prompt {
+        #[arg(long)]
+        tool: String,
+        #[arg(long)]
+        input: String,
+        #[arg(long)]
+        response_file: String,
+    },
 }
 
 fn parse_param(s: &str) -> Result<(String, String), String> {
