@@ -11,6 +11,7 @@ pub struct SpawnResult {
 pub trait Runtime {
     fn create_worktree(&self, repo_root: &Path, name: &str) -> Result<PathBuf>;
     fn spawn_agent(&self, task_name: &str, prompt: &str, work_dir: &Path) -> Result<SpawnResult>;
+    fn resume_agent(&self, task_name: &str, work_dir: &Path) -> Result<SpawnResult>;
     fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> Result<()>;
     fn capture_pane_output(&self, pane_id: &str) -> Result<String>;
     fn kill_tmux_window(&self, window_id: &str) -> Result<()>;
@@ -35,6 +36,68 @@ impl TmuxRuntime {
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    fn launch_agent_window(
+        &self,
+        task_name: &str,
+        work_dir: &Path,
+        claude_cmd: &str,
+    ) -> Result<SpawnResult> {
+        if std::env::var("TMUX").is_err() {
+            bail!("clat spawn must be run inside a tmux session");
+        }
+
+        let work_dir_str = work_dir.display().to_string();
+        let window_name = format!("cc:{task_name}");
+
+        let window_id = self.tmux_cmd(&[
+            "new-window",
+            "-d",
+            "-P",
+            "-F",
+            "#{window_id}",
+            "-n",
+            &window_name,
+            "-c",
+            &work_dir_str,
+        ])?;
+
+        let top_pane = self.tmux_cmd(&["list-panes", "-t", &window_id, "-F", "#{pane_id}"])?;
+
+        let bottom_pane = self.tmux_cmd(&[
+            "split-window",
+            "-v",
+            "-t",
+            &top_pane,
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-c",
+            &work_dir_str,
+        ])?;
+
+        self.tmux_cmd(&["resize-pane", "-t", &top_pane, "-D", "8"])?;
+
+        let claude_pane = self.tmux_cmd(&[
+            "split-window",
+            "-h",
+            "-t",
+            &bottom_pane,
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-c",
+            &work_dir_str,
+        ])?;
+
+        self.tmux_cmd(&["send-keys", "-t", &claude_pane, claude_cmd, "Enter"])?;
+        self.tmux_cmd(&["send-keys", "-t", &top_pane, "nvim .", "Enter"])?;
+
+        Ok(SpawnResult {
+            window_id,
+            pane_id: claude_pane,
+        })
     }
 }
 
@@ -80,66 +143,20 @@ impl Runtime for TmuxRuntime {
         rendered_prompt: &str,
         work_dir: &Path,
     ) -> Result<SpawnResult> {
-        if std::env::var("TMUX").is_err() {
-            bail!("clat spawn must be run inside a tmux session");
-        }
-
         let claude_bin = self.resolve_binary("claude")?;
 
         // Write skill prompt to TASK.md in the worktree so claude has context
         let task_md = work_dir.join("TASK.md");
         std::fs::write(&task_md, rendered_prompt).context("failed to write TASK.md")?;
 
-        let work_dir_str = work_dir.display().to_string();
-        let window_name = format!("cc:{task_name}");
+        self.launch_agent_window(task_name, work_dir, &claude_bin)
+    }
 
-        let window_id = self.tmux_cmd(&[
-            "new-window",
-            "-d",
-            "-P",
-            "-F",
-            "#{window_id}",
-            "-n",
-            &window_name,
-            "-c",
-            &work_dir_str,
-        ])?;
+    fn resume_agent(&self, task_name: &str, work_dir: &Path) -> Result<SpawnResult> {
+        let claude_bin = self.resolve_binary("claude")?;
+        let claude_cmd = format!("{claude_bin} --continue");
 
-        let top_pane = self.tmux_cmd(&["list-panes", "-t", &window_id, "-F", "#{pane_id}"])?;
-
-        let bottom_pane = self.tmux_cmd(&[
-            "split-window",
-            "-v",
-            "-t",
-            &top_pane,
-            "-P",
-            "-F",
-            "#{pane_id}",
-            "-c",
-            &work_dir_str,
-        ])?;
-
-        self.tmux_cmd(&["resize-pane", "-t", &top_pane, "-D", "8"])?;
-
-        let claude_pane = self.tmux_cmd(&[
-            "split-window",
-            "-h",
-            "-t",
-            &bottom_pane,
-            "-P",
-            "-F",
-            "#{pane_id}",
-            "-c",
-            &work_dir_str,
-        ])?;
-
-        self.tmux_cmd(&["send-keys", "-t", &claude_pane, &claude_bin, "Enter"])?;
-        self.tmux_cmd(&["send-keys", "-t", &top_pane, "nvim .", "Enter"])?;
-
-        Ok(SpawnResult {
-            window_id,
-            pane_id: claude_pane,
-        })
+        self.launch_agent_window(task_name, work_dir, &claude_cmd)
     }
 
     fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> Result<()> {

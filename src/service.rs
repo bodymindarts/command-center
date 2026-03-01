@@ -149,7 +149,7 @@ impl<'a, R: Runtime> TaskService<'a, R> {
 
         let result = self
             .runtime
-            .spawn_agent(&task.name, "", std::path::Path::new(work_dir))?;
+            .resume_agent(&task.name, std::path::Path::new(work_dir))?;
 
         self.store
             .reopen_task(task.id.as_str(), &result.pane_id, &result.window_id)?;
@@ -330,6 +330,16 @@ mod tests {
             _prompt: &str,
             _work_dir: &Path,
         ) -> Result<SpawnResult> {
+            self.calls.borrow_mut().push(Call::SpawnAgent {
+                task_name: task_name.to_string(),
+            });
+            Ok(SpawnResult {
+                window_id: self.spawn_window_id.clone(),
+                pane_id: self.spawn_pane_id.clone(),
+            })
+        }
+
+        fn resume_agent(&self, task_name: &str, _work_dir: &Path) -> Result<SpawnResult> {
             self.calls.borrow_mut().push(Call::SpawnAgent {
                 task_name: task_name.to_string(),
             });
