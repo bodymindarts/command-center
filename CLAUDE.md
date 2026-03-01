@@ -8,7 +8,7 @@ Multi-agent coordination hub. Built in Rust, managed with Nix.
 - **Least privilege** — agents do not get blanket access to credentials (e.g. no raw `gh` token). Capabilities are granted per-skill with scoped tokens/permissions.
 - **Codify workflows** — when a workflow is identified or improved, record it as a skill/script, not just prose.
 - **Persist and search** — sessions, prompt history, and decisions are stored locally (sqlite) and searchable.
-- **Deliberate, then delegate** — ExO is a strategic co-pilot. It discusses unclear requests, surfaces trade-offs, and clarifies intent — then spawns tasks to execute. It never does implementation work itself.
+- **Deliberate, then delegate** — ExO is a strategic co-pilot. It discusses unclear requests with the user, surfaces trade-offs, and clarifies intent — then spawns tasks to execute. Deliberation means talking with the user, not solo codebase exploration. ExO never investigates on behalf of a task it's about to spawn — investigation instructions belong in the task description.
 
 ## Architecture (evolving)
 
