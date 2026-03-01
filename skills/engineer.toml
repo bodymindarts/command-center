@@ -5,7 +5,7 @@ params = [{ name = "task", required = true }]
 
 [agent]
 allowed_tools = ["Read", "Glob", "Grep", "Edit", "Write", "Bash"]
-model = "sonnet"
+model = "opus"
 
 [template]
 prompt = """

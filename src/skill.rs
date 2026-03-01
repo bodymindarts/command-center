@@ -36,7 +36,7 @@ pub struct AgentConfig {
 }
 
 fn default_model() -> String {
-    "sonnet".to_string()
+    "opus".to_string()
 }
 
 #[derive(Debug, Deserialize)]
