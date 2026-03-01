@@ -3,13 +3,12 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 
-use crate::store::Store;
 use crate::task::Task;
 
 use super::app::{App, Focus};
 use super::chat::{ExoState, Role};
 
-pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, store: &Store) {
+pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -28,7 +27,7 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, store: &Sto
     render_task_list(frame, app, main_area[0], focused_task_list);
 
     if app.show_detail && focused_task_list {
-        render_detail(frame, app, store, main_area[1]);
+        render_detail(frame, app, main_area[1]);
     } else {
         render_chat(frame, app, exo, main_area[1]);
     }
@@ -83,7 +82,7 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
     frame.render_stateful_widget(list, area, &mut app.list_state);
 }
 
-fn render_detail(frame: &mut ratatui::Frame, app: &App, store: &Store, area: Rect) {
+fn render_detail(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     let Some(task) = app.selected_task() else {
         let empty = Paragraph::new("No task selected")
             .block(
@@ -112,9 +111,7 @@ fn render_detail(frame: &mut ratatui::Frame, app: &App, store: &Store, area: Rec
         Line::from(""),
     ];
 
-    let messages = store.list_messages(&task.id).unwrap_or_default();
-
-    if messages.is_empty() {
+    if app.selected_messages.is_empty() {
         // Fallback: show prompt file + output for tasks with no messages
         let prompt_text = read_prompt_file(&task.id);
         let output_text = read_task_output(task);
@@ -141,7 +138,7 @@ fn render_detail(frame: &mut ratatui::Frame, app: &App, store: &Store, area: Rec
             lines.push(Line::from(l.to_string()));
         }
     } else {
-        for msg in &messages {
+        for msg in &app.selected_messages {
             let (label, label_color) = match msg.role.as_str() {
                 "system" => ("PROMPT", Color::Cyan),
                 "user" => ("YOU", Color::Green),

@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 
+#[derive(Debug)]
 #[allow(dead_code)]
 pub struct Task {
     pub id: String,
@@ -16,6 +17,7 @@ pub struct Task {
     pub output: Option<String>,
 }
 
+#[derive(Debug)]
 #[allow(dead_code)]
 pub struct TaskMessage {
     pub id: String,

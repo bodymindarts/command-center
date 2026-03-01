@@ -2,105 +2,69 @@ mod cli;
 mod config;
 mod permission;
 mod runtime;
+mod service;
 mod skill;
-mod spawn;
 mod store;
 mod task;
 mod tui;
 
-use std::collections::HashMap;
-
 use anyhow::{Context, Result, bail};
-use chrono::Utc;
 use clap::Parser;
 use tabled::{Table, Tabled};
 
 use crate::cli::{Cli, Command, PermissionAction};
 use crate::config::Paths;
-use crate::skill::SkillFile;
+use crate::runtime::TmuxRuntime;
+use crate::service::TaskService;
 use crate::store::Store;
-use crate::task::Task;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let paths = Paths::resolve()?;
     paths.ensure_dirs()?;
     let store = Store::open(&paths.db_path)?;
+    let runtime = TmuxRuntime;
+    let service = TaskService::new(&store, &runtime, &paths);
 
     match cli.command {
-        Command::Spawn { name, skill, param } => cmd_spawn(&paths, &store, &name, &skill, param)?,
-        Command::List { all } => cmd_list(&store, all)?,
-        Command::History => cmd_list(&store, true)?,
-        Command::Log { id } => cmd_log(&store, &id)?,
-        Command::Close { id } => cmd_close(&store, &id)?,
-        Command::Dash { resume } => tui::run(&store, resume.as_deref())?,
+        Command::Spawn { name, skill, param } => cmd_spawn(&service, &name, &skill, param)?,
+        Command::List { all } => cmd_list(&service, all)?,
+        Command::History => cmd_list(&service, true)?,
+        Command::Log { id } => cmd_log(&service, &id)?,
+        Command::Close { id } => cmd_close(&service, &id)?,
+        Command::Dash { resume } => tui::run(&service, resume.as_deref())?,
         Command::Start { resume } => cmd_start(resume.as_deref())?,
-        Command::Goto { id } => cmd_goto(&store, &id)?,
-        Command::Send { id, message } => cmd_send(&store, &id, &message)?,
+        Command::Goto { id } => cmd_goto(&service, &id)?,
+        Command::Send { id, message } => cmd_send(&service, &id, &message)?,
         Command::Permission { action } => cmd_permission(action)?,
         Command::Complete {
             id,
             exit_code,
             output_file,
-        } => cmd_complete(&store, &id, exit_code, output_file.as_deref())?,
+        } => cmd_complete(&service, &id, exit_code, output_file.as_deref())?,
     }
 
     Ok(())
 }
 
 fn cmd_spawn(
-    paths: &Paths,
-    store: &Store,
+    service: &TaskService,
     task_name: &str,
     skill_name: &str,
     params: Vec<(String, String)>,
 ) -> Result<()> {
-    let skill = SkillFile::load(&paths.skills_dir, skill_name)?;
-
-    let params_map: HashMap<String, String> = params.into_iter().collect();
-    skill.validate_params(&params_map)?;
-
-    let rendered = skill.render_prompt(&params_map)?;
-
-    let task_id = uuid::Uuid::new_v4().to_string();
-    let short_id = &task_id[..8];
-    let worktree_name = format!("{task_name}-{short_id}");
-    let worktree_path = spawn::create_worktree(&paths.root, &worktree_name)?;
-
-    let task = Task {
-        id: task_id.clone(),
-        name: task_name.to_string(),
-        skill_name: skill_name.to_string(),
-        params_json: serde_json::to_string(&params_map)?,
-        status: "running".to_string(),
-        tmux_pane: None,
-        tmux_window: None,
-        work_dir: Some(worktree_path.display().to_string()),
-        started_at: Utc::now(),
-        completed_at: None,
-        exit_code: None,
-        output: None,
-    };
-
-    store.insert_task(&task)?;
-    store.insert_message(&task_id, "system", &rendered)?;
-
-    let result = spawn::spawn_agent(task_name, &rendered, &worktree_path)?;
-    store.update_tmux_pane(&task_id, &result.pane_id)?;
-    store.update_tmux_window(&task_id, &result.window_id)?;
-
-    println!("Spawned task {task_name} ({short_id})");
-    println!("  skill:  {skill_name}");
+    let result = service.spawn(task_name, skill_name, params)?;
+    println!("Spawned task {} ({})", result.task_name, result.short_id);
+    println!("  skill:  {}", result.skill_name);
     println!("  window: {}", result.window_id);
-
     Ok(())
 }
 
-fn cmd_list(store: &Store, all: bool) -> Result<()> {
+fn cmd_list(service: &TaskService, all: bool) -> Result<()> {
     let tasks = if all {
-        store.list_tasks()?
+        service.list_all()?
     } else {
-        store.list_active_tasks()?
+        service.list_active()?
     };
 
     if tasks.is_empty() {
@@ -146,51 +110,25 @@ fn cmd_list(store: &Store, all: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_close(store: &Store, id_prefix: &str) -> Result<()> {
-    let task = store
-        .get_task_by_prefix(id_prefix)?
-        .ok_or_else(|| anyhow::anyhow!("no task found matching '{id_prefix}'"))?;
-
-    if task.status != "running" {
-        bail!(
-            "task {} ({}) is '{}', not 'running'",
-            task.name,
-            &task.id[..8],
-            task.status
-        );
-    }
-
-    let output = task
-        .tmux_pane
-        .as_deref()
-        .and_then(|pane| spawn::capture_pane_output(pane).ok());
-
-    if let Some(window_id) = &task.tmux_window {
-        let _ = spawn::kill_tmux_window(window_id);
-    }
-
-    let closed = store.close_task(&task.id, output.as_deref())?;
-    if !closed {
-        bail!("failed to close task {} ({})", task.name, &task.id[..8]);
-    }
-
-    println!("Closed task {} ({})", task.name, &task.id[..8]);
+fn cmd_close(service: &TaskService, id: &str) -> Result<()> {
+    let result = service.close(id)?;
+    println!("Closed task {} ({})", result.task_name, result.short_id);
     Ok(())
 }
 
-fn cmd_log(store: &Store, id_prefix: &str) -> Result<()> {
-    let task = store
-        .get_task_by_prefix(id_prefix)?
-        .ok_or_else(|| anyhow::anyhow!("no task found matching '{id_prefix}'"))?;
+fn cmd_log(service: &TaskService, id_prefix: &str) -> Result<()> {
+    let log = service.log(id_prefix)?;
 
-    let messages = store.list_messages(&task.id)?;
-
-    if messages.is_empty() {
-        println!("No messages for task {} ({}).", task.name, &task.id[..8]);
+    if log.messages.is_empty() {
+        println!(
+            "No messages for task {} ({}).",
+            log.task.name,
+            &log.task.id[..8]
+        );
         return Ok(());
     }
 
-    for msg in &messages {
+    for msg in &log.messages {
         let label = match msg.role.as_str() {
             "system" => "PROMPT",
             "user" => "YOU",
@@ -202,11 +140,7 @@ fn cmd_log(store: &Store, id_prefix: &str) -> Result<()> {
         println!();
     }
 
-    // For running tasks, append live pane scrollback
-    if task.status == "running"
-        && let Some(pane_id) = &task.tmux_pane
-        && let Ok(output) = spawn::capture_pane_output(pane_id)
-    {
+    if let Some(output) = &log.live_output {
         let lines: Vec<&str> = output.lines().collect();
         let tail = if lines.len() > 50 {
             &lines[lines.len() - 50..]
@@ -222,26 +156,8 @@ fn cmd_log(store: &Store, id_prefix: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_goto(store: &Store, id_prefix: &str) -> Result<()> {
-    let task = store
-        .get_task_by_prefix(id_prefix)?
-        .ok_or_else(|| anyhow::anyhow!("no task found matching '{id_prefix}'"))?;
-
-    let window_id = task
-        .tmux_window
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("task {} has no tmux window", &task.id[..8]))?;
-
-    let output = std::process::Command::new("tmux")
-        .args(["select-window", "-t", window_id])
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("tmux select-window failed: {stderr}");
-    }
-
-    Ok(())
+fn cmd_goto(service: &TaskService, id: &str) -> Result<()> {
+    service.goto(id)
 }
 
 fn cmd_start(resume: Option<&str>) -> Result<()> {
@@ -256,7 +172,6 @@ fn cmd_start(resume: Option<&str>) -> Result<()> {
     }
 
     if std::env::var("TMUX").is_ok() {
-        // Use the current pane as the dashboard, split below for shell
         let top_pane = runtime::tmux_cmd(&["display-message", "-p", "#{pane_id}"])?;
         runtime::tmux_cmd(&["split-window", "-v", "-t", &top_pane])?;
         runtime::tmux_cmd(&["resize-pane", "-t", &top_pane, "-D", "8"])?;
@@ -280,26 +195,20 @@ fn cmd_start(resume: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_send(store: &Store, id_prefix: &str, message: &str) -> Result<()> {
-    let task = store
-        .get_task_by_prefix(id_prefix)?
-        .ok_or_else(|| anyhow::anyhow!("no task found matching '{id_prefix}'"))?;
-
-    let pane_id = task
-        .tmux_pane
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("task {} has no tmux pane", &task.id[..8]))?;
-
-    spawn::send_keys_to_pane(pane_id, message)?;
-    store.insert_message(&task.id, "user", message)?;
-    println!("Sent message to {} ({})", task.name, &task.id[..8]);
-
+fn cmd_send(service: &TaskService, id: &str, message: &str) -> Result<()> {
+    let result = service.send(id, message)?;
+    println!("Sent message to {} ({})", result.task_name, result.short_id);
     Ok(())
 }
 
-fn cmd_complete(store: &Store, id: &str, exit_code: i32, output_file: Option<&str>) -> Result<()> {
+fn cmd_complete(
+    service: &TaskService,
+    id: &str,
+    exit_code: i32,
+    output_file: Option<&str>,
+) -> Result<()> {
     let output = output_file.and_then(|path| std::fs::read_to_string(path).ok());
-    store.complete_task(id, exit_code, output.as_deref())?;
+    service.complete(id, exit_code, output.as_deref())?;
 
     let status = if exit_code == 0 {
         "completed"

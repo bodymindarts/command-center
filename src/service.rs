@@ -1,0 +1,596 @@
+use std::collections::HashMap;
+
+use anyhow::{Result, bail};
+use chrono::Utc;
+
+use crate::config::Paths;
+use crate::runtime::Runtime;
+use crate::skill::SkillFile;
+use crate::store::Store;
+use crate::task::{Task, TaskMessage};
+
+#[derive(Debug)]
+pub struct SpawnOutput {
+    pub task_name: String,
+    pub short_id: String,
+    pub skill_name: String,
+    pub window_id: String,
+}
+
+#[derive(Debug)]
+pub struct CloseOutput {
+    pub task_name: String,
+    pub short_id: String,
+}
+
+#[derive(Debug)]
+pub struct SendOutput {
+    pub task_name: String,
+    pub short_id: String,
+}
+
+#[derive(Debug)]
+pub struct LogOutput {
+    pub task: Task,
+    pub messages: Vec<TaskMessage>,
+    pub live_output: Option<String>,
+}
+
+pub struct TaskService<'a> {
+    store: &'a Store,
+    runtime: &'a dyn Runtime,
+    paths: &'a Paths,
+}
+
+impl<'a> TaskService<'a> {
+    pub fn new(store: &'a Store, runtime: &'a dyn Runtime, paths: &'a Paths) -> Self {
+        Self {
+            store,
+            runtime,
+            paths,
+        }
+    }
+
+    pub fn spawn(
+        &self,
+        task_name: &str,
+        skill_name: &str,
+        params: Vec<(String, String)>,
+    ) -> Result<SpawnOutput> {
+        let skill = SkillFile::load(&self.paths.skills_dir, skill_name)?;
+
+        let params_map: HashMap<String, String> = params.into_iter().collect();
+        skill.validate_params(&params_map)?;
+
+        let rendered = skill.render_prompt(&params_map)?;
+
+        let task_id = uuid::Uuid::new_v4().to_string();
+        let short_id = task_id[..8].to_string();
+        let worktree_name = format!("{task_name}-{short_id}");
+        let worktree_path = self
+            .runtime
+            .create_worktree(&self.paths.root, &worktree_name)?;
+
+        let task = Task {
+            id: task_id.clone(),
+            name: task_name.to_string(),
+            skill_name: skill_name.to_string(),
+            params_json: serde_json::to_string(&params_map)?,
+            status: "running".to_string(),
+            tmux_pane: None,
+            tmux_window: None,
+            work_dir: Some(worktree_path.display().to_string()),
+            started_at: Utc::now(),
+            completed_at: None,
+            exit_code: None,
+            output: None,
+        };
+
+        self.store.insert_task(&task)?;
+        self.store.insert_message(&task_id, "system", &rendered)?;
+
+        let result = self
+            .runtime
+            .spawn_agent(task_name, &rendered, &worktree_path)?;
+        self.store.update_tmux_pane(&task_id, &result.pane_id)?;
+        self.store.update_tmux_window(&task_id, &result.window_id)?;
+
+        Ok(SpawnOutput {
+            task_name: task_name.to_string(),
+            short_id,
+            skill_name: skill_name.to_string(),
+            window_id: result.window_id,
+        })
+    }
+
+    pub fn close(&self, id_prefix: &str) -> Result<CloseOutput> {
+        let task = self.resolve_task(id_prefix)?;
+
+        if task.status != "running" {
+            bail!(
+                "task {} ({}) is '{}', not 'running'",
+                task.name,
+                &task.id[..8],
+                task.status
+            );
+        }
+
+        let output = task
+            .tmux_pane
+            .as_deref()
+            .and_then(|pane| self.runtime.capture_pane_output(pane).ok());
+
+        if let Some(window_id) = &task.tmux_window {
+            let _ = self.runtime.kill_tmux_window(window_id);
+        }
+
+        let closed = self.store.close_task(&task.id, output.as_deref())?;
+        if !closed {
+            bail!("failed to close task {} ({})", task.name, &task.id[..8]);
+        }
+
+        Ok(CloseOutput {
+            task_name: task.name,
+            short_id: task.id[..8].to_string(),
+        })
+    }
+
+    pub fn send(&self, id_prefix: &str, message: &str) -> Result<SendOutput> {
+        let task = self.resolve_task(id_prefix)?;
+
+        let pane_id = task
+            .tmux_pane
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("task {} has no tmux pane", &task.id[..8]))?;
+
+        self.runtime.send_keys_to_pane(pane_id, message)?;
+        self.store.insert_message(&task.id, "user", message)?;
+
+        Ok(SendOutput {
+            task_name: task.name,
+            short_id: task.id[..8].to_string(),
+        })
+    }
+
+    pub fn send_by_id(&self, task_id: &str, pane_id: &str, message: &str) {
+        let _ = self.runtime.send_keys_to_pane(pane_id, message);
+        let _ = self.store.insert_message(task_id, "user", message);
+    }
+
+    pub fn goto(&self, id_prefix: &str) -> Result<()> {
+        let task = self.resolve_task(id_prefix)?;
+
+        let window_id = task
+            .tmux_window
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("task {} has no tmux window", &task.id[..8]))?;
+
+        self.runtime.select_window(window_id)
+    }
+
+    pub fn goto_window(&self, window_id: &str) {
+        let _ = self.runtime.select_window(window_id);
+    }
+
+    pub fn log(&self, id_prefix: &str) -> Result<LogOutput> {
+        let task = self.resolve_task(id_prefix)?;
+        let messages = self.store.list_messages(&task.id)?;
+
+        let live_output = if task.status == "running" {
+            task.tmux_pane
+                .as_deref()
+                .and_then(|pane| self.runtime.capture_pane_output(pane).ok())
+        } else {
+            None
+        };
+
+        Ok(LogOutput {
+            task,
+            messages,
+            live_output,
+        })
+    }
+
+    pub fn list_active(&self) -> Result<Vec<Task>> {
+        self.store.list_active_tasks()
+    }
+
+    pub fn list_all(&self) -> Result<Vec<Task>> {
+        self.store.list_tasks()
+    }
+
+    pub fn messages(&self, task_id: &str) -> Result<Vec<TaskMessage>> {
+        self.store.list_messages(task_id)
+    }
+
+    pub fn complete(&self, id: &str, exit_code: i32, output: Option<&str>) -> Result<()> {
+        self.store.complete_task(id, exit_code, output)
+    }
+
+    fn resolve_task(&self, id_prefix: &str) -> Result<Task> {
+        self.store
+            .get_task_by_prefix(id_prefix)?
+            .ok_or_else(|| anyhow::anyhow!("no task found matching '{id_prefix}'"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
+
+    use anyhow::{Result, bail};
+
+    use crate::runtime::{Runtime, SpawnResult};
+    use crate::store::Store;
+
+    use super::*;
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum Call {
+        CreateWorktree { name: String },
+        SpawnAgent { task_name: String },
+        SendKeys { pane_id: String, message: String },
+        CaptureOutput { pane_id: String },
+        KillWindow { window_id: String },
+        SelectWindow { window_id: String },
+    }
+
+    struct FakeRuntime {
+        calls: RefCell<Vec<Call>>,
+        worktree_dir: PathBuf,
+        spawn_window_id: String,
+        spawn_pane_id: String,
+        capture_result: RefCell<Option<String>>,
+        kill_should_fail: RefCell<bool>,
+    }
+
+    impl FakeRuntime {
+        fn new(worktree_dir: &Path) -> Self {
+            Self {
+                calls: RefCell::new(Vec::new()),
+                worktree_dir: worktree_dir.to_path_buf(),
+                spawn_window_id: "@fake-win".to_string(),
+                spawn_pane_id: "%fake-pane".to_string(),
+                capture_result: RefCell::new(Some("captured output".to_string())),
+                kill_should_fail: RefCell::new(false),
+            }
+        }
+    }
+
+    impl Runtime for FakeRuntime {
+        fn create_worktree(&self, _repo_root: &Path, name: &str) -> Result<PathBuf> {
+            self.calls.borrow_mut().push(Call::CreateWorktree {
+                name: name.to_string(),
+            });
+            let path = self.worktree_dir.join(name);
+            std::fs::create_dir_all(&path)?;
+            Ok(path)
+        }
+
+        fn spawn_agent(
+            &self,
+            task_name: &str,
+            _prompt: &str,
+            _work_dir: &Path,
+        ) -> Result<SpawnResult> {
+            self.calls.borrow_mut().push(Call::SpawnAgent {
+                task_name: task_name.to_string(),
+            });
+            Ok(SpawnResult {
+                window_id: self.spawn_window_id.clone(),
+                pane_id: self.spawn_pane_id.clone(),
+            })
+        }
+
+        fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> Result<()> {
+            self.calls.borrow_mut().push(Call::SendKeys {
+                pane_id: pane_id.to_string(),
+                message: message.to_string(),
+            });
+            Ok(())
+        }
+
+        fn capture_pane_output(&self, pane_id: &str) -> Result<String> {
+            self.calls.borrow_mut().push(Call::CaptureOutput {
+                pane_id: pane_id.to_string(),
+            });
+            self.capture_result
+                .borrow()
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("no capture result"))
+        }
+
+        fn kill_tmux_window(&self, window_id: &str) -> Result<()> {
+            self.calls.borrow_mut().push(Call::KillWindow {
+                window_id: window_id.to_string(),
+            });
+            if *self.kill_should_fail.borrow() {
+                bail!("kill failed");
+            }
+            Ok(())
+        }
+
+        fn select_window(&self, window_id: &str) -> Result<()> {
+            self.calls.borrow_mut().push(Call::SelectWindow {
+                window_id: window_id.to_string(),
+            });
+            Ok(())
+        }
+    }
+
+    fn test_paths(tmp: &Path) -> Paths {
+        let skills_dir = tmp.join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        // Write a minimal noop skill
+        std::fs::write(
+            skills_dir.join("noop.toml"),
+            r#"
+[skill]
+name = "noop"
+description = "do nothing"
+params = []
+
+[agent]
+allowed_tools = []
+
+[template]
+prompt = "noop prompt"
+"#,
+        )
+        .unwrap();
+
+        Paths {
+            root: tmp.to_path_buf(),
+            skills_dir,
+            data_dir: tmp.join("data"),
+            db_path: tmp.join("data/cc.db"),
+        }
+    }
+
+    fn spawn_test_task(service: &TaskService) -> SpawnOutput {
+        service
+            .spawn("test-task", "noop", vec![])
+            .expect("spawn should succeed")
+    }
+
+    #[test]
+    fn spawn_creates_task_and_calls_runtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        let service = TaskService::new(&store, &runtime, &paths);
+
+        let output = spawn_test_task(&service);
+
+        assert_eq!(output.task_name, "test-task");
+        assert_eq!(output.skill_name, "noop");
+        assert_eq!(output.window_id, "@fake-win");
+
+        // Verify task is in store
+        let tasks = store.list_active_tasks().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].name, "test-task");
+        assert_eq!(tasks[0].tmux_pane.as_deref(), Some("%fake-pane"));
+
+        // Verify system message recorded
+        let messages = store.list_messages(&tasks[0].id).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "system");
+
+        // Verify call order
+        let calls = runtime.calls.borrow();
+        assert!(matches!(calls[0], Call::CreateWorktree { .. }));
+        assert!(matches!(calls[1], Call::SpawnAgent { .. }));
+    }
+
+    #[test]
+    fn close_captures_output_before_killing_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        let service = TaskService::new(&store, &runtime, &paths);
+
+        let spawned = spawn_test_task(&service);
+        let result = service.close(&spawned.short_id).unwrap();
+
+        assert_eq!(result.task_name, "test-task");
+
+        // Verify task is closed with output
+        let task = store
+            .get_task_by_prefix(&spawned.short_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(task.status, "closed");
+        assert_eq!(task.output.as_deref(), Some("captured output"));
+
+        // Verify call order: CaptureOutput before KillWindow
+        let calls = runtime.calls.borrow();
+        let capture_pos = calls
+            .iter()
+            .position(|c| matches!(c, Call::CaptureOutput { .. }))
+            .unwrap();
+        let kill_pos = calls
+            .iter()
+            .position(|c| matches!(c, Call::KillWindow { .. }))
+            .unwrap();
+        assert!(capture_pos < kill_pos);
+    }
+
+    #[test]
+    fn close_rejects_non_running_task() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        let service = TaskService::new(&store, &runtime, &paths);
+
+        let spawned = spawn_test_task(&service);
+        service
+            .complete(
+                &store
+                    .get_task_by_prefix(&spawned.short_id)
+                    .unwrap()
+                    .unwrap()
+                    .id,
+                0,
+                None,
+            )
+            .unwrap();
+
+        let err = service.close(&spawned.short_id);
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("not 'running'"));
+    }
+
+    #[test]
+    fn close_succeeds_even_if_kill_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        *runtime.kill_should_fail.borrow_mut() = true;
+        let service = TaskService::new(&store, &runtime, &paths);
+
+        let spawned = spawn_test_task(&service);
+        let result = service.close(&spawned.short_id);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn send_dispatches_and_records_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        let service = TaskService::new(&store, &runtime, &paths);
+
+        let spawned = spawn_test_task(&service);
+        let result = service.send(&spawned.short_id, "hello agent").unwrap();
+
+        assert_eq!(result.task_name, "test-task");
+
+        // Verify SendKeys call
+        let calls = runtime.calls.borrow();
+        assert!(calls.iter().any(|c| matches!(c,
+            Call::SendKeys { pane_id, message }
+            if pane_id == "%fake-pane" && message == "hello agent"
+        )));
+
+        // Verify user message in store
+        let task = store
+            .get_task_by_prefix(&spawned.short_id)
+            .unwrap()
+            .unwrap();
+        let messages = store.list_messages(&task.id).unwrap();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.role == "user" && m.content == "hello agent")
+        );
+    }
+
+    #[test]
+    fn goto_calls_select_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        let service = TaskService::new(&store, &runtime, &paths);
+
+        let spawned = spawn_test_task(&service);
+        service.goto(&spawned.short_id).unwrap();
+
+        let calls = runtime.calls.borrow();
+        assert!(calls.iter().any(|c| matches!(c,
+            Call::SelectWindow { window_id } if window_id == "@fake-win"
+        )));
+    }
+
+    #[test]
+    fn goto_errors_on_missing_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        let service = TaskService::new(&store, &runtime, &paths);
+
+        // Insert a task with no tmux_window directly
+        let task = Task {
+            id: "aaaa-bbbb".to_string(),
+            name: "no-window".to_string(),
+            skill_name: "noop".to_string(),
+            params_json: "{}".to_string(),
+            status: "running".to_string(),
+            tmux_pane: None,
+            tmux_window: None,
+            work_dir: None,
+            started_at: Utc::now(),
+            completed_at: None,
+            exit_code: None,
+            output: None,
+        };
+        store.insert_task(&task).unwrap();
+
+        let err = service.goto("aaaa-bbb");
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("no tmux window"));
+    }
+
+    #[test]
+    fn log_returns_messages_and_live_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        let service = TaskService::new(&store, &runtime, &paths);
+
+        let spawned = spawn_test_task(&service);
+        service.send(&spawned.short_id, "hello").unwrap();
+
+        let log = service.log(&spawned.short_id).unwrap();
+        assert_eq!(log.task.name, "test-task");
+        assert_eq!(log.messages.len(), 2); // system + user
+        assert!(log.live_output.is_some());
+        assert_eq!(log.live_output.as_deref(), Some("captured output"));
+    }
+
+    #[test]
+    fn list_active_excludes_completed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        let service = TaskService::new(&store, &runtime, &paths);
+
+        let spawned1 = spawn_test_task(&service);
+        let _spawned2 = spawn_test_task(&service);
+
+        // Complete one
+        let task1 = store
+            .get_task_by_prefix(&spawned1.short_id)
+            .unwrap()
+            .unwrap();
+        service.complete(&task1.id, 0, None).unwrap();
+
+        let active = service.list_active().unwrap();
+        assert_eq!(active.len(), 1);
+
+        let all = service.list_all().unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn send_by_id_swallows_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        let service = TaskService::new(&store, &runtime, &paths);
+
+        // Sending to a nonexistent task/pane should not panic
+        service.send_by_id("nonexistent", "%bad-pane", "hello");
+    }
+}

@@ -1,7 +1,6 @@
 use ratatui::widgets::ListState;
 
-use crate::store::Store;
-use crate::task::Task;
+use crate::task::{Task, TaskMessage};
 
 pub enum Focus {
     TaskList,
@@ -119,6 +118,7 @@ pub struct App {
     pub show_detail: bool,
     pub pending_permission: Option<PendingPermission>,
     pub agent_target: Option<String>,
+    pub selected_messages: Vec<TaskMessage>,
 }
 
 impl App {
@@ -136,6 +136,7 @@ impl App {
             show_detail: false,
             pending_permission: None,
             agent_target: None,
+            selected_messages: Vec::new(),
         }
     }
 
@@ -171,34 +172,9 @@ impl App {
         self.list_state.select(Some(i));
     }
 
-    pub fn close_selected(&mut self, store: &Store) {
-        let Some(task) = self.selected_task() else {
-            return;
-        };
-        if task.status != "running" {
-            return;
-        }
-        let task_id = task.id.clone();
-        let pane_id = task.tmux_pane.clone();
-        let window_id = task.tmux_window.clone();
-
-        let output = pane_id
-            .as_deref()
-            .and_then(|p| crate::spawn::capture_pane_output(p).ok());
-
-        if let Some(wid) = &window_id {
-            let _ = crate::spawn::kill_tmux_window(wid);
-        }
-
-        let _ = store.close_task(&task_id, output.as_deref());
-        self.refresh(store);
-    }
-
-    pub fn refresh(&mut self, store: &Store) {
+    pub fn refresh_tasks(&mut self, tasks: Vec<Task>) {
         let selected_id = self.selected_task().map(|t| t.id.clone());
-        if let Ok(tasks) = store.list_active_tasks() {
-            self.tasks = tasks;
-        }
+        self.tasks = tasks;
         if let Some(id) = selected_id {
             if let Some(pos) = self.tasks.iter().position(|t| t.id == id) {
                 self.list_state.select(Some(pos));
@@ -214,29 +190,6 @@ impl App {
             }
         } else if !self.tasks.is_empty() && self.list_state.selected().is_none() {
             self.list_state.select(Some(0));
-        }
-    }
-
-    pub fn goto_selected(&self) {
-        if let Some(task) = self.selected_task()
-            && let Some(window_id) = &task.tmux_window
-        {
-            let _ = std::process::Command::new("tmux")
-                .args(["select-window", "-t", window_id])
-                .output();
-        }
-    }
-
-    pub fn send_to_agent(&self, message: &str, store: &Store) {
-        let task = self
-            .agent_target
-            .as_deref()
-            .and_then(|id| self.tasks.iter().find(|t| t.id == id));
-        if let Some(task) = task {
-            if let Some(pane) = task.tmux_pane.as_deref() {
-                let _ = crate::spawn::send_keys_to_pane(pane, message);
-            }
-            let _ = store.insert_message(&task.id, "user", message);
         }
     }
 

@@ -15,19 +15,19 @@ use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use crate::store::Store;
+use crate::service::TaskService;
 use app::{App, Focus, PendingPermission};
 use chat::ExoState;
 use claude::ExoEvent;
 
-pub fn run(store: &Store, resume_session: Option<&str>) -> Result<()> {
+pub fn run(service: &TaskService, resume_session: Option<&str>) -> Result<()> {
     terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
     crossterm::execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let tasks = store.list_active_tasks()?;
+    let tasks = service.list_active()?;
     let mut app = App::new(tasks);
     let mut exo = ExoState::new();
     if let Some(sid) = resume_session {
@@ -36,7 +36,15 @@ pub fn run(store: &Store, resume_session: Option<&str>) -> Result<()> {
     let (tx, rx) = mpsc::channel::<ExoEvent>();
     let cancel = Arc::new(AtomicBool::new(false));
 
-    let result = run_loop(&mut terminal, &mut app, &mut exo, store, &rx, &tx, &cancel);
+    let result = run_loop(
+        &mut terminal,
+        &mut app,
+        &mut exo,
+        service,
+        &rx,
+        &tx,
+        &cancel,
+    );
 
     cancel.store(true, Ordering::Relaxed);
 
@@ -51,7 +59,7 @@ fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     exo: &mut ExoState,
-    store: &Store,
+    service: &TaskService,
     rx: &mpsc::Receiver<ExoEvent>,
     tx: &mpsc::Sender<ExoEvent>,
     cancel: &Arc<AtomicBool>,
@@ -66,7 +74,7 @@ fn run_loop(
             Duration::from_millis(500)
         };
 
-        terminal.draw(|frame| widgets::ui(frame, app, exo, store))?;
+        terminal.draw(|frame| widgets::ui(frame, app, exo))?;
 
         // Drain channel events
         while let Ok(ev) = rx.try_recv() {
@@ -100,9 +108,25 @@ fn run_loop(
                         KeyCode::Char('q') => app.should_quit = true,
                         KeyCode::Char('j') | KeyCode::Down => app.next(),
                         KeyCode::Char('k') | KeyCode::Up => app.previous(),
-                        KeyCode::Enter => app.goto_selected(),
+                        KeyCode::Enter => {
+                            if let Some(task) = app.selected_task()
+                                && let Some(window_id) = &task.tmux_window
+                            {
+                                service.goto_window(window_id);
+                            }
+                        }
                         KeyCode::Char('d') => app.show_detail = !app.show_detail,
-                        KeyCode::Char('x') => app.close_selected(store),
+                        KeyCode::Char('x') => {
+                            if let Some(task) = app.selected_task()
+                                && task.status == "running"
+                            {
+                                let short_id = task.id[..8].to_string();
+                                let _ = service.close(&short_id);
+                                if let Ok(tasks) = service.list_active() {
+                                    app.refresh_tasks(tasks);
+                                }
+                            }
+                        }
                         KeyCode::Char('m') => {
                             if let Some(task) = app.selected_task() {
                                 app.agent_target = Some(task.id.clone());
@@ -159,7 +183,13 @@ fn run_loop(
                             KeyCode::Enter => {
                                 if !app.input.is_empty() {
                                     let msg = app.input.take();
-                                    app.send_to_agent(&msg, store);
+                                    if let Some(task_id) = &app.agent_target
+                                        && let Some(task) =
+                                            app.tasks.iter().find(|t| t.id == *task_id)
+                                        && let Some(pane) = task.tmux_pane.as_deref()
+                                    {
+                                        service.send_by_id(&task.id, pane, &msg);
+                                    }
                                 }
                                 app.agent_target = None;
                                 app.focus = Focus::TaskList;
@@ -209,7 +239,17 @@ fn run_loop(
         }
 
         if last_tick.elapsed() >= tick_rate {
-            app.refresh(store);
+            if let Ok(tasks) = service.list_active() {
+                app.refresh_tasks(tasks);
+            }
+            // Update selected messages for detail view
+            if let Some(task) = app.selected_task() {
+                if let Ok(messages) = service.messages(&task.id) {
+                    app.selected_messages = messages;
+                }
+            } else {
+                app.selected_messages.clear();
+            }
             if app.pending_permission.is_none() {
                 poll_permission_requests(app);
             }

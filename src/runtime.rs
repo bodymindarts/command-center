@@ -8,7 +8,6 @@ pub struct SpawnResult {
     pub pane_id: String,
 }
 
-#[allow(dead_code)]
 pub trait Runtime {
     fn create_worktree(&self, repo_root: &Path, name: &str) -> Result<PathBuf>;
     fn spawn_agent(&self, task_name: &str, prompt: &str, work_dir: &Path) -> Result<SpawnResult>;
