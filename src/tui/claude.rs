@@ -1,7 +1,7 @@
-use std::io::BufRead;
-use std::process::Command;
+use std::io::{BufRead, Write};
+use std::process::{ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
 pub enum ExoEvent {
@@ -17,39 +17,63 @@ pub fn spawn_claude(
     session_id: Option<&str>,
     cancel: Arc<AtomicBool>,
     tx: mpsc::Sender<ExoEvent>,
-) {
-    let message = message.to_string();
+) -> Option<Arc<Mutex<ChildStdin>>> {
     let session_id = session_id.map(|s| s.to_string());
+    let message = message.to_string();
+
+    let mut args = vec![
+        "-p".to_string(),
+        "--input-format".to_string(),
+        "stream-json".to_string(),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--verbose".to_string(),
+        "--allowedTools".to_string(),
+        "Read,Grep,Glob,Bash,Edit,Write".to_string(),
+    ];
+
+    if let Some(ref sid) = session_id {
+        args.push("--resume".to_string());
+        args.push(sid.clone());
+    }
+
+    let mut child = match Command::new("claude")
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(ExoEvent::Error(format!("Failed to spawn claude: {e}")));
+            return None;
+        }
+    };
+
+    let stdin = child.stdin.take().unwrap();
+    let stdin = Arc::new(Mutex::new(stdin));
+
+    // Send initial user message via stream-json protocol
+    {
+        let mut lock = stdin.lock().unwrap();
+        let sid = session_id.as_deref().unwrap_or("default");
+        let msg_json = serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": message,
+            },
+            "session_id": sid,
+            "parent_tool_use_id": null,
+        });
+        let _ = writeln!(lock, "{}", msg_json);
+        let _ = lock.flush();
+    }
+
+    let stdout = child.stdout.take().unwrap();
 
     thread::spawn(move || {
-        let mut args = vec![
-            "-p".to_string(),
-            message,
-            "--output-format".to_string(),
-            "stream-json".to_string(),
-            "--verbose".to_string(),
-        ];
-
-        if let Some(ref sid) = session_id {
-            args.push("--resume".to_string());
-            args.push(sid.clone());
-        }
-
-        let child = Command::new("claude")
-            .args(&args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-
-        let mut child = match child {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = tx.send(ExoEvent::Error(format!("Failed to spawn claude: {e}")));
-                return;
-            }
-        };
-
-        let stdout = child.stdout.take().unwrap();
         let reader = std::io::BufReader::new(stdout);
 
         for line in reader.lines() {
@@ -111,11 +135,25 @@ pub fn spawn_claude(
                         let _ = tx.send(ExoEvent::SessionId(sid.to_string()));
                     }
                 }
-                _ => {}
+                other => {
+                    // Log unknown events for protocol discovery
+                    if !other.is_empty() {
+                        let debug_path = std::env::temp_dir().join("cc-exo-debug.jsonl");
+                        if let Ok(mut f) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&debug_path)
+                        {
+                            let _ = writeln!(f, "{}", line);
+                        }
+                    }
+                }
             }
         }
 
         let _ = child.wait();
         let _ = tx.send(ExoEvent::Done);
     });
+
+    Some(stdin)
 }

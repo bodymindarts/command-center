@@ -5,6 +5,7 @@ use crate::store::{Store, Task};
 pub enum Focus {
     TaskList,
     ChatInput,
+    PermissionPrompt,
 }
 
 pub struct InputState {
@@ -100,6 +101,13 @@ impl InputState {
     }
 }
 
+pub struct PendingPermission {
+    pub req_id: String,
+    pub task_name: String,
+    pub tool_name: String,
+    pub tool_input_summary: String,
+}
+
 pub struct App {
     pub tasks: Vec<Task>,
     pub list_state: ListState,
@@ -107,6 +115,7 @@ pub struct App {
     pub focus: Focus,
     pub input: InputState,
     pub show_detail: bool,
+    pub pending_permission: Option<PendingPermission>,
 }
 
 impl App {
@@ -122,6 +131,7 @@ impl App {
             focus: Focus::ChatInput,
             input: InputState::new(),
             show_detail: false,
+            pending_permission: None,
         }
     }
 

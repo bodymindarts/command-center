@@ -29,12 +29,12 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState) {
     if app.show_detail && focused_task_list {
         render_detail(frame, app, main_area[1]);
     } else {
-        render_chat(frame, exo, main_area[1]);
+        render_chat(frame, app, exo, main_area[1]);
     }
 
     let focused_input = matches!(app.focus, Focus::ChatInput);
     render_input(frame, app, outer[1], focused_input);
-    render_prompt_bar(frame, outer[2]);
+    render_prompt_bar(frame, app, outer[2]);
 }
 
 fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focused: bool) {
@@ -148,7 +148,7 @@ fn render_detail(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     frame.render_widget(detail, area);
 }
 
-fn render_chat(frame: &mut ratatui::Frame, exo: &ExoState, area: Rect) {
+fn render_chat(frame: &mut ratatui::Frame, app: &App, exo: &ExoState, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
 
     for msg in &exo.messages {
@@ -187,6 +187,20 @@ fn render_chat(frame: &mut ratatui::Frame, exo: &ExoState, area: Rect) {
         lines.push(Line::from(""));
     }
 
+    // Show pending permission request from spawned tasks
+    if let Some(req) = &app.pending_permission {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{} wants to use {}: {}",
+                req.task_name, req.tool_name, req.tool_input_summary
+            ),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+    }
+
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
             "Press Tab to chat with ExO",
@@ -194,8 +208,23 @@ fn render_chat(frame: &mut ratatui::Frame, exo: &ExoState, area: Rect) {
         )));
     }
 
-    let inner_height = area.height.saturating_sub(2);
-    let scroll = (lines.len() as u16).saturating_sub(inner_height);
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let inner_width = area.width.saturating_sub(2) as usize;
+
+    // Account for line wrapping when calculating scroll
+    let rendered_lines: usize = lines
+        .iter()
+        .map(|line| {
+            let w = line.width();
+            if w == 0 || inner_width == 0 {
+                1
+            } else {
+                w.div_ceil(inner_width)
+            }
+        })
+        .sum();
+
+    let scroll = rendered_lines.saturating_sub(inner_height) as u16;
 
     let chat = Paragraph::new(lines)
         .block(
@@ -217,37 +246,62 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool
         Color::DarkGray
     };
     let prefix = "[ExO] > ";
-    let display = format!("{prefix}{}", app.input.buffer());
+    let buf = app.input.buffer();
+    let prefix_len = prefix.len() as u16;
+    // Visible width inside borders
+    let visible_width = area.width.saturating_sub(2);
+    let cursor_pos = prefix_len + app.input.cursor as u16;
 
-    let input = Paragraph::new(display).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color)),
-    );
+    // Horizontal scroll: keep cursor within visible area
+    let scroll = if cursor_pos >= visible_width {
+        cursor_pos - visible_width + 1
+    } else {
+        0
+    };
+
+    let display = format!("{prefix}{buf}");
+
+    let input = Paragraph::new(display)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color)),
+        )
+        .scroll((0, scroll));
 
     frame.render_widget(input, area);
 
     if focused {
-        let x = area.x + 1 + prefix.len() as u16 + app.input.cursor as u16;
+        let x = area.x + 1 + cursor_pos - scroll;
         let y = area.y + 1;
         frame.set_cursor_position((x, y));
     }
 }
 
-fn render_prompt_bar(frame: &mut ratatui::Frame, area: Rect) {
-    let bar = Paragraph::new(Line::from(vec![
-        Span::styled(" j/k", Style::default().fg(Color::Yellow)),
-        Span::raw(" navigate  "),
-        Span::styled("Enter", Style::default().fg(Color::Yellow)),
-        Span::raw(" goto  "),
-        Span::styled("d", Style::default().fg(Color::Yellow)),
-        Span::raw(" detail  "),
-        Span::styled("Tab", Style::default().fg(Color::Yellow)),
-        Span::raw(" chat  "),
-        Span::styled("q", Style::default().fg(Color::Yellow)),
-        Span::raw(" quit"),
-    ]))
-    .style(Style::default().fg(Color::DarkGray));
+fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
+    let spans = if matches!(app.focus, Focus::PermissionPrompt) {
+        vec![
+            Span::styled(" y", Style::default().fg(Color::Green)),
+            Span::raw(" approve  "),
+            Span::styled("n", Style::default().fg(Color::Red)),
+            Span::raw(" deny"),
+        ]
+    } else {
+        vec![
+            Span::styled(" j/k", Style::default().fg(Color::Yellow)),
+            Span::raw(" navigate  "),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(" goto  "),
+            Span::styled("d", Style::default().fg(Color::Yellow)),
+            Span::raw(" detail  "),
+            Span::styled("Tab", Style::default().fg(Color::Yellow)),
+            Span::raw(" chat  "),
+            Span::styled("q", Style::default().fg(Color::Yellow)),
+            Span::raw(" quit"),
+        ]
+    };
+
+    let bar = Paragraph::new(Line::from(spans)).style(Style::default().fg(Color::DarkGray));
 
     frame.render_widget(bar, area);
 }

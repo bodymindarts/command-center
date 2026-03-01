@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+mod permission;
 mod skill;
 mod spawn;
 mod store;

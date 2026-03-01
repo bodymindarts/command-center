@@ -27,6 +27,14 @@ pub fn create_worktree(repo_root: &Path, name: &str) -> Result<PathBuf> {
         bail!("git worktree add failed: {stderr}");
     }
 
+    // Symlink project .claude/ into worktree so spawned agents inherit hooks
+    let source_claude_dir = repo_root.join(".claude");
+    let target_claude_dir = worktree_path.join(".claude");
+    if source_claude_dir.is_dir() && !target_claude_dir.exists() {
+        std::os::unix::fs::symlink(&source_claude_dir, &target_claude_dir)
+            .context("failed to symlink .claude/ into worktree")?;
+    }
+
     Ok(worktree_path)
 }
 

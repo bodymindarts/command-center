@@ -4,8 +4,9 @@ mod claude;
 mod widgets;
 
 use std::io;
+use std::process::ChildStdin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -15,7 +16,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use crate::store::Store;
-use app::{App, Focus};
+use app::{App, Focus, PendingPermission};
 use chat::ExoState;
 use claude::ExoEvent;
 
@@ -56,6 +57,7 @@ fn run_loop(
     cancel: &Arc<AtomicBool>,
 ) -> Result<()> {
     let mut last_tick = Instant::now();
+    let mut _stdin_handle: Option<Arc<Mutex<ChildStdin>>> = None;
 
     loop {
         let tick_rate = if exo.streaming {
@@ -72,10 +74,14 @@ fn run_loop(
                 ExoEvent::TextDelta(text) => exo.append_text(&text),
                 ExoEvent::ToolStart(name) => exo.add_tool_activity(name),
                 ExoEvent::SessionId(id) => exo.session_id = Some(id),
-                ExoEvent::Done => exo.finish_streaming(),
+                ExoEvent::Done => {
+                    exo.finish_streaming();
+                    _stdin_handle = None;
+                }
                 ExoEvent::Error(e) => {
                     exo.append_text(&format!("\n[Error: {e}]"));
                     exo.finish_streaming();
+                    _stdin_handle = None;
                 }
             }
         }
@@ -110,7 +116,7 @@ fn run_loop(
                             KeyCode::Enter => {
                                 if !app.input.is_empty() && !exo.streaming {
                                     let msg = app.input.take();
-                                    claude::spawn_claude(
+                                    _stdin_handle = claude::spawn_claude(
                                         &msg,
                                         exo.session_id.as_deref(),
                                         Arc::clone(cancel),
@@ -134,12 +140,40 @@ fn run_loop(
                             _ => {}
                         }
                     }
+                    Focus::PermissionPrompt => match key.code {
+                        KeyCode::Char('y') => {
+                            if let Some(req) = app.pending_permission.take() {
+                                let dir = crate::permission::permissions_dir();
+                                crate::permission::write_permission_response(
+                                    &dir,
+                                    &req.req_id,
+                                    true,
+                                );
+                            }
+                            app.focus = Focus::ChatInput;
+                        }
+                        KeyCode::Char('n') => {
+                            if let Some(req) = app.pending_permission.take() {
+                                let dir = crate::permission::permissions_dir();
+                                crate::permission::write_permission_response(
+                                    &dir,
+                                    &req.req_id,
+                                    false,
+                                );
+                            }
+                            app.focus = Focus::ChatInput;
+                        }
+                        _ => {}
+                    },
                 }
             }
         }
 
         if last_tick.elapsed() >= tick_rate {
             app.refresh(store);
+            if app.pending_permission.is_none() {
+                poll_permission_requests(app);
+            }
             last_tick = Instant::now();
         }
 
@@ -147,4 +181,30 @@ fn run_loop(
             return Ok(());
         }
     }
+}
+
+fn poll_permission_requests(app: &mut App) {
+    let dir = crate::permission::permissions_dir();
+    let Some(req) = crate::permission::scan_permission_requests(&dir) else {
+        return;
+    };
+
+    let task_name = app
+        .tasks
+        .iter()
+        .find(|t| {
+            t.work_dir
+                .as_deref()
+                .is_some_and(|wd| req.cwd.starts_with(wd))
+        })
+        .map(|t| t.name.clone())
+        .unwrap_or_else(|| "unknown task".to_string());
+
+    app.pending_permission = Some(PendingPermission {
+        req_id: req.req_id,
+        task_name,
+        tool_name: req.tool_name,
+        tool_input_summary: req.tool_input_summary,
+    });
+    app.focus = Focus::PermissionPrompt;
 }
