@@ -74,6 +74,12 @@ pub enum Command {
         message: String,
     },
 
+    /// Manage available skills
+    Skill {
+        #[command(subcommand)]
+        action: SkillAction,
+    },
+
     /// Manage permission requests from spawned agents
     Permission {
         #[command(subcommand)]
@@ -92,6 +98,12 @@ pub enum Command {
         /// Path to output file
         output_file: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+pub enum SkillAction {
+    /// List available skills
+    List,
 }
 
 #[derive(Subcommand)]

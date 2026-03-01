@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use tabled::{Table, Tabled};
 
-use crate::cli::{Cli, Command, PermissionAction};
+use crate::cli::{Cli, Command, PermissionAction, SkillAction};
 use crate::config::Paths;
 use crate::runtime::TmuxRuntime;
 use crate::service::TaskService;
@@ -36,6 +36,7 @@ fn main() -> Result<()> {
         Command::Start { resume } => cmd_start(resume.as_deref())?,
         Command::Goto { id } => cmd_goto(&service, &id)?,
         Command::Send { id, message } => cmd_send(&service, &id, &message)?,
+        Command::Skill { action } => cmd_skill(action, &service)?,
         Command::Permission { action } => cmd_permission(action)?,
         Command::Complete {
             id,
@@ -217,6 +218,40 @@ fn cmd_complete(
     };
     println!("Task {id} marked as {status} (exit code: {exit_code})");
 
+    Ok(())
+}
+
+fn cmd_skill(action: SkillAction, service: &TaskService) -> Result<()> {
+    match action {
+        SkillAction::List => {
+            let skills = service.list_skills()?;
+            if skills.is_empty() {
+                println!("No skills found.");
+                return Ok(());
+            }
+
+            #[derive(Tabled)]
+            struct Row {
+                #[tabled(rename = "Name")]
+                name: String,
+                #[tabled(rename = "Description")]
+                description: String,
+                #[tabled(rename = "Params")]
+                params: String,
+            }
+
+            let rows: Vec<Row> = skills
+                .iter()
+                .map(|s| Row {
+                    name: s.name.clone(),
+                    description: s.description.clone(),
+                    params: s.params.join(", "),
+                })
+                .collect();
+
+            println!("{}", Table::new(rows));
+        }
+    }
     Ok(())
 }
 

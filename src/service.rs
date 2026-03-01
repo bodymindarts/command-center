@@ -10,6 +10,13 @@ use crate::store::Store;
 use crate::task::{Task, TaskMessage};
 
 #[derive(Debug)]
+pub struct SkillSummary {
+    pub name: String,
+    pub description: String,
+    pub params: Vec<String>,
+}
+
+#[derive(Debug)]
 pub struct SpawnOutput {
     pub task_name: String,
     pub short_id: String,
@@ -201,6 +208,32 @@ impl<'a> TaskService<'a> {
 
     pub fn messages(&self, task_id: &str) -> Result<Vec<TaskMessage>> {
         self.store.list_messages(task_id)
+    }
+
+    pub fn list_skills(&self) -> Result<Vec<SkillSummary>> {
+        let mut skills = Vec::new();
+        let entries = std::fs::read_dir(&self.paths.skills_dir)?;
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if let Ok(skill) = SkillFile::load(&self.paths.skills_dir, &name) {
+                skills.push(SkillSummary {
+                    name: skill.skill.name,
+                    description: skill.skill.description,
+                    params: skill.skill.params.iter().map(|p| p.name.clone()).collect(),
+                });
+            }
+        }
+        skills.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(skills)
     }
 
     pub fn capture_pane(&self, pane_id: &str) -> Option<String> {
@@ -596,5 +629,40 @@ prompt = "noop prompt"
 
         // Sending to a nonexistent task/pane should not panic
         service.send_by_id("nonexistent", "%bad-pane", "hello");
+    }
+
+    #[test]
+    fn list_skills_returns_available_skills() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        // test_paths already writes noop.toml — add a second skill
+        std::fs::write(
+            paths.skills_dir.join("deploy.toml"),
+            r#"
+[skill]
+name = "deploy"
+description = "deploy to prod"
+params = [{ name = "env", required = true }]
+
+[agent]
+allowed_tools = []
+
+[template]
+prompt = "deploy to {{ env }}"
+"#,
+        )
+        .unwrap();
+
+        let store = Store::open_in_memory().unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        let service = TaskService::new(&store, &runtime, &paths);
+
+        let skills = service.list_skills().unwrap();
+        assert_eq!(skills.len(), 2);
+        // Sorted by name
+        assert_eq!(skills[0].name, "deploy");
+        assert_eq!(skills[0].description, "deploy to prod");
+        assert_eq!(skills[0].params, vec!["env"]);
+        assert_eq!(skills[1].name, "noop");
     }
 }
