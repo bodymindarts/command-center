@@ -132,30 +132,24 @@ pub fn spawn_claude(
                         let _ = tx.send(ExoEvent::SessionId(sid.to_string()));
                     }
                 }
-                "assistant" => {
-                    if let Some(content) = parsed
-                        .get("message")
-                        .and_then(|m| m.get("content"))
-                        .and_then(|c| c.as_array())
+                "content_block_start" => {
+                    if let Some(cb) = parsed.get("content_block")
+                        && cb.get("type").and_then(|t| t.as_str()) == Some("tool_use")
                     {
-                        for block in content {
-                            match block.get("type").and_then(|t| t.as_str()) {
-                                Some("text") => {
-                                    if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                                        let _ = tx.send(ExoEvent::TextDelta(text.to_string()));
-                                    }
-                                }
-                                Some("tool_use") => {
-                                    let name = block
-                                        .get("name")
-                                        .and_then(|n| n.as_str())
-                                        .unwrap_or("tool")
-                                        .to_string();
-                                    let _ = tx.send(ExoEvent::ToolStart(name));
-                                }
-                                _ => {}
-                            }
-                        }
+                        let name = cb
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("tool")
+                            .to_string();
+                        let _ = tx.send(ExoEvent::ToolStart(name));
+                    }
+                }
+                "content_block_delta" => {
+                    if let Some(delta) = parsed.get("delta")
+                        && delta.get("type").and_then(|t| t.as_str()) == Some("text_delta")
+                        && let Some(text) = delta.get("text").and_then(|t| t.as_str())
+                    {
+                        let _ = tx.send(ExoEvent::TextDelta(text.to_string()));
                     }
                 }
                 "result" => {
@@ -163,19 +157,9 @@ pub fn spawn_claude(
                         let _ = tx.send(ExoEvent::SessionId(sid.to_string()));
                     }
                 }
-                other => {
-                    // Log unknown events for protocol discovery
-                    if !other.is_empty() {
-                        let debug_path = std::env::temp_dir().join("cc-exo-debug.jsonl");
-                        if let Ok(mut f) = std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(&debug_path)
-                        {
-                            let _ = writeln!(f, "{}", line);
-                        }
-                    }
-                }
+                // assistant, content_block_stop, message_start, message_stop
+                // are informational — streaming content is handled above
+                _ => {}
             }
         }
 
