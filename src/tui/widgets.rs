@@ -10,34 +10,32 @@ use super::chat::{ExoState, Role};
 
 pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState) {
     let outer = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+        .split(frame.area());
+
+    // Left side: chat + input + prompt bar
+    let left = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(0),
             Constraint::Length(3),
             Constraint::Length(1),
         ])
-        .split(frame.area());
-
-    let main_area = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
         .split(outer[0]);
 
-    let focused_task_list = matches!(app.focus, Focus::TaskList);
-    render_task_list(frame, app, main_area[0], focused_task_list);
-
-    if app.show_detail && focused_task_list {
-        render_detail(frame, app, main_area[1]);
-    } else {
-        render_chat(frame, app, exo, main_area[1]);
-    }
+    render_chat(frame, app, exo, left[0]);
 
     let focused_input = matches!(
         app.focus,
         Focus::ChatInput | Focus::AgentInput | Focus::SpawnInput
     );
-    render_input(frame, app, outer[1], focused_input);
-    render_prompt_bar(frame, app, outer[2]);
+    render_input(frame, app, left[1], focused_input);
+    render_prompt_bar(frame, app, left[2]);
+
+    // Right side: always task list
+    let focused_task_list = matches!(app.focus, Focus::TaskList);
+    render_task_list(frame, app, outer[1], focused_task_list);
 }
 
 fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focused: bool) {
@@ -84,46 +82,64 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
     frame.render_stateful_widget(list, area, &mut app.list_state);
 }
 
-fn render_detail(frame: &mut ratatui::Frame, app: &App, area: Rect) {
-    let Some(task) = app.selected_task() else {
-        let empty = Paragraph::new("No task selected")
-            .block(
-                Block::default()
-                    .title(" Detail ")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray)),
-            )
-            .style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(empty, area);
-        return;
+fn render_chat(frame: &mut ratatui::Frame, app: &App, exo: &ExoState, area: Rect) {
+    let mut lines: Vec<Line> = Vec::new();
+    let in_task_chat = app.show_detail && app.selected_task().is_some();
+
+    let title = if in_task_chat {
+        let name = app.selected_task().map(|t| t.name.as_str()).unwrap_or("?");
+        format!(" Chat: {name} ")
+    } else {
+        " ExO Chat ".to_string()
     };
 
-    let color = status_color(&task.status);
-    let short_id = task.id.short();
+    if in_task_chat {
+        // Render task messages
+        if app.selected_messages.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No messages yet.",
+                Style::default().fg(Color::DarkGray),
+            )));
+        } else {
+            for msg in &app.selected_messages {
+                let (label, label_color) = match msg.role.as_str() {
+                    "system" => ("PROMPT", Color::Cyan),
+                    "user" => ("YOU", Color::Green),
+                    _ => (&*msg.role, Color::White),
+                };
 
-    let mut lines: Vec<Line> = vec![
-        Line::from(vec![
-            Span::styled("Skill:  ", Style::default().fg(Color::DarkGray)),
-            Span::raw(&task.skill_name),
-        ]),
-        Line::from(vec![
-            Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(task.status.as_str(), Style::default().fg(color)),
-        ]),
-        Line::from(""),
-    ];
+                lines.push(Line::from(Span::styled(
+                    format!("{label}:"),
+                    Style::default()
+                        .fg(label_color)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                for l in msg.content.lines() {
+                    lines.push(Line::from(l.to_string()));
+                }
+                lines.push(Line::from(""));
+            }
+        }
 
-    if app.selected_messages.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "No messages yet.",
-            Style::default().fg(Color::DarkGray),
-        )));
+        if let Some(output) = &app.detail_live_output {
+            lines.push(Line::from(Span::styled(
+                "--- Live (last 50 lines) ---",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            let tail: Vec<&str> = output.lines().collect();
+            let start = tail.len().saturating_sub(50);
+            for l in &tail[start..] {
+                lines.push(Line::from(l.to_string()));
+            }
+        }
     } else {
-        for msg in &app.selected_messages {
-            let (label, label_color) = match msg.role.as_str() {
-                "system" => ("PROMPT", Color::Cyan),
-                "user" => ("YOU", Color::Green),
-                _ => (&*msg.role, Color::White),
+        // Render ExO chat
+        for msg in &exo.messages {
+            let (label, label_color) = match msg.role {
+                Role::User => ("You", Color::Green),
+                Role::Assistant => ("ExO", Color::Cyan),
             };
 
             lines.push(Line::from(Span::styled(
@@ -132,98 +148,50 @@ fn render_detail(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                     .fg(label_color)
                     .add_modifier(Modifier::BOLD),
             )));
-            for l in msg.content.lines() {
-                lines.push(Line::from(l.to_string()));
+
+            if msg.content.is_empty() && matches!(msg.role, Role::Assistant) && exo.streaming {
+                lines.push(Line::from(Span::styled(
+                    "...",
+                    Style::default().fg(Color::DarkGray),
+                )));
+            } else {
+                for l in msg.content.lines() {
+                    lines.push(Line::from(l.to_string()));
+                }
             }
+
+            if !msg.tool_activity.is_empty() {
+                let tools: Vec<Span> = msg
+                    .tool_activity
+                    .iter()
+                    .map(|t| Span::styled(format!("[{t}] "), Style::default().fg(Color::Yellow)))
+                    .collect();
+                lines.push(Line::from(tools));
+            }
+
             lines.push(Line::from(""));
         }
-    }
 
-    if let Some(output) = &app.detail_live_output {
-        lines.push(Line::from(Span::styled(
-            "--- Live (last 50 lines) ---",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )));
-        let tail: Vec<&str> = output.lines().collect();
-        let start = tail.len().saturating_sub(50);
-        for l in &tail[start..] {
-            lines.push(Line::from(l.to_string()));
-        }
-    }
-
-    let detail = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title(format!(" Detail: {short_id} "))
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        )
-        .wrap(Wrap { trim: false })
-        .scroll((app.detail_scroll, 0));
-
-    frame.render_widget(detail, area);
-}
-
-fn render_chat(frame: &mut ratatui::Frame, app: &App, exo: &ExoState, area: Rect) {
-    let mut lines: Vec<Line> = Vec::new();
-
-    for msg in &exo.messages {
-        let (label, label_color) = match msg.role {
-            Role::User => ("You", Color::Green),
-            Role::Assistant => ("ExO", Color::Cyan),
-        };
-
-        lines.push(Line::from(Span::styled(
-            format!("{label}:"),
-            Style::default()
-                .fg(label_color)
-                .add_modifier(Modifier::BOLD),
-        )));
-
-        if msg.content.is_empty() && matches!(msg.role, Role::Assistant) && exo.streaming {
+        // Show pending permission request from spawned tasks
+        if let Some(req) = &app.current_permission {
             lines.push(Line::from(Span::styled(
-                "...",
+                format!(
+                    "{} wants to use {}: {}",
+                    req.task_name, req.tool_name, req.tool_input_summary
+                ),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(""));
+        }
+
+        if lines.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "Press Tab to chat with ExO",
                 Style::default().fg(Color::DarkGray),
             )));
-        } else {
-            for l in msg.content.lines() {
-                lines.push(Line::from(l.to_string()));
-            }
         }
-
-        if !msg.tool_activity.is_empty() {
-            let tools: Vec<Span> = msg
-                .tool_activity
-                .iter()
-                .map(|t| Span::styled(format!("[{t}] "), Style::default().fg(Color::Yellow)))
-                .collect();
-            lines.push(Line::from(tools));
-        }
-
-        lines.push(Line::from(""));
-    }
-
-    // Show pending permission request from spawned tasks
-    if let Some(req) = &app.current_permission {
-        lines.push(Line::from(Span::styled(
-            format!(
-                "{} wants to use {}: {}",
-                req.task_name, req.tool_name, req.tool_input_summary
-            ),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(""));
-    }
-
-    if lines.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "Press Tab to chat with ExO",
-            Style::default().fg(Color::DarkGray),
-        )));
     }
 
     let inner_height = area.height.saturating_sub(2) as usize;
@@ -247,7 +215,7 @@ fn render_chat(frame: &mut ratatui::Frame, app: &App, exo: &ExoState, area: Rect
     let chat = Paragraph::new(lines)
         .block(
             Block::default()
-                .title(" ExO Chat ")
+                .title(title)
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray)),
         )
@@ -266,6 +234,9 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool
     let prefix = if matches!(app.focus, Focus::SpawnInput) {
         "[spawn:noop] > ".to_string()
     } else if let Some(name) = app.agent_target_name() {
+        format!("[agent:{name}] > ")
+    } else if app.show_detail {
+        let name = app.selected_task().map(|t| t.name.as_str()).unwrap_or("?");
         format!("[agent:{name}] > ")
     } else {
         "[ExO] > ".to_string()
@@ -317,7 +288,15 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::raw(" cancel"),
         ],
-        _ => vec![
+        Focus::ChatInput => vec![
+            Span::styled(" Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(" send  "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(" tasks  "),
+            Span::styled("Tab", Style::default().fg(Color::Yellow)),
+            Span::raw(" tasks"),
+        ],
+        Focus::TaskList => vec![
             Span::styled(" j/k", Style::default().fg(Color::Yellow)),
             Span::raw(" navigate  "),
             Span::styled("Enter", Style::default().fg(Color::Yellow)),

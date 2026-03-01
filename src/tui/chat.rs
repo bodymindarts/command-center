@@ -18,7 +18,7 @@ pub struct ExoState {
 impl ExoState {
     pub fn new() -> Self {
         Self {
-            session_id: Some("ab53d707-9df5-45b6-a004-e510ae1dad77".to_string()),
+            session_id: None,
             messages: Vec::new(),
             streaming: false,
         }

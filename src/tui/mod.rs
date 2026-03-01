@@ -178,7 +178,12 @@ fn run_loop<R: Runtime>(
                                 service.goto_window(window_id);
                             }
                         }
-                        KeyCode::Char('d') => app.show_detail = !app.show_detail,
+                        KeyCode::Char('d') => {
+                            app.show_detail = !app.show_detail;
+                            if app.show_detail {
+                                app.focus = Focus::ChatInput;
+                            }
+                        }
                         KeyCode::Char('x') => {
                             if let Some(task) = app.selected_task()
                                 && task.status.is_running()
@@ -243,18 +248,34 @@ fn run_loop<R: Runtime>(
                         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                         match key.code {
                             KeyCode::Esc | KeyCode::Tab => {
+                                if exo.streaming {
+                                    exo.finish_streaming();
+                                    _stdin_handle = None;
+                                }
+                                app.show_detail = false;
                                 app.focus = Focus::TaskList;
                             }
                             KeyCode::Enter => {
-                                if !app.input.is_empty() && !exo.streaming {
-                                    let msg = app.input.take();
-                                    _stdin_handle = claude::spawn_claude(
-                                        &msg,
-                                        exo.session_id.as_deref(),
-                                        Arc::clone(cancel),
-                                        tx.clone(),
-                                    );
-                                    exo.add_user_message(msg);
+                                if !app.input.is_empty() {
+                                    if app.show_detail {
+                                        // Send to task agent
+                                        let msg = app.input.take();
+                                        if let Some(task) = app.selected_task()
+                                            && let Some(pane) = task.tmux_pane.as_deref()
+                                        {
+                                            service.send_by_id(task.id.as_str(), pane, &msg);
+                                        }
+                                    } else if !exo.streaming {
+                                        // Send to ExO
+                                        let msg = app.input.take();
+                                        _stdin_handle = claude::spawn_claude(
+                                            &msg,
+                                            exo.session_id.as_deref(),
+                                            Arc::clone(cancel),
+                                            tx.clone(),
+                                        );
+                                        exo.add_user_message(msg);
+                                    }
                                 }
                             }
                             KeyCode::Char('u') if ctrl => app.input.kill_before(),
