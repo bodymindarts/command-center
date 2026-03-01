@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -258,6 +259,19 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Returns a mapping from tmux window ID (e.g. "@24") to window index (e.g. "2").
+pub fn tmux_window_numbers() -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    if let Ok(output) = tmux_cmd(&["list-windows", "-F", "#{window_id} #{window_index}"]) {
+        for line in output.lines() {
+            if let Some((id, index)) = line.split_once(' ') {
+                map.insert(id.to_string(), index.to_string());
+            }
+        }
+    }
+    map
 }
 
 /// Free function for workspace bootstrapping (cmd_start), not a task operation.

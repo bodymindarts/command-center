@@ -49,7 +49,17 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
             let color = status_color(&task.status);
             let time = task.started_at.format("%H:%M");
             let pane = task.tmux_pane.as_deref().unwrap_or("-");
+            let win_num = task
+                .tmux_window
+                .as_deref()
+                .and_then(|w| app.window_numbers.get(w))
+                .map(|s| s.as_str())
+                .unwrap_or("-");
             let main_line = Line::from(vec![
+                Span::styled(
+                    format!("{:<2} ", win_num),
+                    Style::default().fg(Color::DarkGray),
+                ),
                 Span::styled(format!("{status_char} "), Style::default().fg(color)),
                 Span::raw(format!("{:<10} ", task.name)),
                 Span::styled(

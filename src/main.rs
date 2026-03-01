@@ -88,6 +88,8 @@ fn cmd_list(service: &TaskService<impl Runtime>, all: bool) -> Result<()> {
 
     #[derive(Tabled)]
     struct Row {
+        #[tabled(rename = "#")]
+        win_num: String,
         #[tabled(rename = "ID")]
         id: String,
         #[tabled(rename = "Name")]
@@ -106,9 +108,16 @@ fn cmd_list(service: &TaskService<impl Runtime>, all: bool) -> Result<()> {
         exit_code: String,
     }
 
+    let win_numbers = crate::runtime::tmux_window_numbers();
     let rows: Vec<Row> = tasks
         .iter()
         .map(|t| Row {
+            win_num: t
+                .tmux_window
+                .as_deref()
+                .and_then(|w| win_numbers.get(w))
+                .cloned()
+                .unwrap_or_else(|| "-".to_string()),
             id: t.id.short().to_string(),
             name: t.name.clone(),
             skill: t.skill_name.clone(),
