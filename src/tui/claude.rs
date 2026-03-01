@@ -1,7 +1,7 @@
 use std::io::{BufRead, Write};
-use std::process::{ChildStdin, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, mpsc};
 use std::thread;
 
 pub enum ExoEvent {
@@ -17,7 +17,7 @@ pub fn spawn_claude(
     session_id: Option<&str>,
     cancel: Arc<AtomicBool>,
     tx: mpsc::Sender<ExoEvent>,
-) -> Option<Arc<Mutex<ChildStdin>>> {
+) {
     let session_id = session_id.map(|s| s.to_string());
     let message = message.to_string();
 
@@ -47,16 +47,14 @@ pub fn spawn_claude(
         Ok(c) => c,
         Err(e) => {
             let _ = tx.send(ExoEvent::Error(format!("Failed to spawn claude: {e}")));
-            return None;
+            return;
         }
     };
 
-    let stdin = child.stdin.take().unwrap();
-    let stdin = Arc::new(Mutex::new(stdin));
-
-    // Send initial user message via stream-json protocol
+    // Send initial user message via stream-json protocol, then close stdin
+    // so the process knows no more messages are coming.
     {
-        let mut lock = stdin.lock().unwrap();
+        let mut stdin = child.stdin.take().unwrap();
         let sid = session_id.as_deref().unwrap_or("default");
         let msg_json = serde_json::json!({
             "type": "user",
@@ -67,8 +65,8 @@ pub fn spawn_claude(
             "session_id": sid,
             "parent_tool_use_id": null,
         });
-        let _ = writeln!(lock, "{}", msg_json);
-        let _ = lock.flush();
+        let _ = writeln!(stdin, "{}", msg_json);
+        let _ = stdin.flush();
     }
 
     let stdout = child.stdout.take().unwrap();
@@ -154,6 +152,4 @@ pub fn spawn_claude(
         let _ = child.wait();
         let _ = tx.send(ExoEvent::Done);
     });
-
-    Some(stdin)
 }

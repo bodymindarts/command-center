@@ -5,9 +5,8 @@ mod widgets;
 
 use std::io;
 use std::os::unix::net::UnixStream;
-use std::process::ChildStdin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -110,7 +109,6 @@ fn run_loop<R: Runtime>(
     perm_rx: &mpsc::Receiver<(UnixStream, PermissionRequest)>,
 ) -> Result<()> {
     let mut last_tick = Instant::now();
-    let mut _stdin_handle: Option<Arc<Mutex<ChildStdin>>> = None;
 
     loop {
         let tick_rate = if exo.streaming {
@@ -129,12 +127,10 @@ fn run_loop<R: Runtime>(
                 ExoEvent::SessionId(id) => exo.session_id = Some(id),
                 ExoEvent::Done => {
                     exo.finish_streaming();
-                    _stdin_handle = None;
                 }
                 ExoEvent::Error(e) => {
                     exo.append_text(&format!("\n[Error: {e}]"));
                     exo.finish_streaming();
-                    _stdin_handle = None;
                 }
             }
         }
@@ -264,7 +260,6 @@ fn run_loop<R: Runtime>(
                             KeyCode::Esc => {
                                 if exo.streaming {
                                     exo.finish_streaming();
-                                    _stdin_handle = None;
                                 }
                                 app.show_detail = false;
                             }
@@ -284,7 +279,7 @@ fn run_loop<R: Runtime>(
                                     } else if !exo.streaming {
                                         // Send to ExO
                                         let msg = app.input.take();
-                                        _stdin_handle = claude::spawn_claude(
+                                        claude::spawn_claude(
                                             &msg,
                                             exo.session_id.as_deref(),
                                             Arc::clone(cancel),
