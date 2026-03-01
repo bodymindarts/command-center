@@ -147,3 +147,12 @@ pub fn send_keys_to_pane(pane_id: &str, message: &str) -> Result<()> {
     tmux_cmd(&["send-keys", "-t", pane_id, "Enter"])?;
     Ok(())
 }
+
+pub fn kill_tmux_window(window_id: &str) -> Result<()> {
+    tmux_cmd(&["kill-window", "-t", window_id])?;
+    Ok(())
+}
+
+pub fn capture_pane_output(pane_id: &str) -> Result<String> {
+    tmux_cmd(&["capture-pane", "-p", "-S", "-", "-t", pane_id])
+}

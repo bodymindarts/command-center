@@ -170,9 +170,32 @@ impl App {
         self.list_state.select(Some(i));
     }
 
+    pub fn close_selected(&mut self, store: &Store) {
+        let Some(task) = self.selected_task() else {
+            return;
+        };
+        if task.status != "running" {
+            return;
+        }
+        let task_id = task.id.clone();
+        let pane_id = task.tmux_pane.clone();
+        let window_id = task.tmux_window.clone();
+
+        let output = pane_id
+            .as_deref()
+            .and_then(|p| crate::spawn::capture_pane_output(p).ok());
+
+        if let Some(wid) = &window_id {
+            let _ = crate::spawn::kill_tmux_window(wid);
+        }
+
+        let _ = store.close_task(&task_id, output.as_deref());
+        self.refresh(store);
+    }
+
     pub fn refresh(&mut self, store: &Store) {
         let selected_id = self.selected_task().map(|t| t.id.clone());
-        if let Ok(tasks) = store.list_tasks() {
+        if let Ok(tasks) = store.list_active_tasks() {
             self.tasks = tasks;
         }
         if let Some(id) = selected_id {

@@ -26,7 +26,9 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Spawn { name, skill, param } => cmd_spawn(&paths, &store, &name, &skill, param)?,
-        Command::List => cmd_list(&store)?,
+        Command::List { all } => cmd_list(&store, all)?,
+        Command::History => cmd_list(&store, true)?,
+        Command::Close { id } => cmd_close(&store, &id)?,
         Command::Dash { resume } => tui::run(&store, resume.as_deref())?,
         Command::Start { resume } => cmd_start(resume.as_deref())?,
         Command::Goto { id } => cmd_goto(&store, &id)?,
@@ -88,8 +90,12 @@ fn cmd_spawn(
     Ok(())
 }
 
-fn cmd_list(store: &Store) -> Result<()> {
-    let tasks = store.list_tasks()?;
+fn cmd_list(store: &Store, all: bool) -> Result<()> {
+    let tasks = if all {
+        store.list_tasks()?
+    } else {
+        store.list_active_tasks()?
+    };
 
     if tasks.is_empty() {
         println!("No tasks.");
@@ -131,6 +137,38 @@ fn cmd_list(store: &Store) -> Result<()> {
         .collect();
 
     println!("{}", Table::new(rows));
+    Ok(())
+}
+
+fn cmd_close(store: &Store, id_prefix: &str) -> Result<()> {
+    let task = store
+        .get_task_by_prefix(id_prefix)?
+        .ok_or_else(|| anyhow::anyhow!("no task found matching '{id_prefix}'"))?;
+
+    if task.status != "running" {
+        bail!(
+            "task {} ({}) is '{}', not 'running'",
+            task.name,
+            &task.id[..8],
+            task.status
+        );
+    }
+
+    let output = task
+        .tmux_pane
+        .as_deref()
+        .and_then(|pane| spawn::capture_pane_output(pane).ok());
+
+    if let Some(window_id) = &task.tmux_window {
+        let _ = spawn::kill_tmux_window(window_id);
+    }
+
+    let closed = store.close_task(&task.id, output.as_deref())?;
+    if !closed {
+        bail!("failed to close task {} ({})", task.name, &task.id[..8]);
+    }
+
+    println!("Closed task {} ({})", task.name, &task.id[..8]);
     Ok(())
 }
 

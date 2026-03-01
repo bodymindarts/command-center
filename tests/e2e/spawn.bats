@@ -275,3 +275,69 @@ REQJSON
     echo "$capture"
     echo "$capture" | grep -q "hello from dashboard"
 }
+
+# --- close lifecycle ---
+
+@test "close marks task as closed and kills tmux window" {
+    cd "$PROJECT_DIR"
+    clat spawn close-test --skill noop
+
+    local short_id
+    short_id=$(task_field "substr(id, 1, 8)" close-test)
+
+    local window_id
+    window_id=$(task_field tmux_window close-test)
+
+    # Window exists before close
+    tmux list-windows -F '#{window_id}' | grep -q "$window_id"
+
+    run clat close "$short_id"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Closed task close-test"* ]]
+
+    [ "$(task_field status close-test)" = "closed" ]
+
+    # Window should be gone
+    ! tmux list-windows -F '#{window_id}' | grep -q "$window_id"
+}
+
+@test "close rejects already completed task" {
+    cd "$PROJECT_DIR"
+    clat spawn close-done --skill noop
+
+    local task_id
+    task_id=$(task_field id close-done)
+    clat complete "$task_id" 0
+
+    local short_id
+    short_id=$(task_field "substr(id, 1, 8)" close-done)
+
+    run clat close "$short_id"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"not 'running'"* ]]
+}
+
+@test "list shows active by default, --all shows history" {
+    cd "$PROJECT_DIR"
+    clat spawn active-one --skill noop
+    clat spawn active-two --skill noop
+
+    local task_id
+    task_id=$(task_field id active-two)
+    clat complete "$task_id" 0
+
+    # Default list should only show active (running) tasks
+    run clat list
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"active-one"* ]]
+    [[ "$output" != *"active-two"* ]]
+
+    # --all shows everything
+    run clat list --all
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"active-one"* ]]
+    [[ "$output" == *"active-two"* ]]
+}

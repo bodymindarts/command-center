@@ -46,6 +46,7 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
                 "running" => "r",
                 "completed" => "c",
                 "failed" => "f",
+                "closed" => "x",
                 _ => "?",
             };
             let color = status_color(&task.status);
@@ -304,6 +305,8 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
             Span::raw(" goto  "),
             Span::styled("d", Style::default().fg(Color::Yellow)),
             Span::raw(" detail  "),
+            Span::styled("x", Style::default().fg(Color::Yellow)),
+            Span::raw(" close  "),
             Span::styled("m", Style::default().fg(Color::Yellow)),
             Span::raw(" message  "),
             Span::styled("Tab", Style::default().fg(Color::Yellow)),
@@ -346,6 +349,7 @@ fn status_color(status: &str) -> Color {
         "running" => Color::Yellow,
         "completed" => Color::Green,
         "failed" => Color::Red,
+        "closed" => Color::Magenta,
         _ => Color::White,
     }
 }

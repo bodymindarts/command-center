@@ -24,7 +24,20 @@ pub enum Command {
     },
 
     /// List tasks and their status
-    List,
+    List {
+        /// Show all tasks including closed/completed/failed
+        #[arg(long)]
+        all: bool,
+    },
+
+    /// List all tasks (alias for list --all)
+    History,
+
+    /// Close a running task (capture output, kill tmux window)
+    Close {
+        /// Task ID (prefix match)
+        id: String,
+    },
 
     /// Switch to a task's tmux window
     Goto {

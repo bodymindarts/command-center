@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::Connection;
+use rusqlite::{Connection, Row};
 
 #[allow(dead_code)]
 pub struct Task {
@@ -19,6 +19,35 @@ pub struct Task {
     pub exit_code: Option<i32>,
     pub output: Option<String>,
 }
+
+fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
+    let started_at: String = row.get(8)?;
+    let completed_at: Option<String> = row.get(9)?;
+    Ok(Task {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        skill_name: row.get(2)?,
+        params_json: row.get(3)?,
+        status: row.get(4)?,
+        tmux_pane: row.get(5)?,
+        tmux_window: row.get(6)?,
+        work_dir: row.get(7)?,
+        started_at: DateTime::parse_from_rfc3339(&started_at)
+            .unwrap_or_default()
+            .with_timezone(&Utc),
+        completed_at: completed_at.and_then(|s| {
+            DateTime::parse_from_rfc3339(&s)
+                .ok()
+                .map(|dt| dt.with_timezone(&Utc))
+        }),
+        exit_code: row.get(10)?,
+        output: row.get(11)?,
+    })
+}
+
+const TASK_COLUMNS: &str =
+    "id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir,
+     started_at, completed_at, exit_code, output";
 
 pub struct Store {
     conn: Connection,
@@ -93,40 +122,33 @@ impl Store {
         Ok(())
     }
 
-    pub fn list_tasks(&self) -> Result<Vec<Task>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir,
-                    started_at, completed_at, exit_code, output
-             FROM tasks ORDER BY started_at DESC",
+    pub fn close_task(&self, id: &str, output: Option<&str>) -> Result<bool> {
+        let now = Utc::now().to_rfc3339();
+        let rows = self.conn.execute(
+            "UPDATE tasks SET status = 'closed', completed_at = ?1, output = ?2
+             WHERE id = ?3 AND status = 'running'",
+            (&now, output, id),
         )?;
+        Ok(rows > 0)
+    }
 
+    pub fn list_tasks(&self) -> Result<Vec<Task>> {
+        let sql = format!("SELECT {TASK_COLUMNS} FROM tasks ORDER BY started_at DESC");
+        let mut stmt = self.conn.prepare(&sql)?;
         let tasks = stmt
-            .query_map([], |row| {
-                let started_at: String = row.get(8)?;
-                let completed_at: Option<String> = row.get(9)?;
-                Ok(Task {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    skill_name: row.get(2)?,
-                    params_json: row.get(3)?,
-                    status: row.get(4)?,
-                    tmux_pane: row.get(5)?,
-                    tmux_window: row.get(6)?,
-                    work_dir: row.get(7)?,
-                    started_at: DateTime::parse_from_rfc3339(&started_at)
-                        .unwrap_or_default()
-                        .with_timezone(&Utc),
-                    completed_at: completed_at.and_then(|s| {
-                        DateTime::parse_from_rfc3339(&s)
-                            .ok()
-                            .map(|dt| dt.with_timezone(&Utc))
-                    }),
-                    exit_code: row.get(10)?,
-                    output: row.get(11)?,
-                })
-            })?
+            .query_map([], row_to_task)?
             .collect::<Result<Vec<_>, _>>()?;
+        Ok(tasks)
+    }
 
+    pub fn list_active_tasks(&self) -> Result<Vec<Task>> {
+        let sql = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks WHERE status = 'running' ORDER BY started_at DESC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let tasks = stmt
+            .query_map([], row_to_task)?
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(tasks)
     }
 
@@ -148,37 +170,11 @@ impl Store {
 
     pub fn get_task_by_prefix(&self, prefix: &str) -> Result<Option<Task>> {
         let pattern = format!("{prefix}%");
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir,
-                    started_at, completed_at, exit_code, output
-             FROM tasks WHERE id LIKE ?1",
-        )?;
+        let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id LIKE ?1");
+        let mut stmt = self.conn.prepare(&sql)?;
 
         let mut tasks: Vec<Task> = stmt
-            .query_map([&pattern], |row| {
-                let started_at: String = row.get(8)?;
-                let completed_at: Option<String> = row.get(9)?;
-                Ok(Task {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    skill_name: row.get(2)?,
-                    params_json: row.get(3)?,
-                    status: row.get(4)?,
-                    tmux_pane: row.get(5)?,
-                    tmux_window: row.get(6)?,
-                    work_dir: row.get(7)?,
-                    started_at: DateTime::parse_from_rfc3339(&started_at)
-                        .unwrap_or_default()
-                        .with_timezone(&Utc),
-                    completed_at: completed_at.and_then(|s| {
-                        DateTime::parse_from_rfc3339(&s)
-                            .ok()
-                            .map(|dt| dt.with_timezone(&Utc))
-                    }),
-                    exit_code: row.get(10)?,
-                    output: row.get(11)?,
-                })
-            })?
+            .query_map([&pattern], row_to_task)?
             .collect::<Result<Vec<_>, _>>()?;
 
         if tasks.len() > 1 {
@@ -186,5 +182,79 @@ impl Store {
         }
 
         Ok(tasks.pop())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_store() -> Store {
+        let conn = Connection::open_in_memory().unwrap();
+        let store = Store { conn };
+        store.init_schema().unwrap();
+        store
+    }
+
+    fn insert_running_task(store: &Store, id: &str, name: &str) {
+        let task = Task {
+            id: id.to_string(),
+            name: name.to_string(),
+            skill_name: "noop".to_string(),
+            params_json: "{}".to_string(),
+            status: "running".to_string(),
+            tmux_pane: Some("%1".to_string()),
+            tmux_window: Some("@1".to_string()),
+            work_dir: None,
+            started_at: Utc::now(),
+            completed_at: None,
+            exit_code: None,
+            output: None,
+        };
+        store.insert_task(&task).unwrap();
+    }
+
+    #[test]
+    fn close_task_sets_status_and_timestamp() {
+        let store = test_store();
+        insert_running_task(&store, "aaa", "t1");
+
+        let ok = store.close_task("aaa", Some("output text")).unwrap();
+        assert!(ok);
+
+        let task = store.get_task_by_prefix("aaa").unwrap().unwrap();
+        assert_eq!(task.status, "closed");
+        assert!(task.completed_at.is_some());
+        assert_eq!(task.output.as_deref(), Some("output text"));
+    }
+
+    #[test]
+    fn close_task_only_affects_running() {
+        let store = test_store();
+        insert_running_task(&store, "bbb", "t2");
+        store.complete_task("bbb", 0, None).unwrap();
+
+        let ok = store.close_task("bbb", None).unwrap();
+        assert!(!ok);
+
+        let task = store.get_task_by_prefix("bbb").unwrap().unwrap();
+        assert_eq!(task.status, "completed");
+    }
+
+    #[test]
+    fn list_active_excludes_non_running() {
+        let store = test_store();
+        insert_running_task(&store, "ccc", "active");
+        insert_running_task(&store, "ddd", "done");
+        store.complete_task("ddd", 0, None).unwrap();
+        insert_running_task(&store, "eee", "closed");
+        store.close_task("eee", None).unwrap();
+
+        let active = store.list_active_tasks().unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].name, "active");
+
+        let all = store.list_tasks().unwrap();
+        assert_eq!(all.len(), 3);
     }
 }

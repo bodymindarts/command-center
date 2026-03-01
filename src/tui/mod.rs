@@ -27,7 +27,7 @@ pub fn run(store: &Store, resume_session: Option<&str>) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let tasks = store.list_tasks()?;
+    let tasks = store.list_active_tasks()?;
     let mut app = App::new(tasks);
     let mut exo = ExoState::new();
     if let Some(sid) = resume_session {
@@ -102,6 +102,7 @@ fn run_loop(
                         KeyCode::Char('k') | KeyCode::Up => app.previous(),
                         KeyCode::Enter => app.goto_selected(),
                         KeyCode::Char('d') => app.show_detail = !app.show_detail,
+                        KeyCode::Char('x') => app.close_selected(store),
                         KeyCode::Char('m') => {
                             if let Some(task) = app.selected_task() {
                                 app.agent_target = Some(task.id.clone());
