@@ -1,20 +1,14 @@
 You are a software engineer.
 
 ## Your task
-Fix task restart so the tmux pane opens in the correct working directory (the task's worktree), not the home directory.
-
-Bug: When restarting a previously completed task, the new tmux pane starts in $HOME instead of the task's worktree at `.claude/worktrees/<skill>-<short-id>`. This breaks the agent's local context.
-
-Investigation:
-1. Look at how tasks are spawned initially in `src/spawn.rs` — it likely sets a working directory when creating the tmux pane/window. Find that logic.
-2. Look at how restart works — it probably reuses spawn logic but might be missing the cwd argument. Check if the worktree path is stored in the database (check `src/store.rs` schema).
-3. The fix: when restarting a task, look up its worktree path (from the DB or derive it from the task id/skill) and pass it as the working directory for the new tmux pane.
-4. Run `cargo fmt`, `git add -A`, `nix flake check` — all checks must pass before committing.
-5. Commit with: `fix(spawn): set correct working directory when restarting tasks`
+Add a '#' column as the FIRST column in both the TUI task list (src/tui/widgets.rs) and the CLI 'clat list' table (src/main.rs). This column should show the tmux WINDOW NUMBER (not the window ID like @24, but the actual index number — e.g. 0, 1, 2 — that you use with ctrl-b to switch windows). The window number can be obtained by running 'tmux list-windows -F "#{window_id} #{window_index}"' and mapping the stored window ID (@24 etc) to its index. The data for window ID is already stored in the tasks table as 'window'. Look at how the existing Pane column was added for reference. Keep it minimal — just add the column and the lookup.
 
 ## Workflow
 - Read and understand existing code before making changes
-- Run `cargo fmt && git add -A && nix flake check` before committing
+- **All commands must run inside the nix shell.** Either:
+  - Prefix one-off commands: `nix develop -c cargo fmt`, `nix develop -c cargo clippy --all-targets -- -D warnings`
+  - Or wrap the full pre-commit sequence: `nix develop -c sh -c 'cargo fmt && git add -A && nix flake check'`
+- **Never run cargo, rustfmt, or clippy directly** — they may not be on PATH outside `nix develop`
 - Use conventional commits: `type(scope): description`
 - Keep changes minimal and focused — don't over-engineer
 
@@ -22,3 +16,4 @@ Investigation:
 - All dependencies are declared in flake.nix — never assume binaries are installed
 - Clippy runs with --deny warnings — no dead code, no unused imports
 - Tests run via nextest
+- `git add -A` must happen before `nix flake check` (nix flakes only copy tracked files)

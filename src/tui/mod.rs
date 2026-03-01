@@ -405,6 +405,7 @@ fn run_loop<R: Runtime>(
             if let Ok(tasks) = service.list_active() {
                 app.refresh_tasks(tasks);
             }
+            app.window_numbers = crate::runtime::tmux_window_numbers();
             // Update selected messages and live output for detail view
             if let Some(task) = app.selected_task() {
                 let task_id = task.id.as_str().to_string();

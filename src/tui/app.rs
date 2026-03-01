@@ -124,6 +124,7 @@ pub struct App {
     pub selected_messages: Vec<TaskMessage>,
     pub detail_scroll: u16,
     pub detail_live_output: Option<String>,
+    pub window_numbers: HashMap<String, String>,
 }
 
 impl App {
@@ -143,6 +144,7 @@ impl App {
             selected_messages: Vec::new(),
             detail_scroll: 0,
             detail_live_output: None,
+            window_numbers: HashMap::new(),
         }
     }
 
