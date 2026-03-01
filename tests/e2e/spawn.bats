@@ -191,7 +191,7 @@ task_field() {
 @test "permission roundtrip through TUI" {
     cd "$PROJECT_DIR"
 
-    # Canonicalize TMPDIR to match what clat does internally
+    # Canonicalize TMPDIR to match what clat's socket_path() does
     export TMPDIR
     TMPDIR="$(cd "$TEST_DIR" && pwd -P)"
 
@@ -205,20 +205,38 @@ task_field() {
     worktree=$(find_worktree perm-rt)
     [ -n "$worktree" ]
 
-    # Switch back to original window/pane and start dashboard
+    # Switch back to original window/pane and start dashboard via script
+    # (avoids tmux send-keys length limits with long nix PATH)
     local clat_bin
     clat_bin=$(command -v clat)
+    cat > "$TEST_DIR/run-dash.sh" <<DASHSCRIPT
+#!/bin/bash
+cd '$PROJECT_DIR'
+export TMPDIR='$TMPDIR'
+export PATH='$PATH'
+exec '$clat_bin' dash 2>'$TEST_DIR/dash-stderr'
+DASHSCRIPT
+    chmod +x "$TEST_DIR/run-dash.sh"
     tmux select-window -t test:0
-    tmux send-keys -t "$dash_pane" "cd '$PROJECT_DIR' && TMPDIR='$TMPDIR' PATH='$PATH' '$clat_bin' dash" Enter
-    sleep 1
+    tmux send-keys -t "$dash_pane" "'$TEST_DIR/run-dash.sh'" Enter
 
-    # Wait for socket to appear
+    # Wait for socket to appear (check both canonical and original path)
     local sock="$TMPDIR/cc-permissions.sock"
     local found_sock=false
-    for i in $(seq 1 20); do
+    for i in $(seq 1 40); do
         [ -S "$sock" ] && { found_sock=true; break; }
         sleep 0.5
     done
+
+    if [ "$found_sock" != true ]; then
+        echo "Socket not found at: $sock" >&2
+        echo "Dashboard stderr:" >&2
+        cat "$TEST_DIR/dash-stderr" 2>/dev/null >&2 || true
+        echo "Dashboard pane:" >&2
+        tmux capture-pane -t "$dash_pane" -p >&2 || true
+        echo "Files in TMPDIR:" >&2
+        ls -la "$TMPDIR" >&2 || true
+    fi
     [ "$found_sock" = true ]
 
     # Pipe request JSON to gate in background — it connects to socket

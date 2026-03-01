@@ -71,7 +71,7 @@
           tests = ./tests/e2e;
           e2e = pkgs.writeShellScriptBin "e2e-tests" ''
             export PATH="${pkgs.lib.makeBinPath [
-              clat pkgs.bats pkgs.jq pkgs.tmux pkgs.git pkgs.sqlite
+              clat pkgs.bats pkgs.jq pkgs.tmux pkgs.git pkgs.sqlite pkgs.python3
             ]}:$PATH"
             exec bats "${tests}"
           '';

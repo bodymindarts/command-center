@@ -9,6 +9,9 @@ setup() {
     TEST_DIR="$(cd "$TEST_DIR" && pwd -P)"
     export TMPDIR="$TEST_DIR"
     SOCK="$TEST_DIR/cc-permissions.sock"
+
+    # Prevent popup fallback from triggering tmux display-popup during tests
+    unset TMUX
 }
 
 teardown() {
@@ -19,9 +22,7 @@ teardown() {
 # reads the request, and writes a fixed response.
 start_mock_server() {
     local response="$1"
-    # Use a background process with socat-like behavior via bash
     (
-        # Create the socket and listen
         python3 -c "
 import socket, sys, os
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -54,7 +55,7 @@ sock.close()
 
     start_mock_server "$allow_resp"
 
-    run bash -c "echo '$input' | clat permission gate"
+    run bash -c "echo '$input' | TMPDIR='$TMPDIR' clat permission gate"
     [ "$status" -eq 0 ]
     [ "$(echo "$output" | jq -r '.hookSpecificOutput.decision.behavior')" = "allow" ]
 
@@ -62,12 +63,12 @@ sock.close()
 }
 
 @test "gate: socket denial returns deny response" {
-    local input='{"tool":{"name":"Write","input":{"file_path":"/etc/passwd"}},"cwd":"/dangerous"}'
+    local input='{"tool":{"name":"Write","input":{"file_path":"/src/config.rs"}},"cwd":"/home/user/project"}'
     local deny_resp='{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}'
 
     start_mock_server "$deny_resp"
 
-    run bash -c "echo '$input' | clat permission gate"
+    run bash -c "echo '$input' | TMPDIR='$TMPDIR' clat permission gate"
     [ "$status" -eq 0 ]
     [ "$(echo "$output" | jq -r '.hookSpecificOutput.decision.behavior')" = "deny" ]
 
@@ -77,10 +78,7 @@ sock.close()
 @test "gate: no socket + no tmux auto-denies" {
     local input='{"tool":{"name":"Bash","input":{"command":"echo timeout"}},"cwd":"/tmp"}'
 
-    # Ensure no socket exists and TMUX is unset
-    unset TMUX
-
-    run bash -c "echo '$input' | clat permission gate"
+    run bash -c "echo '$input' | TMPDIR='$TMPDIR' clat permission gate"
     [ "$status" -eq 0 ]
     [ "$(echo "$output" | jq -r '.hookSpecificOutput.decision.behavior')" = "deny" ]
     [ "$(echo "$output" | jq -r '.hookSpecificOutput.decision.message')" = "No approval UI available" ]
