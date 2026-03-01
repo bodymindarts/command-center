@@ -33,6 +33,7 @@ fn main() -> Result<()> {
         Command::History => cmd_list(&service, true)?,
         Command::Log { id } => cmd_log(&service, &id)?,
         Command::Close { id } => cmd_close(&service, &id)?,
+        Command::Delete { id } => cmd_delete(&service, &id)?,
         Command::Dash { resume } => tui::run(&service, resume.as_deref())?,
         Command::Start { resume } => cmd_start(resume.as_deref())?,
         Command::Goto { id } => cmd_goto(&service, &id)?,
@@ -133,6 +134,12 @@ fn cmd_close(service: &TaskService<impl Runtime>, id: &str) -> Result<()> {
         result.task_name,
         result.task_id.short()
     );
+    Ok(())
+}
+
+fn cmd_delete(service: &TaskService<impl Runtime>, id: &str) -> Result<()> {
+    service.delete(id)?;
+    println!("Deleted task {id}");
     Ok(())
 }
 

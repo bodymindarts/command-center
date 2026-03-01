@@ -1,15 +1,15 @@
 You are a software engineer.
 
 ## Your task
-There's a bug in the TUI dashboard: after closing a task with `clat close`, the task still appears in the task list in the dashboard. The CLI `clat list` correctly hides it, but the TUI doesn't.
+Add a `clat delete <id>` CLI command that fully deletes a task from the database (not just closes it — removes the row entirely).
 
-Investigate:
-1. Look at how the TUI refreshes its task list — check src/tui/mod.rs and src/tui/app.rs for how tasks are fetched and stored
-2. Look at how `clat close` marks a task (src/store.rs) — does it set a status or delete the row?
-3. Look at how `clat list` filters tasks — it correctly hides closed tasks
-4. The TUI likely queries tasks differently from the CLI list command and isn't filtering out closed tasks, OR the TUI caches the task list and doesn't re-query after close
-5. Fix the TUI to stop showing closed tasks
-6. Run: cargo fmt, git add -A, nix flake check. Fix any issues. Commit with a conventional commit message.
+Investigation steps:
+1. Look at how the dashboard's backspace handler deletes tasks — check `src/tui/app.rs` or similar for the keypress handler. It likely calls something on the store.
+2. Look at the existing `clat close` CLI command in `src/cli.rs` as a pattern for adding the new `delete` subcommand.
+3. Check `src/store.rs` for any existing delete function. If there isn't one, add a `delete_task` method that does `DELETE FROM tasks WHERE id = ?`.
+4. Wire up the new CLI subcommand to call that store method.
+5. Run `cargo fmt`, `git add -A`, `nix flake check` — all checks must pass before committing.
+6. Commit with message: `feat(cli): add `clat delete` command for hard-deleting tasks`
 
 ## Workflow
 - Read and understand existing code before making changes

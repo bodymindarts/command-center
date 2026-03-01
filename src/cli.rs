@@ -45,6 +45,12 @@ pub enum Command {
         id: String,
     },
 
+    /// Permanently delete a task from the database
+    Delete {
+        /// Task ID (prefix match)
+        id: String,
+    },
+
     /// Switch to a task's tmux window
     Goto {
         /// Task ID (prefix match)
