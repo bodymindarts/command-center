@@ -330,7 +330,25 @@ fn run_loop<R: Runtime>(
                                 app.show_detail = false;
                             }
                             KeyCode::Tab => {
-                                app.focus = Focus::TaskList;
+                                app.save_current_input();
+                                if !app.show_detail {
+                                    // ExO -> first task
+                                    if !app.tasks.is_empty() {
+                                        app.list_state.select(Some(0));
+                                        app.show_detail = true;
+                                        app.detail_scroll = 0;
+                                    }
+                                } else {
+                                    // Task detail -> next task or wrap to ExO
+                                    let current = app.list_state.selected().unwrap_or(0);
+                                    if current + 1 < app.tasks.len() {
+                                        app.list_state.select(Some(current + 1));
+                                        app.detail_scroll = 0;
+                                    } else {
+                                        app.show_detail = false;
+                                    }
+                                }
+                                app.restore_input();
                             }
                             KeyCode::Char('l') if ctrl => {
                                 app.focus = Focus::TaskList;

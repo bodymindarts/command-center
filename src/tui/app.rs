@@ -111,6 +111,11 @@ impl InputState {
         self.chars.clear();
         result
     }
+
+    pub fn set(&mut self, text: &str) {
+        self.chars = text.chars().collect();
+        self.cursor = self.chars.len();
+    }
 }
 
 pub struct App {
@@ -125,6 +130,7 @@ pub struct App {
     pub detail_scroll: u16,
     pub detail_live_output: Option<String>,
     pub window_numbers: HashMap<String, String>,
+    pub chat_buffers: HashMap<String, String>,
 }
 
 impl App {
@@ -145,6 +151,7 @@ impl App {
             detail_scroll: 0,
             detail_live_output: None,
             window_numbers: HashMap::new(),
+            chat_buffers: HashMap::new(),
         }
     }
 
@@ -232,6 +239,33 @@ impl App {
 
     pub fn total_pending_permissions(&self) -> usize {
         self.pending_permissions.values().map(|q| q.len()).sum()
+    }
+
+    fn current_chat_key(&self) -> String {
+        if self.show_detail {
+            self.selected_task()
+                .map(|t| t.id.as_str().to_string())
+                .unwrap_or_else(|| "exo".to_string())
+        } else {
+            "exo".to_string()
+        }
+    }
+
+    pub fn save_current_input(&mut self) {
+        let key = self.current_chat_key();
+        let text = self.input.buffer();
+        if text.is_empty() {
+            self.chat_buffers.remove(&key);
+        } else {
+            self.chat_buffers.insert(key, text);
+        }
+    }
+
+    pub fn restore_input(&mut self) {
+        let key = self.current_chat_key();
+        let text = self.chat_buffers.get(&key).cloned().unwrap_or_default();
+        self.input.take();
+        self.input.set(&text);
     }
 
     /// Returns the permission key for the currently visible pane.
