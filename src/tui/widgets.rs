@@ -112,13 +112,12 @@ fn render_chat(frame: &mut ratatui::Frame, app: &App, exo: &ExoState, area: Rect
     let in_task_chat = app.show_detail && app.selected_task().is_some();
     let mut lines: Vec<Line> = Vec::new();
 
-    // Permission banner — always visible when reviewing a permission
-    if let Some(viewing) = &app.viewing_permission_for
-        && let Some(req) = app.peek_permission(viewing)
-    {
+    // Permission banner — shown when the focused pane has pending permissions
+    let perm_key = app.focused_perm_key();
+    if let Some(req) = app.peek_permission(&perm_key) {
         let extra = app
             .pending_permissions
-            .get(viewing)
+            .get(&perm_key)
             .map(|q| q.len().saturating_sub(1))
             .unwrap_or(0);
         let more = if extra > 0 {
@@ -136,7 +135,7 @@ fn render_chat(frame: &mut ratatui::Frame, app: &App, exo: &ExoState, area: Rect
                 .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(Span::styled(
-            "  [y] approve  [n] deny  [Esc] dismiss",
+            "  [1] approve  [2] deny  [^P] next",
             Style::default().fg(Color::Yellow),
         )));
         lines.push(Line::from(""));
@@ -328,7 +327,7 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool
 }
 
 fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
-    let mut spans = match &app.focus {
+    let spans = match &app.focus {
         Focus::ConfirmDelete(_) => vec![
             Span::styled(" y", Style::default().fg(Color::Red)),
             Span::raw(" delete  "),
@@ -350,9 +349,9 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 Span::styled("Esc", Style::default().fg(Color::Yellow)),
                 Span::raw(" back"),
             ];
-            if app.viewing_permission_for.is_some() {
+            if app.peek_permission(&app.focused_perm_key()).is_some() {
                 s.push(Span::raw("  "));
-                s.push(Span::styled("y/n", Style::default().fg(Color::Green)));
+                s.push(Span::styled("^P", Style::default().fg(Color::Green)));
                 s.push(Span::raw(" perm"));
             }
             s
@@ -376,19 +375,17 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
             ];
             if app.total_pending_permissions() > 0 {
                 s.push(Span::raw("  "));
-                s.push(Span::styled("p", Style::default().fg(Color::Green)));
+                s.push(Span::styled("^P", Style::default().fg(Color::Green)));
                 s.push(Span::raw(" perm"));
+            }
+            if app.peek_permission(&app.focused_perm_key()).is_some() {
+                s.push(Span::raw("  "));
+                s.push(Span::styled("1/2", Style::default().fg(Color::Green)));
+                s.push(Span::raw(" approve/deny"));
             }
             s
         }
     };
-    // When reviewing a permission from TaskList, also show y/n hint
-    if matches!(app.focus, Focus::TaskList) && app.viewing_permission_for.is_some() {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled("y/n", Style::default().fg(Color::Green)));
-        spans.push(Span::raw(" perm"));
-    }
-
     let bar = Paragraph::new(Line::from(spans)).style(Style::default().fg(Color::DarkGray));
 
     frame.render_widget(bar, area);
