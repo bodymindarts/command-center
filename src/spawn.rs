@@ -141,3 +141,9 @@ pub(crate) fn tmux_cmd(args: &[&str]) -> Result<String> {
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
+
+pub fn send_keys_to_pane(pane_id: &str, message: &str) -> Result<()> {
+    tmux_cmd(&["send-keys", "-t", pane_id, "-l", message])?;
+    tmux_cmd(&["send-keys", "-t", pane_id, "Enter"])?;
+    Ok(())
+}

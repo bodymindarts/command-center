@@ -30,6 +30,7 @@ fn main() -> Result<()> {
         Command::Dash { resume } => tui::run(&store, resume.as_deref())?,
         Command::Start { resume } => cmd_start(resume.as_deref())?,
         Command::Goto { id } => cmd_goto(&store, &id)?,
+        Command::Send { id, message } => cmd_send(&store, &id, &message)?,
         Command::Complete {
             id,
             exit_code,
@@ -187,6 +188,22 @@ fn cmd_start(resume: Option<&str>) -> Result<()> {
             bail!("tmux attach-session failed");
         }
     }
+
+    Ok(())
+}
+
+fn cmd_send(store: &Store, id_prefix: &str, message: &str) -> Result<()> {
+    let task = store
+        .get_task_by_prefix(id_prefix)?
+        .ok_or_else(|| anyhow::anyhow!("no task found matching '{id_prefix}'"))?;
+
+    let pane_id = task
+        .tmux_pane
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("task {} has no tmux pane", &task.id[..8]))?;
+
+    spawn::send_keys_to_pane(pane_id, message)?;
+    println!("Sent message to {} ({})", task.name, &task.id[..8]);
 
     Ok(())
 }

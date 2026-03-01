@@ -46,6 +46,15 @@ pub enum Command {
         resume: Option<String>,
     },
 
+    /// Send a message to a running agent's tmux pane
+    Send {
+        /// Task ID (prefix match)
+        id: String,
+
+        /// Message to send
+        message: String,
+    },
+
     /// Mark a task as completed (called by wrapper script)
     #[command(hide = true)]
     Complete {

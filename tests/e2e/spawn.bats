@@ -185,3 +185,93 @@ task_field() {
     active_window=$(tmux display-message -t test -p '#{window_name}')
     [ "$active_window" = "cc:goto-test" ]
 }
+
+# --- permission roundtrip through TUI ---
+
+@test "permission roundtrip through TUI" {
+    cd "$PROJECT_DIR"
+
+    # Remember the initial pane (where we'll run the dashboard)
+    local dash_pane
+    dash_pane=$(tmux display-message -t test -p '#{pane_id}')
+
+    clat spawn perm-rt --skill noop
+
+    local worktree
+    worktree=$(find_worktree perm-rt)
+    [ -n "$worktree" ]
+
+    # Switch back to original window/pane and start dashboard
+    local clat_bin
+    clat_bin=$(command -v clat)
+    tmux select-window -t test:0
+    tmux send-keys -t "$dash_pane" "cd '$PROJECT_DIR' && TMPDIR='$TEST_DIR' PATH='$PATH' '$clat_bin' dash" Enter
+    sleep 1
+
+    # Write a .req file matching the task's worktree cwd
+    mkdir -p "$TEST_DIR/cc-permissions"
+    local req_json
+    req_json=$(cat <<REQJSON
+{"tool":{"name":"Bash","input":{"command":"echo hi"}},"cwd":"$worktree"}
+REQJSON
+    )
+    printf '%s' "$req_json" > "$TEST_DIR/cc-permissions/perm-test-123.req"
+
+    # Poll until TUI shows the permission prompt
+    local found=false
+    for i in $(seq 1 20); do
+        local capture
+        capture=$(tmux capture-pane -t "$dash_pane" -p)
+        if echo "$capture" | grep -q "wants to use Bash"; then
+            found=true
+            break
+        fi
+        sleep 0.5
+    done
+    [ "$found" = true ]
+
+    # Approve
+    tmux send-keys -t "$dash_pane" y
+    sleep 1
+
+    # Verify response file
+    [ -f "$TEST_DIR/cc-permissions/perm-test-123.resp" ]
+    grep -q '"allow"' "$TEST_DIR/cc-permissions/perm-test-123.resp"
+
+    # Quit TUI
+    tmux send-keys -t "$dash_pane" Escape
+    sleep 0.3
+    tmux send-keys -t "$dash_pane" q
+}
+
+# --- send message to agent via CLI ---
+
+@test "send message to agent via clat send" {
+    # Replace mock claude with cat (echoes stdin to pane)
+    printf '#!/bin/bash\nexec cat\n' > "$TEST_DIR/bin/claude"
+    chmod +x "$TEST_DIR/bin/claude"
+
+    cd "$PROJECT_DIR"
+    clat spawn msg-test --skill noop
+
+    local short_id
+    short_id=$(task_field "substr(id, 1, 8)" msg-test)
+
+    local tmux_pane
+    tmux_pane=$(task_field tmux_pane msg-test)
+    [ -n "$tmux_pane" ]
+
+    run clat send "$short_id" "hello from dashboard"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Sent message to msg-test"* ]]
+
+    # Give cat time to echo
+    sleep 0.5
+
+    # Capture the agent's pane and verify message appears
+    local capture
+    capture=$(tmux capture-pane -t "$tmux_pane" -p)
+    echo "$capture"
+    echo "$capture" | grep -q "hello from dashboard"
+}

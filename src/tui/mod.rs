@@ -102,6 +102,13 @@ fn run_loop(
                         KeyCode::Char('k') | KeyCode::Up => app.previous(),
                         KeyCode::Enter => app.goto_selected(),
                         KeyCode::Char('d') => app.show_detail = !app.show_detail,
+                        KeyCode::Char('m') => {
+                            if let Some(task) = app.selected_task() {
+                                app.agent_target = Some(task.id.clone());
+                                app.input.take();
+                                app.focus = Focus::AgentInput;
+                            }
+                        }
                         KeyCode::Tab | KeyCode::Char('i') => {
                             app.focus = Focus::ChatInput;
                         }
@@ -124,6 +131,37 @@ fn run_loop(
                                     );
                                     exo.add_user_message(msg);
                                 }
+                            }
+                            KeyCode::Char('u') if ctrl => app.input.kill_before(),
+                            KeyCode::Char('k') if ctrl => app.input.kill_line(),
+                            KeyCode::Char('w') if ctrl => app.input.kill_word(),
+                            KeyCode::Char('a') if ctrl => app.input.home(),
+                            KeyCode::Char('e') if ctrl => app.input.end(),
+                            KeyCode::Char(c) => app.input.insert(c),
+                            KeyCode::Backspace => app.input.backspace(),
+                            KeyCode::Delete => app.input.delete(),
+                            KeyCode::Left => app.input.left(),
+                            KeyCode::Right => app.input.right(),
+                            KeyCode::Home => app.input.home(),
+                            KeyCode::End => app.input.end(),
+                            _ => {}
+                        }
+                    }
+                    Focus::AgentInput => {
+                        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                        match key.code {
+                            KeyCode::Esc => {
+                                app.input.take();
+                                app.agent_target = None;
+                                app.focus = Focus::TaskList;
+                            }
+                            KeyCode::Enter => {
+                                if !app.input.is_empty() {
+                                    let msg = app.input.take();
+                                    app.send_to_agent(&msg);
+                                }
+                                app.agent_target = None;
+                                app.focus = Focus::TaskList;
                             }
                             KeyCode::Char('u') if ctrl => app.input.kill_before(),
                             KeyCode::Char('k') if ctrl => app.input.kill_line(),

@@ -5,6 +5,7 @@ use crate::store::{Store, Task};
 pub enum Focus {
     TaskList,
     ChatInput,
+    AgentInput,
     PermissionPrompt,
 }
 
@@ -116,6 +117,7 @@ pub struct App {
     pub input: InputState,
     pub show_detail: bool,
     pub pending_permission: Option<PendingPermission>,
+    pub agent_target: Option<String>,
 }
 
 impl App {
@@ -132,6 +134,7 @@ impl App {
             input: InputState::new(),
             show_detail: false,
             pending_permission: None,
+            agent_target: None,
         }
     }
 
@@ -198,5 +201,23 @@ impl App {
                 .args(["select-window", "-t", window_id])
                 .output();
         }
+    }
+
+    pub fn send_to_agent(&self, message: &str) {
+        let pane_id = self
+            .agent_target
+            .as_deref()
+            .and_then(|id| self.tasks.iter().find(|t| t.id == id))
+            .and_then(|t| t.tmux_pane.as_deref());
+        if let Some(pane) = pane_id {
+            let _ = crate::spawn::send_keys_to_pane(pane, message);
+        }
+    }
+
+    pub fn agent_target_name(&self) -> Option<&str> {
+        self.agent_target
+            .as_deref()
+            .and_then(|id| self.tasks.iter().find(|t| t.id == id))
+            .map(|t| t.name.as_str())
     }
 }

@@ -32,7 +32,7 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState) {
         render_chat(frame, app, exo, main_area[1]);
     }
 
-    let focused_input = matches!(app.focus, Focus::ChatInput);
+    let focused_input = matches!(app.focus, Focus::ChatInput | Focus::AgentInput);
     render_input(frame, app, outer[1], focused_input);
     render_prompt_bar(frame, app, outer[2]);
 }
@@ -245,7 +245,12 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool
     } else {
         Color::DarkGray
     };
-    let prefix = "[ExO] > ";
+    let prefix = if let Some(name) = app.agent_target_name() {
+        format!("[agent:{name}] > ")
+    } else {
+        "[ExO] > ".to_string()
+    };
+    let prefix = prefix.as_str();
     let buf = app.input.buffer();
     let prefix_len = prefix.len() as u16;
     // Visible width inside borders
@@ -279,26 +284,33 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool
 }
 
 fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
-    let spans = if matches!(app.focus, Focus::PermissionPrompt) {
-        vec![
+    let spans = match &app.focus {
+        Focus::PermissionPrompt => vec![
             Span::styled(" y", Style::default().fg(Color::Green)),
             Span::raw(" approve  "),
             Span::styled("n", Style::default().fg(Color::Red)),
             Span::raw(" deny"),
-        ]
-    } else {
-        vec![
+        ],
+        Focus::AgentInput => vec![
+            Span::styled(" Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(" send  "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(" cancel"),
+        ],
+        _ => vec![
             Span::styled(" j/k", Style::default().fg(Color::Yellow)),
             Span::raw(" navigate  "),
             Span::styled("Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" goto  "),
             Span::styled("d", Style::default().fg(Color::Yellow)),
             Span::raw(" detail  "),
+            Span::styled("m", Style::default().fg(Color::Yellow)),
+            Span::raw(" message  "),
             Span::styled("Tab", Style::default().fg(Color::Yellow)),
             Span::raw(" chat  "),
             Span::styled("q", Style::default().fg(Color::Yellow)),
             Span::raw(" quit"),
-        ]
+        ],
     };
 
     let bar = Paragraph::new(Line::from(spans)).style(Style::default().fg(Color::DarkGray));
