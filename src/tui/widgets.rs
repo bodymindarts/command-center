@@ -82,6 +82,24 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
 fn render_chat(frame: &mut ratatui::Frame, app: &App, exo: &ExoState, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
 
+    // Permission prompt — always visible regardless of chat view
+    if let Some(req) = &app.current_permission {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "[{}] wants to use {}: {}",
+                req.task_name, req.tool_name, req.tool_input_summary
+            ),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            "  [y] approve  [n] deny",
+            Style::default().fg(Color::Yellow),
+        )));
+        lines.push(Line::from(""));
+    }
+
     if let Focus::ConfirmDelete(id) = &app.focus {
         let name = app
             .tasks
@@ -180,20 +198,6 @@ fn render_chat(frame: &mut ratatui::Frame, app: &App, exo: &ExoState, area: Rect
                 lines.push(Line::from(tools));
             }
 
-            lines.push(Line::from(""));
-        }
-
-        // Show pending permission request from spawned tasks
-        if let Some(req) = &app.current_permission {
-            lines.push(Line::from(Span::styled(
-                format!(
-                    "{} wants to use {}: {}",
-                    req.task_name, req.tool_name, req.tool_input_summary
-                ),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )));
             lines.push(Line::from(""));
         }
 
