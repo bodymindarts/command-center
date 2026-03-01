@@ -121,7 +121,6 @@ pub struct App {
     pub input: InputState,
     pub show_detail: bool,
     pub pending_permissions: HashMap<String, VecDeque<ActivePermission>>,
-    pub viewing_permission_for: Option<String>,
     pub selected_messages: Vec<TaskMessage>,
     pub detail_scroll: u16,
     pub detail_live_output: Option<String>,
@@ -141,7 +140,6 @@ impl App {
             input: InputState::new(),
             show_detail: false,
             pending_permissions: HashMap::new(),
-            viewing_permission_for: None,
             selected_messages: Vec::new(),
             detail_scroll: 0,
             detail_live_output: None,
@@ -232,5 +230,17 @@ impl App {
 
     pub fn total_pending_permissions(&self) -> usize {
         self.pending_permissions.values().map(|q| q.len()).sum()
+    }
+
+    /// Returns the permission key for the currently visible pane.
+    /// Task name if viewing a task's detail, "exo" otherwise.
+    pub fn focused_perm_key(&self) -> String {
+        if self.show_detail {
+            self.selected_task()
+                .map(|t| t.name.clone())
+                .unwrap_or_else(|| "exo".to_string())
+        } else {
+            "exo".to_string()
+        }
     }
 }

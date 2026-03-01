@@ -1,11 +1,14 @@
 You are a software engineer.
 
 ## Your task
-The ExO chat in the TUI dashboard has poor latency/UX compared to individual task chats. Task chats show a complete mirror of claude output and feel ergonomic. The ExO chat needs the same look and feel.
+Rework Ctrl+P in the TUI so it does NOT enter a separate 'permission mode'. Instead:
 
-Investigate how the TUI renders the ExO chat vs task chats (src/tui/ — especially chat.rs, claude.rs, app.rs, mod.rs). Figure out what makes task chats feel responsive (likely streaming output mirroring) and what's different/worse about the ExO chat rendering. Then implement changes to give the ExO chat the same ergonomic experience — streaming output, responsive feel, full output visibility.
+1. Ctrl+P should find the next task/agent pane that has a pending permission request and focus it (i.e. make it the active/visible chat window).
+2. If no task has a pending permission, Ctrl+P does nothing (or shows a brief status message).
+3. Once focused on that task's chat, the user can respond with the normal 1/2/3 keys — no special mode or overlay needed.
+4. Remove any existing 'permission mode' state/rendering if it exists.
 
-Follow standard pre-commit workflow: cargo fmt, git add -A, nix flake check.
+Start by reading the TUI code (src/tui/) to understand the current permission intercept/mode implementation, then simplify it to this focus-based approach.
 
 ## Workflow
 - Read and understand existing code before making changes
