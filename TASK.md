@@ -1,9 +1,14 @@
 You are a software engineer.
 
 ## Your task
-The ExO chat in the TUI dashboard has poor latency/UX compared to individual task chats. Task chats show a complete mirror of claude output and feel ergonomic. The ExO chat needs the same look and feel.
+The ExO chat in the TUI dashboard does not persist across restarts. When you close the dashboard and reopen it, the chat history is gone and the Claude session starts fresh.
 
-Investigate how the TUI renders the ExO chat vs task chats (src/tui/ — especially chat.rs, claude.rs, app.rs, mod.rs). Figure out what makes task chats feel responsive (likely streaming output mirroring) and what's different/worse about the ExO chat rendering. Then implement changes to give the ExO chat the same ergonomic experience — streaming output, responsive feel, full output visibility.
+Fix this by:
+1. Persisting ExO chat messages to the SQLite DB — task messages already use insert_message/list_messages in store.rs, so follow that pattern. The ExO chat needs its own identifier (not a task ID). Store both user messages and assistant responses.
+2. On dashboard startup, reload the persisted ExO chat history and render it into the chat widget so the user sees their previous conversation.
+3. Wire up the --resume flag on clat dash so that when resuming, the Claude session continues AND the chat history is loaded from the DB.
+
+Investigate src/tui/ (mod.rs, app.rs, chat.rs, claude.rs) and src/store.rs to understand the current flow, then implement.
 
 Follow standard pre-commit workflow: cargo fmt, git add -A, nix flake check.
 
