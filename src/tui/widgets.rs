@@ -140,7 +140,7 @@ fn render_chat(frame: &mut ratatui::Frame, app: &App, exo: &ExoState, area: Rect
                 .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(Span::styled(
-            "  [1] approve  [2] deny  [^P] next",
+            "  1+Enter approve  2+Enter deny  ^P next",
             Style::default().fg(Color::Yellow),
         )));
         lines.push(Line::from(""));
@@ -382,11 +382,6 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 s.push(Span::raw("  "));
                 s.push(Span::styled("^P", Style::default().fg(Color::Green)));
                 s.push(Span::raw(" perm"));
-            }
-            if app.peek_permission(&app.focused_perm_key()).is_some() {
-                s.push(Span::raw("  "));
-                s.push(Span::styled("1/2", Style::default().fg(Color::Green)));
-                s.push(Span::raw(" approve/deny"));
             }
             s
         }
