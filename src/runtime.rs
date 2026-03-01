@@ -142,18 +142,24 @@ impl Runtime for TmuxRuntime {
                 copy_dir_recursive(&source_hooks, &target_hooks)?;
             }
 
-            // Write settings with just the hooks section from the source.
-            // Agents earn their own permissions — we only propagate hooks.
+            // Write settings with hooks and base allowed tools.
+            // Hooks route permission requests to the dashboard.
+            // Base allowed tools let agents run common safe commands
+            // (git, cargo, nix, etc.) without manual approval each time.
             let source_settings = source_claude_dir.join("settings.local.json");
-            if source_settings.is_file()
+            let target_settings = target_claude_dir.join("settings.local.json");
+            let mut settings = if source_settings.is_file()
                 && let Ok(content) = std::fs::read_to_string(&source_settings)
                 && let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(&content)
                 && parsed.get("hooks").is_some()
             {
                 parsed.as_object_mut().unwrap().retain(|k, _| k == "hooks");
-                let target_settings = target_claude_dir.join("settings.local.json");
-                std::fs::write(&target_settings, parsed.to_string())?;
-            }
+                parsed
+            } else {
+                serde_json::json!({})
+            };
+            settings["allowedTools"] = serde_json::json!(base_allowed_tools());
+            std::fs::write(&target_settings, settings.to_string())?;
         }
 
         Ok(worktree_path)
@@ -202,6 +208,41 @@ impl Runtime for TmuxRuntime {
         self.tmux_cmd(&["select-window", "-t", window_id])?;
         Ok(())
     }
+}
+
+/// Base set of tool permissions that every spawned agent inherits.
+/// These cover common safe operations so agents don't need manual
+/// approval for routine dev workflow commands.
+fn base_allowed_tools() -> Vec<&'static str> {
+    vec![
+        // Git (read-only + staging/committing — no push/force)
+        "Bash(git status:*)",
+        "Bash(git diff:*)",
+        "Bash(git add:*)",
+        "Bash(git log:*)",
+        "Bash(git commit:*)",
+        "Bash(git branch:*)",
+        "Bash(git show:*)",
+        // Nix
+        "Bash(nix flake check:*)",
+        "Bash(nix develop:*)",
+        "Bash(nix build:*)",
+        // Cargo (typically run inside nix develop, but allow direct too)
+        "Bash(cargo fmt:*)",
+        "Bash(cargo clippy:*)",
+        "Bash(cargo nextest:*)",
+        "Bash(cargo build:*)",
+        "Bash(cargo test:*)",
+        "Bash(cargo check:*)",
+        // Basic read-only shell commands
+        "Bash(ls:*)",
+        "Bash(cat:*)",
+        "Bash(head:*)",
+        "Bash(tail:*)",
+        "Bash(wc:*)",
+        "Bash(which:*)",
+        "Bash(pwd)",
+    ]
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
