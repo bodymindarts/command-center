@@ -26,10 +26,7 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState) {
 
     render_chat(frame, app, exo, left[0]);
 
-    let focused_input = matches!(
-        app.focus,
-        Focus::ChatInput | Focus::AgentInput | Focus::SpawnInput
-    );
+    let focused_input = matches!(app.focus, Focus::ChatInput | Focus::SpawnInput);
     render_input(frame, app, left[1], focused_input);
     render_prompt_bar(frame, app, left[2]);
 
@@ -233,8 +230,6 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool
     };
     let prefix = if matches!(app.focus, Focus::SpawnInput) {
         "[spawn:noop] > ".to_string()
-    } else if let Some(name) = app.agent_target_name() {
-        format!("[agent:{name}] > ")
     } else if app.show_detail {
         let name = app.selected_task().map(|t| t.name.as_str()).unwrap_or("?");
         format!("[agent:{name}] > ")
@@ -282,7 +277,7 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
             Span::styled("n", Style::default().fg(Color::Red)),
             Span::raw(" deny"),
         ],
-        Focus::AgentInput | Focus::SpawnInput => vec![
+        Focus::SpawnInput => vec![
             Span::styled(" Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" send  "),
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
@@ -291,26 +286,24 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
         Focus::ChatInput => vec![
             Span::styled(" Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" send  "),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::raw(" tasks  "),
             Span::styled("Tab", Style::default().fg(Color::Yellow)),
-            Span::raw(" tasks"),
+            Span::raw(" tasks  "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(" back"),
         ],
         Focus::TaskList => vec![
             Span::styled(" j/k", Style::default().fg(Color::Yellow)),
             Span::raw(" navigate  "),
             Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(" chat  "),
+            Span::styled("g", Style::default().fg(Color::Yellow)),
             Span::raw(" goto  "),
-            Span::styled("d", Style::default().fg(Color::Yellow)),
-            Span::raw(" detail  "),
             Span::styled("n", Style::default().fg(Color::Yellow)),
             Span::raw(" new  "),
             Span::styled("x", Style::default().fg(Color::Yellow)),
             Span::raw(" close  "),
-            Span::styled("m", Style::default().fg(Color::Yellow)),
-            Span::raw(" message  "),
             Span::styled("Tab", Style::default().fg(Color::Yellow)),
-            Span::raw(" chat  "),
+            Span::raw(" exo  "),
             Span::styled("q", Style::default().fg(Color::Yellow)),
             Span::raw(" quit"),
         ],

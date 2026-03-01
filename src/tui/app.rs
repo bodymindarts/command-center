@@ -3,13 +3,11 @@ use std::os::unix::net::UnixStream;
 
 use ratatui::widgets::ListState;
 
-use crate::primitives::TaskId;
 use crate::task::{Task, TaskMessage};
 
 pub enum Focus {
     TaskList,
     ChatInput,
-    AgentInput,
     SpawnInput,
     PermissionPrompt,
 }
@@ -123,7 +121,6 @@ pub struct App {
     pub show_detail: bool,
     pub current_permission: Option<ActivePermission>,
     pub permission_queue: VecDeque<ActivePermission>,
-    pub agent_target: Option<TaskId>,
     pub selected_messages: Vec<TaskMessage>,
     pub detail_scroll: u16,
     pub detail_live_output: Option<String>,
@@ -144,7 +141,6 @@ impl App {
             show_detail: false,
             current_permission: None,
             permission_queue: VecDeque::new(),
-            agent_target: None,
             selected_messages: Vec::new(),
             detail_scroll: 0,
             detail_live_output: None,
@@ -205,12 +201,5 @@ impl App {
         } else if !self.tasks.is_empty() && self.list_state.selected().is_none() {
             self.list_state.select(Some(0));
         }
-    }
-
-    pub fn agent_target_name(&self) -> Option<&str> {
-        self.agent_target
-            .as_ref()
-            .and_then(|id| self.tasks.iter().find(|t| t.id == *id))
-            .map(|t| t.name.as_str())
     }
 }

@@ -172,16 +172,14 @@ fn run_loop<R: Runtime>(
                             app.detail_scroll = app.detail_scroll.saturating_sub(10);
                         }
                         KeyCode::Enter => {
+                            app.show_detail = true;
+                            app.focus = Focus::ChatInput;
+                        }
+                        KeyCode::Char('g') => {
                             if let Some(task) = app.selected_task()
                                 && let Some(window_id) = &task.tmux_window
                             {
                                 service.goto_window(window_id);
-                            }
-                        }
-                        KeyCode::Char('d') => {
-                            app.show_detail = !app.show_detail;
-                            if app.show_detail {
-                                app.focus = Focus::ChatInput;
                             }
                         }
                         KeyCode::Char('x') => {
@@ -193,14 +191,6 @@ fn run_loop<R: Runtime>(
                                 if let Ok(tasks) = service.list_active() {
                                     app.refresh_tasks(tasks);
                                 }
-                            }
-                        }
-                        KeyCode::Char('m') => {
-                            if let Some(task) = app.selected_task() {
-                                let id = task.id.clone();
-                                app.agent_target = Some(id);
-                                app.input.take();
-                                app.focus = Focus::AgentInput;
                             }
                         }
                         KeyCode::Char('n') => {
@@ -247,12 +237,15 @@ fn run_loop<R: Runtime>(
                     Focus::ChatInput => {
                         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                         match key.code {
-                            KeyCode::Esc | KeyCode::Tab => {
+                            KeyCode::Esc => {
                                 if exo.streaming {
                                     exo.finish_streaming();
                                     _stdin_handle = None;
                                 }
                                 app.show_detail = false;
+                                app.focus = Focus::TaskList;
+                            }
+                            KeyCode::Tab => {
                                 app.focus = Focus::TaskList;
                             }
                             KeyCode::Enter => {
@@ -277,43 +270,6 @@ fn run_loop<R: Runtime>(
                                         exo.add_user_message(msg);
                                     }
                                 }
-                            }
-                            KeyCode::Char('u') if ctrl => app.input.kill_before(),
-                            KeyCode::Char('k') if ctrl => app.input.kill_line(),
-                            KeyCode::Char('w') if ctrl => app.input.kill_word(),
-                            KeyCode::Char('a') if ctrl => app.input.home(),
-                            KeyCode::Char('e') if ctrl => app.input.end(),
-                            KeyCode::Char(c) => app.input.insert(c),
-                            KeyCode::Backspace => app.input.backspace(),
-                            KeyCode::Delete => app.input.delete(),
-                            KeyCode::Left => app.input.left(),
-                            KeyCode::Right => app.input.right(),
-                            KeyCode::Home => app.input.home(),
-                            KeyCode::End => app.input.end(),
-                            _ => {}
-                        }
-                    }
-                    Focus::AgentInput => {
-                        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                        match key.code {
-                            KeyCode::Esc => {
-                                app.input.take();
-                                app.agent_target = None;
-                                app.focus = Focus::TaskList;
-                            }
-                            KeyCode::Enter => {
-                                if !app.input.is_empty() {
-                                    let msg = app.input.take();
-                                    if let Some(target_id) = &app.agent_target
-                                        && let Some(task) =
-                                            app.tasks.iter().find(|t| t.id == *target_id)
-                                        && let Some(pane) = task.tmux_pane.as_deref()
-                                    {
-                                        service.send_by_id(task.id.as_str(), pane, &msg);
-                                    }
-                                }
-                                app.agent_target = None;
-                                app.focus = Focus::TaskList;
                             }
                             KeyCode::Char('u') if ctrl => app.input.kill_before(),
                             KeyCode::Char('k') if ctrl => app.input.kill_line(),
