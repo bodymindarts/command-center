@@ -68,13 +68,11 @@
 
         apps.e2e = let
           clat = self.packages.${system}.default;
-          hooks = ./.claude/hooks;
           tests = ./tests/e2e;
           e2e = pkgs.writeShellScriptBin "e2e-tests" ''
             export PATH="${pkgs.lib.makeBinPath [
               clat pkgs.bats pkgs.jq pkgs.tmux pkgs.git pkgs.sqlite
             ]}:$PATH"
-            export HOOK_DIR="${hooks}"
             exec bats "${tests}"
           '';
         in {

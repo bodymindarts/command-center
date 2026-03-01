@@ -108,21 +108,6 @@ pub enum SkillAction {
 
 #[derive(Subcommand)]
 pub enum PermissionAction {
-    /// List pending permission requests
-    List,
-
-    /// Approve a pending permission request
-    Approve {
-        /// Request ID (prefix match)
-        req_id: String,
-    },
-
-    /// Deny a pending permission request
-    Deny {
-        /// Request ID (prefix match)
-        req_id: String,
-    },
-
     /// Gate a permission request (stdin→socket/popup→stdout)
     #[command(hide = true)]
     Gate,

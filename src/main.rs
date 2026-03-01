@@ -37,7 +37,14 @@ fn main() -> Result<()> {
         Command::Goto { id } => cmd_goto(&service, &id)?,
         Command::Send { id, message } => cmd_send(&service, &id, &message)?,
         Command::Skill { action } => cmd_skill(action, &service)?,
-        Command::Permission { action } => cmd_permission(action)?,
+        Command::Permission { action } => match action {
+            PermissionAction::Gate => permission::gate_request()?,
+            PermissionAction::Prompt {
+                tool,
+                input,
+                response_file,
+            } => permission::prompt_request(&tool, &input, &response_file)?,
+        },
         Command::Complete {
             id,
             exit_code,
@@ -252,83 +259,5 @@ fn cmd_skill(action: SkillAction, service: &TaskService) -> Result<()> {
             println!("{}", Table::new(rows));
         }
     }
-    Ok(())
-}
-
-fn cmd_permission(action: PermissionAction) -> Result<()> {
-    let dir = permission::permissions_dir();
-
-    match action {
-        PermissionAction::List => {
-            let requests = permission::list_permission_requests(&dir);
-            if requests.is_empty() {
-                println!("No pending permission requests.");
-                return Ok(());
-            }
-
-            #[derive(Tabled)]
-            struct Row {
-                #[tabled(rename = "ID")]
-                id: String,
-                #[tabled(rename = "Tool")]
-                tool: String,
-                #[tabled(rename = "Input")]
-                input: String,
-                #[tabled(rename = "CWD")]
-                cwd: String,
-            }
-
-            let rows: Vec<Row> = requests
-                .iter()
-                .map(|r| Row {
-                    id: r.req_id.clone(),
-                    tool: r.tool_name.clone(),
-                    input: r.tool_input_summary.clone(),
-                    cwd: r.cwd.clone(),
-                })
-                .collect();
-
-            println!("{}", Table::new(rows));
-        }
-        PermissionAction::Approve { req_id } => {
-            cmd_permission_respond(&dir, &req_id, true)?;
-        }
-        PermissionAction::Deny { req_id } => {
-            cmd_permission_respond(&dir, &req_id, false)?;
-        }
-        PermissionAction::Gate => {
-            permission::gate_request()?;
-        }
-        PermissionAction::Prompt {
-            tool,
-            input,
-            response_file,
-        } => {
-            permission::prompt_request(&tool, &input, &response_file)?;
-        }
-    }
-
-    Ok(())
-}
-
-fn cmd_permission_respond(dir: &std::path::Path, req_id_prefix: &str, allow: bool) -> Result<()> {
-    let requests = permission::list_permission_requests(dir);
-
-    let matched: Vec<_> = requests
-        .iter()
-        .filter(|r| r.req_id.starts_with(req_id_prefix))
-        .collect();
-
-    match matched.len() {
-        0 => bail!("no pending permission request matching '{req_id_prefix}'"),
-        1 => {
-            let req = &matched[0];
-            permission::write_permission_response(dir, &req.req_id, allow);
-            let action = if allow { "Approved" } else { "Denied" };
-            println!("{action} {} ({})", req.tool_name, req.req_id);
-        }
-        n => bail!("ambiguous prefix '{req_id_prefix}': matches {n} requests"),
-    }
-
     Ok(())
 }
