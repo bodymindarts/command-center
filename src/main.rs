@@ -95,6 +95,8 @@ fn cmd_list(service: &TaskService<impl Runtime>, all: bool) -> Result<()> {
         skill: String,
         #[tabled(rename = "Status")]
         status: String,
+        #[tabled(rename = "Pane")]
+        pane: String,
         #[tabled(rename = "Window")]
         window: String,
         #[tabled(rename = "Started")]
@@ -110,6 +112,7 @@ fn cmd_list(service: &TaskService<impl Runtime>, all: bool) -> Result<()> {
             name: t.name.clone(),
             skill: t.skill_name.clone(),
             status: t.status.to_string(),
+            pane: t.tmux_pane.clone().unwrap_or_else(|| "-".to_string()),
             window: t.tmux_window.clone().unwrap_or_default(),
             started: t.started_at.format("%H:%M:%S").to_string(),
             exit_code: t
