@@ -38,6 +38,8 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
     let mut exo = ExoState::new();
     if let Some(sid) = resume_session {
         exo.session_id = Some(sid.to_string());
+    } else if let Some(sid) = service.read_exo_session_id() {
+        exo.session_id = Some(sid);
     }
     if let Ok(messages) = service.exo_messages() {
         exo.load_history(messages);
@@ -134,7 +136,10 @@ fn run_loop<R: Runtime>(
             match ev {
                 ExoEvent::TextDelta(text) => exo.append_text(&text),
                 ExoEvent::ToolStart(name) => exo.add_tool_activity(name),
-                ExoEvent::SessionId(id) => exo.session_id = Some(id),
+                ExoEvent::SessionId(id) => {
+                    service.write_exo_session_id(&id);
+                    exo.session_id = Some(id);
+                }
                 ExoEvent::Done => {
                     exo.finish_streaming();
                     if let Some(msg) = exo.messages.last()
@@ -209,6 +214,7 @@ fn run_loop<R: Runtime>(
                     {
                         let names = app.tasks_with_permissions();
                         if !names.is_empty() {
+                            app.save_current_input();
                             let current = app.focused_perm_key();
                             let idx = names
                                 .iter()
@@ -225,17 +231,25 @@ fn run_loop<R: Runtime>(
                                 app.detail_scroll = 0;
                             }
                             app.focus = Focus::ChatInput;
+                            app.chat_scroll = 0;
+                            app.restore_input();
                         } else if app.list_state.selected().is_some() {
+                            app.save_current_input();
                             app.show_detail = true;
                             app.detail_scroll = 0;
                             app.focus = Focus::ChatInput;
+                            app.chat_scroll = 0;
+                            app.restore_input();
                         }
                     // Global: Ctrl+E returns to ExO chat
                     } else if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('e')
                     {
+                        app.save_current_input();
                         app.show_detail = false;
                         app.focus = Focus::ChatInput;
+                        app.chat_scroll = 0;
+                        app.restore_input();
                     } else {
                         match &app.focus {
                             Focus::TaskList => match key.code {

@@ -28,6 +28,10 @@ impl Paths {
         std::fs::create_dir_all(&self.data_dir).context("failed to create data directory")?;
         Ok(())
     }
+
+    pub fn exo_session_file(&self) -> PathBuf {
+        self.data_dir.join("exo-session-id")
+    }
 }
 
 fn find_project_root() -> Result<PathBuf> {

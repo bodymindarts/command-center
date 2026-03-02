@@ -60,6 +60,17 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         }
     }
 
+    pub fn read_exo_session_id(&self) -> Option<String> {
+        std::fs::read_to_string(self.paths.exo_session_file())
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    pub fn write_exo_session_id(&self, session_id: &str) {
+        let _ = std::fs::write(self.paths.exo_session_file(), session_id);
+    }
+
     pub fn spawn(
         &self,
         task_name: &str,
