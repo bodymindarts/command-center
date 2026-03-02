@@ -25,6 +25,7 @@ pub struct ParamDef {
     pub name: String,
     #[serde(default)]
     pub required: bool,
+    pub default: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,12 +74,17 @@ impl SkillFile {
     }
 
     pub fn render_prompt(&self, params: &HashMap<String, String>) -> Result<String> {
+        let mut merged = HashMap::new();
+        for p in &self.skill.params {
+            if let Some(default) = &p.default {
+                merged.insert(p.name.clone(), default.clone());
+            }
+        }
+        merged.extend(params.clone());
+
         let env = minijinja::Environment::new();
         let rendered = env
-            .render_str(
-                &self.template.prompt,
-                minijinja::context! { ..params.clone() },
-            )
+            .render_str(&self.template.prompt, minijinja::context! { ..merged })
             .context("failed to render prompt template")?;
         Ok(rendered)
     }
