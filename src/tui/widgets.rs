@@ -354,7 +354,14 @@ fn render_permission_panel(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" approve   "),
+            Span::raw(" ok   "),
+            Span::styled(
+                "^T",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" trust   "),
             Span::styled(
                 "^N",
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
@@ -475,6 +482,8 @@ fn perm_hint_spans() -> Vec<Span<'static>> {
         Span::raw("  "),
         Span::styled("^Y", Style::default().fg(Color::Green)),
         Span::raw(" ok  "),
+        Span::styled("^T", Style::default().fg(Color::Green)),
+        Span::raw(" trust  "),
         Span::styled("^N", Style::default().fg(Color::Green)),
         Span::raw(" deny  "),
         Span::styled("^P", Style::default().fg(Color::Green)),

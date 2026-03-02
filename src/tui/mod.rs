@@ -280,9 +280,18 @@ fn run_loop<R: Runtime>(
                             app.chat_scroll = 0;
                             app.restore_input();
                         }
-                    // Ctrl+Y approves permission (only when focused task has one)
+                    // Ctrl+Y one-time allow (no updatedPermissions)
                     } else if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('y')
+                        && app.show_detail
+                        && app.peek_permission(&app.focused_perm_key()).is_some()
+                    {
+                        if let Some((stream, allow, _suggestions)) = resolve_permission(app, true) {
+                            let _ = write_response_to_stream(stream, allow, None);
+                        }
+                    // Ctrl+T trust / always-allow (with updatedPermissions)
+                    } else if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('t')
                         && app.show_detail
                         && app.peek_permission(&app.focused_perm_key()).is_some()
                     {
