@@ -79,7 +79,10 @@ impl<'a, R: Runtime> TaskService<'a, R> {
     ) -> Result<SpawnOutput> {
         let skill = SkillFile::load(&self.paths.skills_dir, skill_name)?;
 
-        let params_map: HashMap<String, String> = params.into_iter().collect();
+        let mut params_map: HashMap<String, String> = params.into_iter().collect();
+        params_map
+            .entry("task".to_string())
+            .or_insert_with(|| task_name.to_string());
         skill.validate_params(&params_map)?;
 
         let system_prompt = skill.render_system()?;
