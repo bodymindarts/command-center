@@ -11,10 +11,14 @@ pub struct PermissionRequest {
     pub cwd: String,
 }
 
-pub fn socket_path() -> PathBuf {
+/// Environment variable that spawned agents read to locate the permission socket.
+pub const SOCKET_ENV: &str = "CC_PERM_SOCKET";
+
+/// Generate a unique socket path for this dashboard session (includes PID).
+pub fn session_socket_path() -> PathBuf {
     let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
     let base = std::fs::canonicalize(&tmpdir).unwrap_or_else(|_| PathBuf::from(&tmpdir));
-    base.join("cc-permissions.sock")
+    base.join(format!("cc-permissions-{}.sock", std::process::id()))
 }
 
 pub fn make_response_json(allow: bool, message: Option<&str>) -> String {
@@ -64,7 +68,9 @@ pub fn gate_request() -> Result<()> {
         .read_to_string(&mut input)
         .context("failed to read request from stdin")?;
 
-    let sock = socket_path();
+    let sock = std::env::var(SOCKET_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| session_socket_path());
     match UnixStream::connect(&sock) {
         Ok(mut stream) => {
             stream
@@ -179,15 +185,15 @@ pub fn prompt_request(tool: &str, input_summary: &str, response_file: &str) -> R
     Ok(())
 }
 
-pub fn start_socket_listener() -> Result<UnixListener> {
-    let sock = socket_path();
+pub fn start_socket_listener() -> Result<(UnixListener, PathBuf)> {
+    let sock = session_socket_path();
     let _ = std::fs::remove_file(&sock);
     let listener =
         UnixListener::bind(&sock).with_context(|| format!("failed to bind {}", sock.display()))?;
     listener
         .set_nonblocking(true)
         .context("failed to set socket non-blocking")?;
-    Ok(listener)
+    Ok((listener, sock))
 }
 
 pub(crate) fn summarize_tool_input(tool_name: &str, input: Option<&Value>) -> String {

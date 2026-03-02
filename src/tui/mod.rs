@@ -51,7 +51,12 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
     // Permission socket listener
     let (perm_tx, perm_rx) = mpsc::channel::<(UnixStream, PermissionRequest)>();
     let perm_cancel = Arc::clone(&cancel);
-    let listener = crate::permission::start_socket_listener()?;
+    let (listener, socket_path) = crate::permission::start_socket_listener()?;
+    // SAFETY: called once at startup before spawning threads that read env vars.
+    // Spawned tasks need CC_PERM_SOCKET to route permission requests here.
+    unsafe {
+        std::env::set_var(crate::permission::SOCKET_ENV, &socket_path);
+    }
     std::thread::spawn(move || {
         while !perm_cancel.load(Ordering::Relaxed) {
             match listener.accept() {
@@ -90,7 +95,7 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
             let _ = write_response_to_stream(perm.stream, false);
         }
     }
-    let _ = std::fs::remove_file(crate::permission::socket_path());
+    let _ = std::fs::remove_file(&socket_path);
 
     terminal::disable_raw_mode()?;
     crossterm::execute!(

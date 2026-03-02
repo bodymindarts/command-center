@@ -170,6 +170,11 @@ impl Runtime for TmuxRuntime {
                 serde_json::json!({})
             };
             settings["allowedTools"] = serde_json::json!(base_allowed_tools());
+            // Embed CC_PERM_SOCKET into hook commands so agents connect
+            // to this dashboard's session-scoped permission socket.
+            if let Ok(sock_path) = std::env::var(crate::permission::SOCKET_ENV) {
+                embed_socket_in_hooks(&mut settings, &sock_path);
+            }
             std::fs::write(&target_settings, settings.to_string())?;
         }
 
@@ -281,6 +286,38 @@ fn base_allowed_tools() -> Vec<&'static str> {
         "Bash(which:*)",
         "Bash(pwd)",
     ]
+}
+
+/// Rewrite hook commands in settings JSON to prefix `clat permission gate`
+/// with `CC_PERM_SOCKET=<path>`, so spawned agents connect to the correct
+/// dashboard socket.
+fn embed_socket_in_hooks(settings: &mut serde_json::Value, sock_path: &str) {
+    let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
+        return;
+    };
+    for hook_list in hooks.values_mut() {
+        let Some(matchers) = hook_list.as_array_mut() else {
+            continue;
+        };
+        for matcher in matchers {
+            let Some(hook_arr) = matcher.get_mut("hooks").and_then(|h| h.as_array_mut()) else {
+                continue;
+            };
+            for hook in hook_arr {
+                if hook.get("type").and_then(|t| t.as_str()) == Some("command")
+                    && let Some(cmd) = hook.get("command").and_then(|c| c.as_str())
+                    && cmd.contains("clat permission gate")
+                {
+                    hook["command"] = serde_json::json!(format!(
+                        "{}={} {}",
+                        crate::permission::SOCKET_ENV,
+                        sock_path,
+                        cmd
+                    ));
+                }
+            }
+        }
+    }
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {

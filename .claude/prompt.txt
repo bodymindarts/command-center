@@ -1,0 +1,5 @@
+Fix the global permission socket. Currently permission.rs socket_path() returns a hardcoded /tmp/cc-permissions.sock. Two concurrent dashboards stomp each other's socket.
+
+Fix: Generate a unique socket name per dashboard session (e.g. include PID or a random token). Pass the socket path to spawned agents via environment variable (e.g. CC_PERM_SOCKET). The gate_request() function should read that env var instead of calling the fixed socket_path(). The worktree hook config written in runtime.rs should embed the env var into the hook command. This keeps the socket lifecycle tied to the dashboard process that created it.
+
+Read permission.rs, runtime.rs (worktree hook setup around line 156), and the e2e tests in tests/e2e/ to understand the current flow before making changes. Update e2e tests to match. Commit incrementally with conventional commits. Run 'nix develop -c sh -c "cargo fmt && git add -A && nix flake check"' before each commit.
