@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use crate::primitives::{MessageRole, TaskStatus};
 
 use super::app::{App, Focus};
-use super::chat::ExoState;
+use super::chat::{ContentBlock, ExoState};
 
 pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState) {
     let outer = Layout::default()
@@ -255,25 +255,39 @@ fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: 
                     .add_modifier(Modifier::BOLD),
             )));
 
-            if msg.content.is_empty() && matches!(msg.role, MessageRole::Assistant) && exo.streaming
+            if msg.blocks.is_empty() && matches!(msg.role, MessageRole::Assistant) && exo.streaming
             {
                 lines.push(Line::from(Span::styled(
                     "...",
                     Style::default().fg(Color::DarkGray),
                 )));
             } else {
-                for l in msg.content.lines() {
-                    lines.push(Line::from(l.to_string()));
+                // Render content blocks in order, collecting consecutive
+                // tool_use badges onto a single line.
+                let mut tool_spans: Vec<Span> = Vec::new();
+                for block in &msg.blocks {
+                    match block {
+                        ContentBlock::Text(text) => {
+                            // Flush any pending tool badges first
+                            if !tool_spans.is_empty() {
+                                lines.push(Line::from(std::mem::take(&mut tool_spans)));
+                            }
+                            for l in text.lines() {
+                                lines.push(Line::from(l.to_string()));
+                            }
+                        }
+                        ContentBlock::ToolUse(name) => {
+                            tool_spans.push(Span::styled(
+                                format!("[{name}] "),
+                                Style::default().fg(Color::Yellow),
+                            ));
+                        }
+                    }
                 }
-            }
-
-            if !msg.tool_activity.is_empty() {
-                let tools: Vec<Span> = msg
-                    .tool_activity
-                    .iter()
-                    .map(|t| Span::styled(format!("[{t}] "), Style::default().fg(Color::Yellow)))
-                    .collect();
-                lines.push(Line::from(tools));
+                // Flush any remaining tool badges
+                if !tool_spans.is_empty() {
+                    lines.push(Line::from(tool_spans));
+                }
             }
 
             lines.push(Line::from(""));

@@ -1,10 +1,33 @@
 use crate::primitives::MessageRole;
 use crate::task::TaskMessage;
 
+pub enum ContentBlock {
+    Text(String),
+    ToolUse(String),
+}
+
 pub struct ChatMessage {
     pub role: MessageRole,
-    pub content: String,
-    pub tool_activity: Vec<String>,
+    pub blocks: Vec<ContentBlock>,
+}
+
+impl ChatMessage {
+    /// Return the concatenated text content (for persistence).
+    pub fn text_content(&self) -> String {
+        let mut out = String::new();
+        for block in &self.blocks {
+            if let ContentBlock::Text(t) = block {
+                out.push_str(t);
+            }
+        }
+        out
+    }
+
+    pub fn has_text(&self) -> bool {
+        self.blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text(t) if !t.is_empty()))
+    }
 }
 
 pub struct ExoState {
@@ -25,13 +48,11 @@ impl ExoState {
     pub fn add_user_message(&mut self, content: String) {
         self.messages.push(ChatMessage {
             role: MessageRole::User,
-            content,
-            tool_activity: Vec::new(),
+            blocks: vec![ContentBlock::Text(content)],
         });
         self.messages.push(ChatMessage {
             role: MessageRole::Assistant,
-            content: String::new(),
-            tool_activity: Vec::new(),
+            blocks: Vec::new(),
         });
         self.streaming = true;
     }
@@ -42,7 +63,12 @@ impl ExoState {
             .last_mut()
             .filter(|m| matches!(m.role, MessageRole::Assistant))
         {
-            msg.content.push_str(text);
+            // Append to the last Text block, or create a new one
+            if let Some(ContentBlock::Text(s)) = msg.blocks.last_mut() {
+                s.push_str(text);
+            } else {
+                msg.blocks.push(ContentBlock::Text(text.to_string()));
+            }
         }
     }
 
@@ -52,7 +78,7 @@ impl ExoState {
             .last_mut()
             .filter(|m| matches!(m.role, MessageRole::Assistant))
         {
-            msg.tool_activity.push(tool);
+            msg.blocks.push(ContentBlock::ToolUse(tool));
         }
     }
 
@@ -66,8 +92,7 @@ impl ExoState {
         if !has_assistant {
             self.messages.push(ChatMessage {
                 role: MessageRole::Assistant,
-                content: String::new(),
-                tool_activity: Vec::new(),
+                blocks: Vec::new(),
             });
         }
         self.append_text(&format!("\n[Error: {error}]"));
@@ -84,8 +109,7 @@ impl ExoState {
                 MessageRole::User | MessageRole::Assistant => {
                     self.messages.push(ChatMessage {
                         role: msg.role,
-                        content: msg.content,
-                        tool_activity: Vec::new(),
+                        blocks: vec![ContentBlock::Text(msg.content)],
                     });
                 }
                 MessageRole::System => {}
@@ -105,7 +129,11 @@ mod tests {
 
         assert_eq!(exo.messages.len(), 1);
         assert!(matches!(exo.messages[0].role, MessageRole::Assistant));
-        assert!(exo.messages[0].content.contains("[Error: connection lost]"));
+        assert!(
+            exo.messages[0]
+                .text_content()
+                .contains("[Error: connection lost]")
+        );
         assert!(!exo.streaming);
     }
 
@@ -124,8 +152,8 @@ mod tests {
         assert_eq!(exo.messages.len(), 2);
         let assistant = &exo.messages[1];
         assert!(matches!(assistant.role, MessageRole::Assistant));
-        assert!(assistant.content.contains("partial response"));
-        assert!(assistant.content.contains("[Error: pipe broke]"));
+        assert!(assistant.text_content().contains("partial response"));
+        assert!(assistant.text_content().contains("[Error: pipe broke]"));
         assert!(!exo.streaming);
     }
 
@@ -138,7 +166,11 @@ mod tests {
         exo.add_error("spawn failed");
 
         assert_eq!(exo.messages.len(), 2);
-        assert!(exo.messages[1].content.contains("[Error: spawn failed]"));
+        assert!(
+            exo.messages[1]
+                .text_content()
+                .contains("[Error: spawn failed]")
+        );
         assert!(!exo.streaming);
     }
 
@@ -148,8 +180,7 @@ mod tests {
         // Manually push just a user message (no assistant follows)
         exo.messages.push(ChatMessage {
             role: MessageRole::User,
-            content: "test".into(),
-            tool_activity: Vec::new(),
+            blocks: vec![ContentBlock::Text("test".into())],
         });
 
         exo.add_error("bad state");
@@ -157,7 +188,11 @@ mod tests {
         // Should have created a new assistant message, not appended to user
         assert_eq!(exo.messages.len(), 2);
         assert!(matches!(exo.messages[1].role, MessageRole::Assistant));
-        assert!(exo.messages[1].content.contains("[Error: bad state]"));
+        assert!(
+            exo.messages[1]
+                .text_content()
+                .contains("[Error: bad state]")
+        );
     }
 
     #[test]
@@ -167,5 +202,23 @@ mod tests {
         assert!(exo.streaming);
         exo.finish_streaming();
         assert!(!exo.streaming);
+    }
+
+    #[test]
+    fn blocks_preserve_interleaved_order() {
+        let mut exo = ExoState::new();
+        exo.add_user_message("do stuff".into());
+
+        exo.append_text("Let me check.");
+        exo.add_tool_activity("Bash".into());
+        exo.append_text("All done.");
+        exo.add_tool_activity("Read".into());
+
+        let msg = &exo.messages[1];
+        assert_eq!(msg.blocks.len(), 4);
+        assert!(matches!(&msg.blocks[0], ContentBlock::Text(t) if t == "Let me check."));
+        assert!(matches!(&msg.blocks[1], ContentBlock::ToolUse(t) if t == "Bash"));
+        assert!(matches!(&msg.blocks[2], ContentBlock::Text(t) if t == "All done."));
+        assert!(matches!(&msg.blocks[3], ContentBlock::ToolUse(t) if t == "Read"));
     }
 }

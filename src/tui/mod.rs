@@ -180,9 +180,10 @@ fn run_loop<R: Runtime>(
                     exo.finish_streaming();
                     if let Some(msg) = exo.messages.last()
                         && matches!(msg.role, MessageRole::Assistant)
-                        && !msg.content.is_empty()
+                        && msg.has_text()
                     {
-                        let _ = service.insert_exo_message(MessageRole::Assistant, &msg.content);
+                        let _ =
+                            service.insert_exo_message(MessageRole::Assistant, &msg.text_content());
                     }
                 }
                 ExoEvent::ProcessExited => {
@@ -196,9 +197,10 @@ fn run_loop<R: Runtime>(
                     exo.add_error(&e);
                     if let Some(msg) = exo.messages.last()
                         && matches!(msg.role, MessageRole::Assistant)
-                        && !msg.content.is_empty()
+                        && msg.has_text()
                     {
-                        let _ = service.insert_exo_message(MessageRole::Assistant, &msg.content);
+                        let _ =
+                            service.insert_exo_message(MessageRole::Assistant, &msg.text_content());
                     }
                 }
             }
