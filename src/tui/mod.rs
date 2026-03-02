@@ -391,6 +391,9 @@ fn run_loop<R: Runtime>(
                                         }
                                         app.restore_input();
                                     }
+                                    KeyCode::Char('k') if ctrl => {
+                                        app.focus = Focus::ChatHistory;
+                                    }
                                     KeyCode::Char('l') if ctrl => {
                                         app.focus = Focus::TaskList;
                                     }
@@ -455,6 +458,9 @@ fn run_loop<R: Runtime>(
                                         }
                                         app.restore_input();
                                     }
+                                    KeyCode::Char('k') if ctrl => {
+                                        app.focus = Focus::ChatHistory;
+                                    }
                                     KeyCode::Char('l') if ctrl => {
                                         app.focus = Focus::TaskList;
                                     }
@@ -488,7 +494,6 @@ fn run_loop<R: Runtime>(
                                         }
                                     }
                                     KeyCode::Char('u') if ctrl => app.input.kill_before(),
-                                    KeyCode::Char('k') if ctrl => app.input.kill_line(),
                                     KeyCode::Char('w') if ctrl => app.input.kill_word(),
                                     KeyCode::Char('a') if ctrl => app.input.home(),
                                     KeyCode::Char(c) => app.input.insert(c),
@@ -498,6 +503,30 @@ fn run_loop<R: Runtime>(
                                     KeyCode::Right => app.input.right(),
                                     KeyCode::Home => app.input.home(),
                                     KeyCode::End => app.input.end(),
+                                    _ => {}
+                                }
+                            }
+                            Focus::ChatHistory => {
+                                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                                match key.code {
+                                    KeyCode::Char('j') if ctrl => {
+                                        app.focus = Focus::ChatInput;
+                                    }
+                                    KeyCode::Char('u') if ctrl => {
+                                        let half = (app.chat_viewport_height / 2).max(1);
+                                        app.chat_scroll = app.chat_scroll.saturating_add(half);
+                                    }
+                                    KeyCode::Char('d') if ctrl => {
+                                        let half = (app.chat_viewport_height / 2).max(1);
+                                        app.chat_scroll = app.chat_scroll.saturating_sub(half);
+                                    }
+                                    KeyCode::Char('l') if ctrl => {
+                                        app.focus = Focus::TaskList;
+                                    }
+                                    KeyCode::Esc => {
+                                        app.focus = Focus::ChatInput;
+                                        app.chat_scroll = 0;
+                                    }
                                     _ => {}
                                 }
                             }

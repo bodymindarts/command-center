@@ -282,12 +282,18 @@ fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: 
     app.chat_scroll = app.chat_scroll.min(max_scroll);
     let scroll = max_scroll.saturating_sub(app.chat_scroll);
 
+    let chat_border_color = if matches!(app.focus, Focus::ChatHistory) {
+        Color::Blue
+    } else {
+        Color::DarkGray
+    };
+
     let chat = Paragraph::new(lines)
         .block(
             Block::default()
                 .title(title)
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)),
+                .border_style(Style::default().fg(chat_border_color)),
         )
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
@@ -369,6 +375,8 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
             let mut s = vec![
                 Span::styled(" ^G", Style::default().fg(Color::Yellow)),
                 Span::raw(" goto  "),
+                Span::styled("^K", Style::default().fg(Color::Yellow)),
+                Span::raw(" scroll  "),
                 Span::styled("Tab", Style::default().fg(Color::Yellow)),
                 Span::raw(" next  "),
                 Span::styled("^L", Style::default().fg(Color::Yellow)),
@@ -387,6 +395,8 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
             let mut s = vec![
                 Span::styled(" Enter", Style::default().fg(Color::Yellow)),
                 Span::raw(" send  "),
+                Span::styled("^K", Style::default().fg(Color::Yellow)),
+                Span::raw(" scroll  "),
                 Span::styled("^L", Style::default().fg(Color::Yellow)),
                 Span::raw(" tasks  "),
                 Span::styled("Esc", Style::default().fg(Color::Yellow)),
@@ -398,6 +408,20 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 s.push(Span::raw(" perm"));
             }
             s
+        }
+        Focus::ChatHistory => {
+            vec![
+                Span::styled(" ^J", Style::default().fg(Color::Yellow)),
+                Span::raw(" input  "),
+                Span::styled("^U", Style::default().fg(Color::Yellow)),
+                Span::raw(" up  "),
+                Span::styled("^D", Style::default().fg(Color::Yellow)),
+                Span::raw(" down  "),
+                Span::styled("^L", Style::default().fg(Color::Yellow)),
+                Span::raw(" tasks  "),
+                Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                Span::raw(" back"),
+            ]
         }
         Focus::TaskList => {
             let mut s = vec![

@@ -9,6 +9,7 @@ use crate::task::{Task, TaskMessage};
 pub enum Focus {
     TaskList,
     ChatInput,
+    ChatHistory,
     SpawnInput,
     ConfirmDelete(TaskId),
 }

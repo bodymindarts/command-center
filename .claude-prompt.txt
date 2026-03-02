@@ -1,0 +1,15 @@
+Implement vim-style keyboard navigation for the TUI dashboard. Read the existing code in src/tui/mod.rs, src/tui/app.rs, and src/tui/widgets.rs to understand the current keybinding setup and Focus enum. Then implement the following changes, committing after each logical group:
+
+1. **Ctrl+J / Ctrl+K navigation**: Ctrl+K moves focus UP from ChatInput to the chat history area. Ctrl+J moves focus DOWN from chat history back to ChatInput. This should work regardless of whether show_detail is true (task chat) or false (ExO chat).
+
+2. **Chat history scrolling**: When focused on the chat history area, Ctrl+U scrolls up and Ctrl+D scrolls down (these may already exist but make sure they work when chat history is focused via Ctrl+K).
+
+3. **Ctrl+L / Ctrl+H for left-right navigation**: Ctrl+L moves focus from the chat side (ChatInput or chat history) to the TaskList. Ctrl+H moves from TaskList back to the chat side. This should work from any focus state on the chat side.
+
+4. **Enter in TaskList opens session**: In TaskList focus, pressing Enter should 'goto' the task's tmux window (the behavior currently on 'g'). Remove or repurpose the 'g' keybinding if needed.
+
+5. **Ctrl+G goto from chat focus**: When in ChatInput focus (with a task selected / show_detail true), Ctrl+G should goto the selected task's tmux window. This may already be partially implemented in the infocus mode handler.
+
+6. **Show closed tasks in task list**: Currently the task list only shows active/running tasks. Change it to also show closed (but not deleted) tasks. They should be visually distinct (dimmed or different color) from running tasks.
+
+Follow project conventions: run 'nix develop -c sh -c "cargo fmt && git add -A && nix flake check"' before each commit. Use conventional commits.
