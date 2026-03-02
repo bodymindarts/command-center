@@ -90,11 +90,11 @@ pub fn parse_idle_json(json: &str) -> Option<String> {
 pub fn parse_request_json(json: &str) -> Option<PermissionRequest> {
     let parsed: Value = serde_json::from_str(json).ok()?;
 
-    // Claude Code sends tool_name and tool_input at top level
+    // Claude Code sends tool_name and tool_input at top level.
+    // Require tool_name to be present — messages without it are not permission requests.
     let tool_name = parsed
         .get("tool_name")
-        .and_then(|n| n.as_str())
-        .unwrap_or("unknown")
+        .and_then(|n| n.as_str())?
         .to_string();
 
     let tool_input = parsed.get("tool_input");
