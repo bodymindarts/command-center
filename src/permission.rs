@@ -56,6 +56,16 @@ pub fn make_response_json(allow: bool, message: Option<&str>) -> String {
     .to_string()
 }
 
+/// Check if a message is a "resolved" notification from a PostToolUse hook.
+/// Returns the CWD if so.
+pub fn parse_resolved_json(json: &str) -> Option<String> {
+    let parsed: Value = serde_json::from_str(json).ok()?;
+    if parsed.get("_resolved")?.as_bool()? {
+        return parsed.get("cwd").and_then(|c| c.as_str()).map(String::from);
+    }
+    None
+}
+
 pub fn parse_request_json(json: &str) -> Option<PermissionRequest> {
     let parsed: Value = serde_json::from_str(json).ok()?;
 

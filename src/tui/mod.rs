@@ -52,6 +52,7 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
 
     // Permission socket listener
     let (perm_tx, perm_rx) = mpsc::channel::<(UnixStream, PermissionRequest)>();
+    let (resolved_tx, resolved_rx) = mpsc::channel::<String>(); // CWD of resolved tool
     let perm_cancel = Arc::clone(&cancel);
     let (listener, socket_path) = crate::permission::start_socket_listener()?;
     // SAFETY: called once at startup before spawning threads that read env vars.
@@ -67,10 +68,12 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
             match listener.accept() {
                 Ok((mut stream, _)) => {
                     let mut buf = String::new();
-                    if std::io::Read::read_to_string(&mut stream, &mut buf).is_ok()
-                        && let Some(req) = crate::permission::parse_request_json(&buf)
-                    {
-                        let _ = perm_tx.send((stream, req));
+                    if std::io::Read::read_to_string(&mut stream, &mut buf).is_ok() {
+                        if let Some(cwd) = crate::permission::parse_resolved_json(&buf) {
+                            let _ = resolved_tx.send(cwd);
+                        } else if let Some(req) = crate::permission::parse_request_json(&buf) {
+                            let _ = perm_tx.send((stream, req));
+                        }
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -89,6 +92,7 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
         service,
         &rx,
         &perm_rx,
+        &resolved_rx,
     );
 
     cancel.store(true, Ordering::Relaxed);
@@ -137,6 +141,7 @@ fn run_loop<R: Runtime>(
     service: &TaskService<R>,
     rx: &mpsc::Receiver<ExoEvent>,
     perm_rx: &mpsc::Receiver<(UnixStream, PermissionRequest)>,
+    resolved_rx: &mpsc::Receiver<String>,
 ) -> Result<()> {
     let mut last_tick = Instant::now();
 
@@ -647,6 +652,32 @@ fn run_loop<R: Runtime>(
                 app.detail_live_output = None;
             }
             last_tick = Instant::now();
+        }
+
+        // Handle "resolved" notifications from PostToolUse hooks.
+        // When a tool executes (approved in agent pane or elsewhere), clear
+        // the matching pending permission and respond to unblock the hook.
+        while let Ok(cwd) = resolved_rx.try_recv() {
+            let resolved_cwd =
+                std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
+            let task_name = app
+                .tasks
+                .iter()
+                .find(|t| {
+                    t.work_dir.as_deref().is_some_and(|wd| {
+                        let canon = std::fs::canonicalize(wd)
+                            .unwrap_or_else(|_| std::path::PathBuf::from(wd));
+                        resolved_cwd.starts_with(&canon)
+                    })
+                })
+                .map(|t| t.name.clone());
+            if let Some(name) = task_name {
+                // Drain ALL pending permissions for this task — respond with allow
+                // so the PermissionRequest hook processes can exit cleanly.
+                while let Some(perm) = app.take_permission(&name) {
+                    let _ = write_response_to_stream(perm.stream, true);
+                }
+            }
         }
 
         // Drain permission requests from socket — non-blocking, no focus change

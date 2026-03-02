@@ -316,10 +316,9 @@ fn base_allowed_tools() -> Vec<&'static str> {
     ]
 }
 
-/// Rewrite hook commands in settings JSON to prefix permission-gate commands
-/// with `CC_PERM_SOCKET=<path>`, so spawned agents connect to the correct
-/// dashboard socket. Matches both shell-script hooks (`permission-gate.sh`)
-/// and binary hooks (`clat agent permission-gate`).
+/// Rewrite hook commands in settings JSON to prefix `CC_PERM_SOCKET=<path>`,
+/// so spawned agents' hooks connect to the correct dashboard socket.
+/// Matches any hook command under `.claude/hooks/`.
 fn embed_socket_in_hooks(settings: &mut serde_json::Value, sock_path: &str) {
     let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
         return;
@@ -335,7 +334,7 @@ fn embed_socket_in_hooks(settings: &mut serde_json::Value, sock_path: &str) {
             for hook in hook_arr {
                 if hook.get("type").and_then(|t| t.as_str()) == Some("command")
                     && let Some(cmd) = hook.get("command").and_then(|c| c.as_str())
-                    && cmd.contains("permission-gate")
+                    && cmd.contains(".claude/hooks/")
                 {
                     hook["command"] = serde_json::json!(format!(
                         "{}={} {}",
