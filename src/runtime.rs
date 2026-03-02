@@ -176,6 +176,12 @@ impl Runtime for TmuxRuntime {
                 embed_socket_in_hooks(&mut settings, &sock_path);
             }
             std::fs::write(&target_settings, settings.to_string())?;
+
+            // Ignore generated launcher files so agents don't commit them.
+            std::fs::write(
+                target_claude_dir.join(".gitignore"),
+                "launch.sh\nprompt.txt\nsystem-prompt.txt\n",
+            )?;
         }
 
         Ok(worktree_path)
