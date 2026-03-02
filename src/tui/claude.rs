@@ -188,6 +188,14 @@ impl ExoSession {
     pub fn mark_exited(&mut self) {
         self.stdin = None;
     }
+
+    /// Pre-spawn the process if it's not running.
+    /// Called after a clean exit so the process is warm for the next message.
+    pub fn ensure_alive(&mut self) {
+        if self.stdin.is_none() {
+            self.spawn_process();
+        }
+    }
 }
 
 /// Background reader: parses stream-json stdout and sends ExoEvents.

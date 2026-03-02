@@ -34,6 +34,9 @@ pub struct ExoState {
     pub session_id: Option<String>,
     pub messages: Vec<ChatMessage>,
     pub streaming: bool,
+    /// Tracks whether an error event was received in the current process
+    /// lifecycle. Used to avoid pre-spawning after a failed process exit.
+    pub had_process_error: bool,
 }
 
 impl ExoState {
@@ -42,6 +45,7 @@ impl ExoState {
             session_id: None,
             messages: Vec::new(),
             streaming: false,
+            had_process_error: false,
         }
     }
 

@@ -187,13 +187,19 @@ fn run_loop<R: Runtime>(
                     }
                 }
                 ExoEvent::ProcessExited => {
+                    let had_error = std::mem::take(&mut exo.had_process_error);
                     exo_session.mark_exited();
-                    // If still streaming, the process died mid-turn
                     if exo.streaming {
+                        // Process died mid-turn
                         exo.add_error("Claude process exited unexpectedly");
+                    } else if !had_error {
+                        // Clean exit after a completed turn (or idle timeout).
+                        // Pre-spawn so the next message skips ~10s startup cost.
+                        exo_session.ensure_alive();
                     }
                 }
                 ExoEvent::Error(e) => {
+                    exo.had_process_error = true;
                     exo.add_error(&e);
                     if let Some(msg) = exo.messages.last()
                         && matches!(msg.role, MessageRole::Assistant)
