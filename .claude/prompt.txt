@@ -1,5 +1,0 @@
-Add proper schema versioning using the rusqlite_migration crate (version 2.4). Currently store.rs:86-92 uses ad-hoc ALTER TABLE calls that rely on silent failure (let _ = ...) to be idempotent. This can't support non-idempotent migrations and hides real errors.
-
-Fix: Add rusqlite_migration = "2.4" to Cargo.toml. Replace init_schema() with a Migrations::from_slice(&[...]) constant where each existing schema step becomes an M::up(...) entry. Future migrations are appended to the slice. Uses SQLite's built-in user_version pragma for tracking (no extra tables), works directly with the existing rusqlite::Connection, requires no async runtime.
-
-Read store.rs thoroughly to understand the current schema and migration steps. Commit with conventional commits. Run 'nix develop -c sh -c "cargo fmt && git add -A && nix flake check"' before each commit.
