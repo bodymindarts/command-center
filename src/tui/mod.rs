@@ -116,6 +116,14 @@ fn write_response_to_stream(mut stream: UnixStream, allow: bool) -> std::io::Res
     stream.flush()
 }
 
+/// Resolve and consume the active permission request, returning the
+/// stream so the caller can send the approval/denial response.
+fn resolve_permission(app: &mut App, allow: bool) -> Option<(UnixStream, bool)> {
+    let perm_key = app.active_permission_key()?;
+    let perm = app.take_permission(&perm_key)?;
+    Some((perm.stream, allow))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_loop<R: Runtime>(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
@@ -253,6 +261,20 @@ fn run_loop<R: Runtime>(
                             app.focus = Focus::ChatInput;
                             app.chat_scroll = 0;
                             app.restore_input();
+                        }
+                    // Global: Ctrl+Y approves current permission request
+                    } else if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('y')
+                    {
+                        if let Some((stream, allow)) = resolve_permission(app, true) {
+                            let _ = write_response_to_stream(stream, allow);
+                        }
+                    // Global: Ctrl+N denies current permission request
+                    } else if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('n')
+                    {
+                        if let Some((stream, allow)) = resolve_permission(app, false) {
+                            let _ = write_response_to_stream(stream, allow);
                         }
                     // Global: Ctrl+O returns to ExO chat
                     } else if key.modifiers.contains(KeyModifiers::CONTROL)
@@ -527,28 +549,13 @@ fn run_loop<R: Runtime>(
                                     }
                                     KeyCode::Enter => {
                                         app.chat_scroll = 0;
-                                        if !app.input.is_empty() {
-                                            let perm_key = app.focused_perm_key();
-                                            let buf = app.input.buffer();
-                                            if app.peek_permission(&perm_key).is_some()
-                                                && (buf == "1" || buf == "2")
-                                            {
-                                                let allow = buf == "1";
-                                                app.input.take();
-                                                if let Some(perm) = app.take_permission(&perm_key) {
-                                                    let _ = write_response_to_stream(
-                                                        perm.stream,
-                                                        allow,
-                                                    );
-                                                }
-                                            } else if !exo.streaming {
-                                                let msg = app.input.take();
-                                                exo_session
-                                                    .send_message(&msg, exo.session_id.as_deref());
-                                                let _ = service
-                                                    .insert_exo_message(MessageRole::User, &msg);
-                                                exo.add_user_message(msg);
-                                            }
+                                        if !app.input.is_empty() && !exo.streaming {
+                                            let msg = app.input.take();
+                                            exo_session
+                                                .send_message(&msg, exo.session_id.as_deref());
+                                            let _ =
+                                                service.insert_exo_message(MessageRole::User, &msg);
+                                            exo.add_user_message(msg);
                                         }
                                     }
                                     KeyCode::Char('u') if ctrl => app.input.kill_before(),

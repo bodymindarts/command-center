@@ -295,8 +295,8 @@ REQJSON
     done
     [ "$found" = true ]
 
-    # Approve
-    tmux send-keys -t "$dash_pane" y
+    # Approve via Ctrl+Y (global keybinding)
+    tmux send-keys -t "$dash_pane" C-y
     sleep 1
 
     # Gate process should have received response

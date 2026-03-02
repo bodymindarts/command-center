@@ -337,6 +337,17 @@ impl App {
             "exo".to_string()
         }
     }
+
+    /// Returns the permission key to display in the overlay and act on
+    /// with global keybindings. Prefers the focused task's key; falls
+    /// back to any task with pending permissions.
+    pub fn active_permission_key(&self) -> Option<String> {
+        let focused = self.focused_perm_key();
+        if self.peek_permission(&focused).is_some() {
+            return Some(focused);
+        }
+        self.tasks_with_permissions().into_iter().next()
+    }
 }
 
 #[cfg(test)]
