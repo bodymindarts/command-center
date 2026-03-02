@@ -241,9 +241,9 @@ fn run_loop<R: Runtime>(
                             app.chat_scroll = 0;
                             app.restore_input();
                         }
-                    // Global: Ctrl+E returns to ExO chat
+                    // Global: Ctrl+O returns to ExO chat
                     } else if key.modifiers.contains(KeyModifiers::CONTROL)
-                        && key.code == KeyCode::Char('e')
+                        && key.code == KeyCode::Char('o')
                     {
                         app.save_current_input();
                         app.show_detail = false;
