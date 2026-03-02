@@ -9,7 +9,7 @@ use crate::primitives::{MessageRole, TaskId, TaskStatus};
 use crate::task::{Task, TaskMessage};
 
 static MIGRATION_STEPS: [M<'static>; 1] = [M::up(
-    "CREATE TABLE tasks (
+    "CREATE TABLE IF NOT EXISTS tasks (
         id           TEXT PRIMARY KEY,
         name         TEXT NOT NULL DEFAULT '',
         skill_name   TEXT NOT NULL,
@@ -23,7 +23,7 @@ static MIGRATION_STEPS: [M<'static>; 1] = [M::up(
         exit_code    INTEGER,
         output       TEXT
     );
-    CREATE TABLE task_messages (
+    CREATE TABLE IF NOT EXISTS task_messages (
         id         TEXT PRIMARY KEY,
         task_id    TEXT NOT NULL,
         role       TEXT NOT NULL,
