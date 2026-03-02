@@ -59,18 +59,26 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
         .tasks
         .iter()
         .map(|task| {
+            let is_fresh = app.fresh_tasks.contains(task.id.as_str());
             let status_char = match task.status {
                 TaskStatus::Running => "r",
+                TaskStatus::Completed if is_fresh => "●",
+                TaskStatus::Failed if is_fresh => "●",
                 TaskStatus::Completed => "c",
                 TaskStatus::Failed => "f",
                 TaskStatus::Closed => "x",
             };
             let is_running = task.status.is_running();
             let color = status_color(&task.status);
-            let dim = if is_running {
+            let dim = if is_running || is_fresh {
                 Modifier::empty()
             } else {
                 Modifier::DIM
+            };
+            let fresh_mod = if is_fresh {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
             };
             let time = task.started_at.format("%H:%M");
             let win_num = task
@@ -86,11 +94,14 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
                 ),
                 Span::styled(
                     format!("{status_char} "),
-                    Style::default().fg(color).add_modifier(dim),
+                    Style::default()
+                        .fg(color)
+                        .add_modifier(dim)
+                        .add_modifier(fresh_mod),
                 ),
                 Span::styled(
                     format!("{:<10} ", task.name),
-                    Style::default().add_modifier(dim),
+                    Style::default().add_modifier(dim).add_modifier(fresh_mod),
                 ),
                 Span::styled(
                     format!("{time}"),

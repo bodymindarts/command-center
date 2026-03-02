@@ -706,6 +706,14 @@ fn run_loop<R: Runtime>(
             app.add_permission(perm);
         }
 
+        // Acknowledge fresh indicator when user is viewing a task's detail
+        if app.show_detail
+            && let Some(task) = app.selected_task()
+        {
+            let id = task.id.as_str().to_string();
+            app.acknowledge_fresh(&id);
+        }
+
         if app.should_quit {
             return Ok(());
         }

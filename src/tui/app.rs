@@ -1,9 +1,9 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::os::unix::net::UnixStream;
 
 use ratatui::widgets::ListState;
 
-use crate::primitives::TaskId;
+use crate::primitives::{TaskId, TaskStatus};
 use crate::task::{Task, TaskMessage};
 
 pub enum Focus {
@@ -187,6 +187,9 @@ pub struct App {
     pub chat_buffers: HashMap<String, String>,
     pub chat_scroll: u16,
     pub chat_viewport_height: u16,
+    /// Task IDs that recently transitioned from Running to Completed/Failed.
+    /// Cleared when the user views the task detail.
+    pub fresh_tasks: HashSet<String>,
 }
 
 impl App {
@@ -210,6 +213,7 @@ impl App {
             chat_buffers: HashMap::new(),
             chat_scroll: 0,
             chat_viewport_height: 0,
+            fresh_tasks: HashSet::new(),
         }
     }
 
@@ -247,6 +251,21 @@ impl App {
 
     pub fn refresh_tasks(&mut self, tasks: Vec<Task>) {
         let selected_id = self.selected_task().map(|t| t.id.clone());
+
+        // Detect tasks that transitioned from Running to Completed/Failed
+        for new_task in &tasks {
+            if matches!(new_task.status, TaskStatus::Completed | TaskStatus::Failed) {
+                let was_running = self
+                    .tasks
+                    .iter()
+                    .find(|old| old.id == new_task.id)
+                    .is_some_and(|old| old.status == TaskStatus::Running);
+                if was_running {
+                    self.fresh_tasks.insert(new_task.id.as_str().to_string());
+                }
+            }
+        }
+
         self.tasks = tasks;
         if let Some(id) = selected_id {
             if let Some(pos) = self.tasks.iter().position(|t| t.id == id) {
@@ -267,6 +286,11 @@ impl App {
         } else if !self.tasks.is_empty() && self.list_state.selected().is_none() {
             self.list_state.select(Some(0));
         }
+    }
+
+    /// Remove a task from the fresh set (user has acknowledged it).
+    pub fn acknowledge_fresh(&mut self, task_id: &str) {
+        self.fresh_tasks.remove(task_id);
     }
 
     pub fn add_permission(&mut self, perm: ActivePermission) {
