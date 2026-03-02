@@ -172,8 +172,16 @@ fn run_loop<R: Runtime>(
         // Drain channel events
         while let Ok(ev) = rx.try_recv() {
             match ev {
-                ExoEvent::TextDelta(text) => exo.append_text(&text),
-                ExoEvent::ToolStart(name) => exo.add_tool_activity(name),
+                ExoEvent::TextDelta(text) => {
+                    if exo.streaming {
+                        exo.append_text(&text);
+                    }
+                }
+                ExoEvent::ToolStart(name) => {
+                    if exo.streaming {
+                        exo.add_tool_activity(name);
+                    }
+                }
                 ExoEvent::SessionId(id) => {
                     service.write_exo_session_id(&id);
                     exo.session_id = Some(id.clone());
