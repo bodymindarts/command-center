@@ -14,21 +14,40 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState) {
         .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
         .split(frame.area());
 
-    // Left side: chat + input + prompt bar
-    let left = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(0),
-            Constraint::Length(3),
-            Constraint::Length(1),
-        ])
-        .split(outer[0]);
+    // Left side: chat + (optional permission panel) + input + prompt bar
+    let in_task_chat = app.show_detail && app.selected_task().is_some();
+    let focused_perm_key = app.focused_perm_key();
+    let show_perm = in_task_chat && app.peek_permission(&focused_perm_key).is_some();
+    let left = if show_perm {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(5),
+                Constraint::Length(3),
+                Constraint::Length(1),
+            ])
+            .split(outer[0])
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(0),
+                Constraint::Length(3),
+                Constraint::Length(1),
+            ])
+            .split(outer[0])
+    };
 
     render_chat(frame, app, exo, left[0]);
+    if show_perm {
+        render_permission_panel(frame, app, left[1]);
+    }
 
     let focused_input = matches!(app.focus, Focus::ChatInput | Focus::SpawnInput);
-    render_input(frame, app, left[1], focused_input);
-    render_prompt_bar(frame, app, left[2]);
+    render_input(frame, app, left[2], focused_input);
+    render_prompt_bar(frame, app, left[3]);
 
     // Right side: always task list
     let focused_task_list = matches!(app.focus, Focus::TaskList);
@@ -151,69 +170,6 @@ fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: 
     } else {
         Color::DarkGray
     };
-
-    // When the focused task has pending permissions, replace chat entirely
-    let focused_perm_key = app.focused_perm_key();
-    if in_task_chat && let Some(req) = app.peek_permission(&focused_perm_key) {
-        let extra = app
-            .pending_permissions
-            .get(&focused_perm_key)
-            .map(|q| q.len().saturating_sub(1))
-            .unwrap_or(0);
-        let more = if extra > 0 {
-            format!(" (+{extra} more)")
-        } else {
-            String::new()
-        };
-        let summary = if req.tool_input_summary.is_empty() {
-            req.tool_name.clone()
-        } else {
-            format!("{}: {}", req.tool_name, req.tool_input_summary)
-        };
-        let perm_lines = vec![
-            Line::from(""),
-            Line::from(vec![
-                Span::styled(
-                    " PERMISSION ",
-                    Style::default().fg(Color::Black).bg(Color::Yellow),
-                ),
-                Span::styled(more, Style::default().fg(Color::DarkGray)),
-            ]),
-            Line::from(""),
-            Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    summary,
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]),
-            Line::from(""),
-            Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    "^Y",
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" approve   "),
-                Span::styled(
-                    "^N",
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" deny"),
-            ]),
-        ];
-        let block = Block::default()
-            .title(title)
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Yellow));
-        let perm_widget = Paragraph::new(perm_lines).block(block);
-        frame.render_widget(perm_widget, area);
-        return;
-    }
 
     // Render the outer border block
     let block = Block::default()
@@ -354,6 +310,61 @@ fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: 
         .scroll((scroll, 0));
 
     frame.render_widget(chat, inner);
+}
+
+fn render_permission_panel(frame: &mut ratatui::Frame, app: &App, area: Rect) {
+    let perm_key = app.focused_perm_key();
+    let Some(req) = app.peek_permission(&perm_key) else {
+        return;
+    };
+    let extra = app
+        .pending_permissions
+        .get(&perm_key)
+        .map(|q| q.len().saturating_sub(1))
+        .unwrap_or(0);
+    let more = if extra > 0 {
+        format!(" (+{extra} more)")
+    } else {
+        String::new()
+    };
+    let summary = if req.tool_input_summary.is_empty() {
+        req.tool_name.clone()
+    } else {
+        format!("{}: {}", req.tool_name, req.tool_input_summary)
+    };
+    let lines = vec![
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                summary,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(more, Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "^Y",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" approve   "),
+            Span::styled(
+                "^N",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" deny"),
+        ]),
+    ];
+    let block = Block::default()
+        .title(" Permission ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool) {
