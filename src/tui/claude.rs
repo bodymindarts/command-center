@@ -65,7 +65,7 @@ impl ExoSession {
         let mut session = ExoSession {
             stdin: None,
             cancel,
-            active: Arc::new(AtomicBool::new(true)),
+            active: Arc::new(AtomicBool::new(false)),
             tx,
             session_id: session_id.map(|s| s.to_string()),
         };
