@@ -188,14 +188,10 @@ impl Runtime for TmuxRuntime {
                 allowed.push(tool.to_string());
             }
             settings["permissions"] = serde_json::json!({"allow": allowed});
-            // Embed CC_PERM_SOCKET and absolute clat path into hook commands
-            // so agents connect to this dashboard's permission socket and
-            // can find the clat binary regardless of PATH.
+            // Embed CC_PERM_SOCKET into hook commands so agents connect
+            // to this dashboard's session-scoped permission socket.
             if let Ok(sock_path) = std::env::var(crate::permission::SOCKET_ENV) {
-                let clat_path = std::env::current_exe()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|_| "clat".to_string());
-                embed_socket_in_hooks(&mut settings, &sock_path, &clat_path);
+                embed_socket_in_hooks(&mut settings, &sock_path);
             }
             std::fs::write(&target_settings, settings.to_string())?;
 
@@ -316,11 +312,11 @@ fn base_allowed_tools() -> Vec<&'static str> {
     ]
 }
 
-/// Rewrite hook commands in settings JSON to prefix `clat agent permission-gate`
-/// with `CC_PERM_SOCKET=<path>` and replace the bare `clat` invocation with
-/// `clat_path`, so spawned agents connect to the correct dashboard socket and
-/// can find the binary regardless of PATH.
-fn embed_socket_in_hooks(settings: &mut serde_json::Value, sock_path: &str, clat_path: &str) {
+/// Rewrite hook commands in settings JSON to prefix permission-gate commands
+/// with `CC_PERM_SOCKET=<path>`, so spawned agents connect to the correct
+/// dashboard socket. Matches both shell-script hooks (`permission-gate.sh`)
+/// and binary hooks (`clat agent permission-gate`).
+fn embed_socket_in_hooks(settings: &mut serde_json::Value, sock_path: &str) {
     let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
         return;
     };
@@ -335,18 +331,13 @@ fn embed_socket_in_hooks(settings: &mut serde_json::Value, sock_path: &str, clat
             for hook in hook_arr {
                 if hook.get("type").and_then(|t| t.as_str()) == Some("command")
                     && let Some(cmd) = hook.get("command").and_then(|c| c.as_str())
-                    && cmd.contains("clat agent permission-gate")
+                    && cmd.contains("permission-gate")
                 {
-                    let rewritten = cmd.replacen(
-                        "clat agent permission-gate",
-                        &format!("{clat_path} agent permission-gate"),
-                        1,
-                    );
                     hook["command"] = serde_json::json!(format!(
                         "{}={} {}",
                         crate::permission::SOCKET_ENV,
                         sock_path,
-                        rewritten
+                        cmd
                     ));
                 }
             }

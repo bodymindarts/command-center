@@ -2,13 +2,10 @@
 # Route permissions through the dashboard socket when active.
 # Without the socket, output nothing — Claude uses its normal permission flow.
 # Uses perl (ships with macOS) to avoid needing clat/cargo in PATH.
-SOCK="${TMPDIR:-/tmp}/cc-permissions.sock"
+SOCK="${CC_PERM_SOCKET:-${TMPDIR:-/tmp}/cc-permissions.sock}"
 [ -S "$SOCK" ] || exit 0
 
-# Debug: log hook input to temp file
 INPUT=$(cat)
-echo "$INPUT" >> "${TMPDIR:-/tmp}/cc-hook-debug.log"
-
 printf '%s' "$INPUT" | perl -MIO::Socket::UNIX -e '
   my $d = do { local $/; <STDIN> };
   my $s = IO::Socket::UNIX->new(Peer => $ARGV[0], Type => SOCK_STREAM) or exit 0;
