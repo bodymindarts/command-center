@@ -381,7 +381,7 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool
         "[spawn] > ".to_string()
     } else if app.show_detail {
         let name = app.selected_task().map(|t| t.name.as_str()).unwrap_or("?");
-        format!("[infocus:{name}] keys → pane")
+        format!("[{name}] > ")
     } else {
         "[ExO] > ".to_string()
     };
@@ -390,11 +390,7 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool
     // Visible width inside borders
     let visible_width = area.width.saturating_sub(2);
 
-    let buf = if app.show_detail && matches!(app.focus, Focus::ChatInput) {
-        String::new()
-    } else {
-        app.input.buffer()
-    };
+    let buf = app.input.buffer();
     let (display, cursor_pos, scroll) = if app.input.has_paste() {
         let n = app.input.paste_line_count();
         let label = format!("{prefix}[{n} lines pasted]");

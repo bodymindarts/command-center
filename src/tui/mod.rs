@@ -438,7 +438,7 @@ fn run_loop<R: Runtime>(
                                 }
                             }
                             Focus::ChatInput if app.show_detail => {
-                                // Infocus mode — forward keystrokes to tmux pane
+                                // Task chat mode — buffer input, send on Enter
                                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                                 match key.code {
                                     KeyCode::Esc => {
@@ -495,27 +495,27 @@ fn run_loop<R: Runtime>(
                                             }
                                         }
                                     }
-                                    KeyCode::Char(c) => {
-                                        if let Some(task) = app.selected_task()
-                                            && let Some(pane) = task.tmux_pane.as_deref()
-                                        {
-                                            service.forward_literal(pane, &c.to_string());
-                                        }
-                                    }
                                     KeyCode::Enter => {
-                                        if let Some(task) = app.selected_task()
-                                            && let Some(pane) = task.tmux_pane.as_deref()
-                                        {
-                                            service.forward_key(pane, "Enter");
+                                        if !app.input.is_empty() {
+                                            let msg = app.input.take();
+                                            if let Some(task) = app.selected_task()
+                                                && let Some(pane) = task.tmux_pane.as_deref()
+                                            {
+                                                service.forward_literal(pane, &msg);
+                                                service.forward_key(pane, "Enter");
+                                            }
                                         }
                                     }
-                                    KeyCode::Backspace => {
-                                        if let Some(task) = app.selected_task()
-                                            && let Some(pane) = task.tmux_pane.as_deref()
-                                        {
-                                            service.forward_key(pane, "BSpace");
-                                        }
-                                    }
+                                    KeyCode::Char('u') if ctrl => app.input.kill_before(),
+                                    KeyCode::Char('w') if ctrl => app.input.kill_word(),
+                                    KeyCode::Char('a') if ctrl => app.input.home(),
+                                    KeyCode::Char(c) => app.input.insert(c),
+                                    KeyCode::Backspace => app.input.backspace(),
+                                    KeyCode::Delete => app.input.delete(),
+                                    KeyCode::Left => app.input.left(),
+                                    KeyCode::Right => app.input.right(),
+                                    KeyCode::Home => app.input.home(),
+                                    KeyCode::End => app.input.end(),
                                     _ => {}
                                 }
                             }
