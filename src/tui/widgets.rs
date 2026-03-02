@@ -152,22 +152,12 @@ fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: 
         Color::DarkGray
     };
 
-    // Render the outer border block
-    let block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(chat_border_color));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    // Fixed overlay for pending permissions (not scrollable)
-    let active_perm_key = app.active_permission_key();
-    let content_area = if let Some(ref perm_key) = active_perm_key
-        && let Some(req) = app.peek_permission(perm_key)
-    {
+    // When the focused task has pending permissions, replace chat entirely
+    let focused_perm_key = app.focused_perm_key();
+    if in_task_chat && let Some(req) = app.peek_permission(&focused_perm_key) {
         let extra = app
             .pending_permissions
-            .get(perm_key)
+            .get(&focused_perm_key)
             .map(|q| q.len().saturating_sub(1))
             .unwrap_or(0);
         let more = if extra > 0 {
@@ -180,52 +170,58 @@ fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: 
         } else {
             format!("{}: {}", req.tool_name, req.tool_input_summary)
         };
-        let overlay_lines = vec![
+        let perm_lines = vec![
+            Line::from(""),
             Line::from(vec![
                 Span::styled(
                     " PERMISSION ",
                     Style::default().fg(Color::Black).bg(Color::Yellow),
                 ),
-                Span::raw(" "),
-                Span::styled(
-                    &req.task_name,
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
                 Span::styled(more, Style::default().fg(Color::DarkGray)),
             ]),
+            Line::from(""),
             Line::from(vec![
-                Span::raw(" "),
-                Span::styled(summary, Style::default().fg(Color::White)),
-            ]),
-            Line::from(vec![
+                Span::raw("  "),
                 Span::styled(
-                    " ^Y",
+                    summary,
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    "^Y",
                     Style::default()
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::raw(" approve  "),
+                Span::raw(" approve   "),
                 Span::styled(
                     "^N",
                     Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                 ),
-                Span::raw(" deny  "),
-                Span::styled("^P", Style::default().fg(Color::DarkGray)),
-                Span::raw(" next"),
+                Span::raw(" deny"),
             ]),
         ];
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(0)])
-            .split(inner);
-        let overlay = Paragraph::new(overlay_lines);
-        frame.render_widget(overlay, chunks[0]);
-        chunks[1]
-    } else {
-        inner
-    };
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow));
+        let perm_widget = Paragraph::new(perm_lines).block(block);
+        frame.render_widget(perm_widget, area);
+        return;
+    }
+
+    // Render the outer border block
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(chat_border_color));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
     // Build chat content lines
     let mut lines: Vec<Line> = Vec::new();
@@ -332,8 +328,8 @@ fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: 
         }
     }
 
-    let inner_height = content_area.height as usize;
-    let inner_width = content_area.width as usize;
+    let inner_height = inner.height as usize;
+    let inner_width = inner.width as usize;
 
     // Account for line wrapping when calculating scroll
     let rendered_lines: usize = lines
@@ -357,7 +353,7 @@ fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: 
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
 
-    frame.render_widget(chat, content_area);
+    frame.render_widget(chat, inner);
 }
 
 fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool) {
