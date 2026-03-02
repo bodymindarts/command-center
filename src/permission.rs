@@ -9,6 +9,7 @@ pub struct PermissionRequest {
     pub tool_name: String,
     pub tool_input_summary: String,
     pub cwd: String,
+    pub permission_suggestions: Vec<Value>,
 }
 
 /// Environment variable that spawned agents read to locate the permission socket.
@@ -41,11 +42,21 @@ pub fn session_socket_path() -> PathBuf {
     base.join(format!("cc-permissions-{}.sock", std::process::id()))
 }
 
-pub fn make_response_json(allow: bool, message: Option<&str>) -> String {
+pub fn make_response_json(
+    allow: bool,
+    message: Option<&str>,
+    updated_permissions: Option<&[Value]>,
+) -> String {
     let behavior = if allow { "allow" } else { "deny" };
     let mut decision = serde_json::json!({ "behavior": behavior });
     if let Some(msg) = message {
         decision["message"] = Value::String(msg.to_string());
+    }
+    if allow
+        && let Some(perms) = updated_permissions
+        && !perms.is_empty()
+    {
+        decision["updatedPermissions"] = Value::Array(perms.to_vec());
     }
     serde_json::json!({
         "hookSpecificOutput": {
@@ -85,10 +96,17 @@ pub fn parse_request_json(json: &str) -> Option<PermissionRequest> {
         .unwrap_or("")
         .to_string();
 
+    let permission_suggestions = parsed
+        .get("permission_suggestions")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
     Some(PermissionRequest {
         tool_name,
         tool_input_summary,
         cwd,
+        permission_suggestions,
     })
 }
 
@@ -129,7 +147,7 @@ fn popup_fallback(request_json: &str) -> Result<()> {
     let Some(req) = parse_request_json(request_json) else {
         print!(
             "{}",
-            make_response_json(false, Some("Invalid request JSON"))
+            make_response_json(false, Some("Invalid request JSON"), None)
         );
         return Ok(());
     };
@@ -139,7 +157,7 @@ fn popup_fallback(request_json: &str) -> Result<()> {
     if !in_tmux {
         print!(
             "{}",
-            make_response_json(false, Some("No approval UI available"))
+            make_response_json(false, Some("No approval UI available"), None)
         );
         return Ok(());
     }
@@ -172,7 +190,7 @@ fn popup_fallback(request_json: &str) -> Result<()> {
     let _ = std::fs::remove_file(&resp_file);
     print!(
         "{}",
-        make_response_json(false, Some("Popup dismissed or unavailable"))
+        make_response_json(false, Some("Popup dismissed or unavailable"), None)
     );
     Ok(())
 }
@@ -208,7 +226,7 @@ pub fn prompt_request(tool: &str, input_summary: &str, response_file: &str) -> R
 
     crossterm::terminal::disable_raw_mode().context("failed to disable raw mode")?;
 
-    let response = make_response_json(allow, None);
+    let response = make_response_json(allow, None, None);
     std::fs::write(response_file, &response)
         .with_context(|| format!("failed to write response to {response_file}"))?;
 
@@ -277,7 +295,7 @@ mod tests {
 
     #[test]
     fn make_response_json_allow() {
-        let json = make_response_json(true, None);
+        let json = make_response_json(true, None, None);
         let parsed: Value = serde_json::from_str(&json).unwrap();
         assert_eq!(
             parsed["hookSpecificOutput"]["decision"]["behavior"]
@@ -286,11 +304,45 @@ mod tests {
             "allow"
         );
         assert!(parsed["hookSpecificOutput"]["decision"]["message"].is_null());
+        assert!(parsed["hookSpecificOutput"]["decision"]["updatedPermissions"].is_null());
+    }
+
+    #[test]
+    fn make_response_json_allow_with_updated_permissions() {
+        let perms = vec![serde_json::json!({"type": "toolAlwaysAllow", "tool": "Bash"})];
+        let json = make_response_json(true, None, Some(&perms));
+        let parsed: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed["hookSpecificOutput"]["decision"]["behavior"]
+                .as_str()
+                .unwrap(),
+            "allow"
+        );
+        let updated = parsed["hookSpecificOutput"]["decision"]["updatedPermissions"]
+            .as_array()
+            .unwrap();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0]["type"].as_str().unwrap(), "toolAlwaysAllow");
+        assert_eq!(updated[0]["tool"].as_str().unwrap(), "Bash");
+    }
+
+    #[test]
+    fn make_response_json_deny_ignores_permissions() {
+        let perms = vec![serde_json::json!({"type": "toolAlwaysAllow", "tool": "Bash"})];
+        let json = make_response_json(false, None, Some(&perms));
+        let parsed: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed["hookSpecificOutput"]["decision"]["behavior"]
+                .as_str()
+                .unwrap(),
+            "deny"
+        );
+        assert!(parsed["hookSpecificOutput"]["decision"]["updatedPermissions"].is_null());
     }
 
     #[test]
     fn make_response_json_deny_with_message() {
-        let json = make_response_json(false, Some("Timed out"));
+        let json = make_response_json(false, Some("Timed out"), None);
         let parsed: Value = serde_json::from_str(&json).unwrap();
         assert_eq!(
             parsed["hookSpecificOutput"]["decision"]["behavior"]
@@ -313,6 +365,19 @@ mod tests {
         assert_eq!(req.tool_name, "Bash");
         assert_eq!(req.tool_input_summary, "ls -la");
         assert_eq!(req.cwd, "/home/user");
+        assert!(req.permission_suggestions.is_empty());
+    }
+
+    #[test]
+    fn parse_request_json_with_suggestions() {
+        let json = r#"{"tool_name":"Bash","tool_input":{"command":"ls"},"cwd":"/tmp","permission_suggestions":[{"type":"toolAlwaysAllow","tool":"Bash"}]}"#;
+        let req = parse_request_json(json).unwrap();
+        assert_eq!(req.tool_name, "Bash");
+        assert_eq!(req.permission_suggestions.len(), 1);
+        assert_eq!(
+            req.permission_suggestions[0]["type"].as_str().unwrap(),
+            "toolAlwaysAllow"
+        );
     }
 
     #[test]
@@ -349,7 +414,7 @@ mod tests {
         let req = parse_request_json(&buf).unwrap();
         assert_eq!(req.tool_name, "Bash");
 
-        let response = make_response_json(true, None);
+        let response = make_response_json(true, None, None);
         std::io::Write::write_all(&mut stream, response.as_bytes()).unwrap();
         drop(stream);
 

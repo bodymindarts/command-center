@@ -100,7 +100,7 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
     // Deny all pending permissions on exit
     for (_, mut queue) in app.pending_permissions.drain() {
         for perm in queue.drain(..) {
-            let _ = write_response_to_stream(perm.stream, false);
+            let _ = write_response_to_stream(perm.stream, false, None);
         }
     }
     let _ = std::fs::remove_file(&socket_path);
@@ -117,19 +117,26 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
     result
 }
 
-fn write_response_to_stream(mut stream: UnixStream, allow: bool) -> std::io::Result<()> {
+fn write_response_to_stream(
+    mut stream: UnixStream,
+    allow: bool,
+    permission_suggestions: Option<&[serde_json::Value]>,
+) -> std::io::Result<()> {
     use std::io::Write;
-    let response = crate::permission::make_response_json(allow, None);
+    let response = crate::permission::make_response_json(allow, None, permission_suggestions);
     stream.write_all(response.as_bytes())?;
     stream.flush()
 }
 
 /// Resolve and consume the active permission request, returning the
-/// stream so the caller can send the approval/denial response.
-fn resolve_permission(app: &mut App, allow: bool) -> Option<(UnixStream, bool)> {
+/// stream and permission suggestions so the caller can send the response.
+fn resolve_permission(
+    app: &mut App,
+    allow: bool,
+) -> Option<(UnixStream, bool, Vec<serde_json::Value>)> {
     let perm_key = app.active_permission_key()?;
     let perm = app.take_permission(&perm_key)?;
-    Some((perm.stream, allow))
+    Some((perm.stream, allow, perm.permission_suggestions))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -277,8 +284,8 @@ fn run_loop<R: Runtime>(
                         && app.show_detail
                         && app.peek_permission(&app.focused_perm_key()).is_some()
                     {
-                        if let Some((stream, allow)) = resolve_permission(app, true) {
-                            let _ = write_response_to_stream(stream, allow);
+                        if let Some((stream, allow, suggestions)) = resolve_permission(app, true) {
+                            let _ = write_response_to_stream(stream, allow, Some(&suggestions));
                         }
                     // Ctrl+N denies permission (only when focused task has one)
                     } else if key.modifiers.contains(KeyModifiers::CONTROL)
@@ -286,8 +293,9 @@ fn run_loop<R: Runtime>(
                         && app.show_detail
                         && app.peek_permission(&app.focused_perm_key()).is_some()
                     {
-                        if let Some((stream, allow)) = resolve_permission(app, false) {
-                            let _ = write_response_to_stream(stream, allow);
+                        if let Some((stream, allow, _suggestions)) = resolve_permission(app, false)
+                        {
+                            let _ = write_response_to_stream(stream, allow, None);
                         }
                     // Global: Ctrl+O returns to ExO chat
                     } else if key.modifiers.contains(KeyModifiers::CONTROL)
@@ -675,7 +683,7 @@ fn run_loop<R: Runtime>(
                 // Drain ALL pending permissions for this task — respond with allow
                 // so the PermissionRequest hook processes can exit cleanly.
                 while let Some(perm) = app.take_permission(&name) {
-                    let _ = write_response_to_stream(perm.stream, true);
+                    let _ = write_response_to_stream(perm.stream, true, None);
                 }
             }
         }
@@ -702,6 +710,7 @@ fn run_loop<R: Runtime>(
                 task_name: task_name.clone(),
                 tool_name: req.tool_name,
                 tool_input_summary: req.tool_input_summary,
+                permission_suggestions: req.permission_suggestions,
             };
             app.add_permission(perm);
         }

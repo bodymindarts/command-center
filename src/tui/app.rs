@@ -19,6 +19,7 @@ pub struct ActivePermission {
     pub task_name: String,
     pub tool_name: String,
     pub tool_input_summary: String,
+    pub permission_suggestions: Vec<serde_json::Value>,
 }
 
 pub struct InputState {
