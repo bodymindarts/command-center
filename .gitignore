@@ -6,3 +6,6 @@ data/
 .claude/worktrees/
 .bacon-locations
 TASK.md
+.claude-launch.sh
+.claude-prompt.txt
+.claude-system-prompt.txt
