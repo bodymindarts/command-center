@@ -175,30 +175,52 @@ fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: 
         } else {
             String::new()
         };
+        let summary = if req.tool_input_summary.is_empty() {
+            req.tool_name.clone()
+        } else {
+            format!("{}: {}", req.tool_name, req.tool_input_summary)
+        };
         let overlay_lines = vec![
-            Line::from(Span::styled(
-                format!(
-                    "[{}] wants to use {}: {}{more}",
-                    req.task_name, req.tool_name, req.tool_input_summary
+            Line::from(vec![
+                Span::styled(
+                    " PERMISSION ",
+                    Style::default().fg(Color::Black).bg(Color::Yellow),
                 ),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(
-                "  ^Y approve  ^N deny  ^P next",
-                Style::default().fg(Color::Yellow),
-            )),
+                Span::raw(" "),
+                Span::styled(
+                    &req.task_name,
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(more, Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled(summary, Style::default().fg(Color::White)),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    " ^Y",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" approve  "),
+                Span::styled(
+                    "^N",
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" deny  "),
+                Span::styled("^P", Style::default().fg(Color::DarkGray)),
+                Span::raw(" next"),
+            ]),
         ];
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(3), Constraint::Min(0)])
             .split(inner);
-        let overlay = Paragraph::new(overlay_lines).block(
-            Block::default()
-                .borders(Borders::BOTTOM)
-                .border_style(Style::default().fg(Color::Yellow)),
-        );
+        let overlay = Paragraph::new(overlay_lines);
         frame.render_widget(overlay, chunks[0]);
         chunks[1]
     } else {
