@@ -116,6 +116,31 @@ task_field() {
     grep -q '"hooks"' "$worktree/.claude/settings.local.json"
 }
 
+@test "spawn writes permissions.allow with base and skill tools" {
+    cd "$PROJECT_DIR"
+    clat spawn perm-test --skill noop
+
+    local worktree
+    worktree=$(find_worktree perm-test)
+    [ -f "$worktree/.claude/settings.local.json" ]
+
+    local settings
+    settings=$(cat "$worktree/.claude/settings.local.json")
+
+    # Must use permissions.allow (not allowedTools) — Claude Code reads this key
+    echo "$settings" | jq -e '.permissions.allow' > /dev/null
+    ! echo "$settings" | jq -e '.allowedTools' > /dev/null 2>&1
+
+    # Skill-level tool (noop skill declares allowed_tools = ["Bash"])
+    echo "$settings" | jq -e '.permissions.allow | index("Bash")' > /dev/null
+
+    # Base Bash-pattern tools for common dev operations
+    echo "$settings" | jq -e '.permissions.allow | index("Bash(nix develop:*)")' > /dev/null
+    echo "$settings" | jq -e '.permissions.allow | index("Bash(cargo fmt:*)")' > /dev/null
+    echo "$settings" | jq -e '.permissions.allow | index("Bash(git commit:*)")' > /dev/null
+    echo "$settings" | jq -e '.permissions.allow | index("Bash(nix flake check:*)")' > /dev/null
+}
+
 @test "spawn creates tmux window with 3 panes" {
     cd "$PROJECT_DIR"
     clat spawn pane-test --skill noop
