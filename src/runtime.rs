@@ -60,8 +60,6 @@ impl TmuxRuntime {
         let work_dir_str = work_dir.display().to_string();
         let window_name = format!("cc:{task_name}");
 
-        // Pass commands directly to new-window / split-window so the pane
-        // starts with the process already running — no send-keys race.
         let window_id = self.tmux_cmd(&[
             "new-window",
             "-d",
@@ -72,8 +70,6 @@ impl TmuxRuntime {
             &window_name,
             "-c",
             &work_dir_str,
-            "nvim",
-            ".",
         ])?;
 
         let top_pane = self.tmux_cmd(&["list-panes", "-t", &window_id, "-F", "#{pane_id}"])?;
@@ -102,8 +98,12 @@ impl TmuxRuntime {
             "#{pane_id}",
             "-c",
             &work_dir_str,
-            claude_cmd,
         ])?;
+
+        self.tmux_cmd(&["send-keys", "-t", &claude_pane, "-l", claude_cmd])?;
+        self.tmux_cmd(&["send-keys", "-t", &claude_pane, "Enter"])?;
+        self.tmux_cmd(&["send-keys", "-t", &top_pane, "-l", "nvim ."])?;
+        self.tmux_cmd(&["send-keys", "-t", &top_pane, "Enter"])?;
 
         Ok(SpawnResult {
             window_id,
