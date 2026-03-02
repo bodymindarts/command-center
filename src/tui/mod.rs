@@ -266,16 +266,20 @@ fn run_loop<R: Runtime>(
                             app.chat_scroll = 0;
                             app.restore_input();
                         }
-                    // Global: Ctrl+Y approves current permission request
+                    // Ctrl+Y approves permission (only when focused task has one)
                     } else if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('y')
+                        && app.show_detail
+                        && app.peek_permission(&app.focused_perm_key()).is_some()
                     {
                         if let Some((stream, allow)) = resolve_permission(app, true) {
                             let _ = write_response_to_stream(stream, allow);
                         }
-                    // Global: Ctrl+N denies current permission request
+                    // Ctrl+N denies permission (only when focused task has one)
                     } else if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('n')
+                        && app.show_detail
+                        && app.peek_permission(&app.focused_perm_key()).is_some()
                     {
                         if let Some((stream, allow)) = resolve_permission(app, false) {
                             let _ = write_response_to_stream(stream, allow);

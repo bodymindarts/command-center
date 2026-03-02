@@ -368,8 +368,9 @@ fn render_permission_panel(frame: &mut ratatui::Frame, app: &App, area: Rect) {
 }
 
 fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool) {
-    let has_perms = app.total_pending_permissions() > 0;
-    let border_color = if focused && has_perms {
+    let focused_has_perms =
+        app.show_detail && app.peek_permission(&app.focused_perm_key()).is_some();
+    let border_color = if focused && focused_has_perms {
         Color::Yellow
     } else if focused {
         Color::Blue
@@ -439,7 +440,7 @@ fn perm_hint_spans() -> Vec<Span<'static>> {
 }
 
 fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
-    let has_perms = app.total_pending_permissions() > 0;
+    let has_perms = app.show_detail && app.peek_permission(&app.focused_perm_key()).is_some();
     let mut spans = match &app.focus {
         Focus::ConfirmDelete(_) => vec![
             Span::styled(" y", Style::default().fg(Color::Red)),
