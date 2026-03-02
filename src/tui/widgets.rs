@@ -312,20 +312,25 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool
         "[ExO] > ".to_string()
     };
     let prefix = prefix.as_str();
-    let buf = app.input.buffer();
     let prefix_len = prefix.len() as u16;
     // Visible width inside borders
     let visible_width = area.width.saturating_sub(2);
-    let cursor_pos = prefix_len + app.input.cursor as u16;
 
-    // Horizontal scroll: keep cursor within visible area
-    let scroll = if cursor_pos >= visible_width {
-        cursor_pos - visible_width + 1
+    let (display, cursor_pos, scroll) = if app.input.has_paste() {
+        let n = app.input.paste_line_count();
+        let label = format!("{prefix}[{n} lines pasted]");
+        let cpos = label.len() as u16;
+        (label, cpos, 0u16)
     } else {
-        0
+        let buf = app.input.buffer();
+        let cpos = prefix_len + app.input.cursor as u16;
+        let s = if cpos >= visible_width {
+            cpos - visible_width + 1
+        } else {
+            0
+        };
+        (format!("{prefix}{buf}"), cpos, s)
     };
-
-    let display = format!("{prefix}{buf}");
 
     let input = Paragraph::new(display)
         .block(

@@ -23,6 +23,9 @@ pub struct ActivePermission {
 pub struct InputState {
     chars: Vec<char>,
     pub cursor: usize,
+    /// Stores multi-line pasted content. When set, the input widget shows
+    /// "[N lines pasted]" instead of the raw text.
+    pasted: Option<String>,
 }
 
 impl InputState {
@@ -30,23 +33,56 @@ impl InputState {
         Self {
             chars: Vec::new(),
             cursor: 0,
+            pasted: None,
         }
     }
 
     pub fn buffer(&self) -> String {
-        self.chars.iter().collect()
+        if let Some(ref p) = self.pasted {
+            p.clone()
+        } else {
+            self.chars.iter().collect()
+        }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.chars.is_empty()
+        if self.pasted.is_some() {
+            false
+        } else {
+            self.chars.is_empty()
+        }
+    }
+
+    pub fn has_paste(&self) -> bool {
+        self.pasted.is_some()
+    }
+
+    pub fn paste_line_count(&self) -> usize {
+        self.pasted.as_ref().map(|p| p.lines().count()).unwrap_or(0)
+    }
+
+    /// Store a multi-line paste, replacing any current input.
+    pub fn set_paste(&mut self, text: String) {
+        self.chars.clear();
+        self.cursor = 0;
+        self.pasted = Some(text);
+    }
+
+    fn clear_paste(&mut self) {
+        self.pasted = None;
     }
 
     pub fn insert(&mut self, c: char) {
+        self.clear_paste();
         self.chars.insert(self.cursor, c);
         self.cursor += 1;
     }
 
     pub fn backspace(&mut self) {
+        if self.pasted.is_some() {
+            self.clear_paste();
+            return;
+        }
         if self.cursor > 0 {
             self.cursor -= 1;
             self.chars.remove(self.cursor);
@@ -54,6 +90,10 @@ impl InputState {
     }
 
     pub fn delete(&mut self) {
+        if self.pasted.is_some() {
+            self.clear_paste();
+            return;
+        }
         if self.cursor < self.chars.len() {
             self.chars.remove(self.cursor);
         }
@@ -80,15 +120,18 @@ impl InputState {
     }
 
     pub fn kill_line(&mut self) {
+        self.clear_paste();
         self.chars.truncate(self.cursor);
     }
 
     pub fn kill_before(&mut self) {
+        self.clear_paste();
         self.chars.drain(..self.cursor);
         self.cursor = 0;
     }
 
     pub fn kill_word(&mut self) {
+        self.clear_paste();
         if self.cursor == 0 {
             return;
         }
@@ -107,12 +150,18 @@ impl InputState {
 
     pub fn take(&mut self) -> String {
         self.cursor = 0;
-        let result: String = self.chars.iter().collect();
-        self.chars.clear();
-        result
+        if let Some(p) = self.pasted.take() {
+            self.chars.clear();
+            p
+        } else {
+            let result: String = self.chars.iter().collect();
+            self.chars.clear();
+            result
+        }
     }
 
     pub fn set(&mut self, text: &str) {
+        self.pasted = None;
         self.chars = text.chars().collect();
         self.cursor = self.chars.len();
     }
