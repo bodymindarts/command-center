@@ -48,6 +48,9 @@ pub enum ExoEvent {
 pub struct ExoSession {
     stdin: Option<ChildStdin>,
     cancel: Arc<AtomicBool>,
+    /// When true, the reader thread forwards content events. Set to false
+    /// during pre-spawn warmup so replayed history is ignored.
+    active: Arc<AtomicBool>,
     tx: mpsc::Sender<ExoEvent>,
     session_id: Option<String>,
 }
@@ -62,6 +65,7 @@ impl ExoSession {
         let mut session = ExoSession {
             stdin: None,
             cancel,
+            active: Arc::new(AtomicBool::new(true)),
             tx,
             session_id: session_id.map(|s| s.to_string()),
         };
@@ -127,8 +131,9 @@ impl ExoSession {
 
         let tx = self.tx.clone();
         let cancel = Arc::clone(&self.cancel);
+        let active = Arc::clone(&self.active);
         thread::spawn(move || {
-            read_stdout(child, stdout, tx, cancel);
+            read_stdout(child, stdout, tx, cancel, active);
         });
     }
 
@@ -144,6 +149,9 @@ impl ExoSession {
         if self.stdin.is_none() {
             self.spawn_process();
         }
+
+        // Mark active so the reader thread forwards events for this turn
+        self.active.store(true, Ordering::Relaxed);
 
         let stdin = match self.stdin.as_mut() {
             Some(s) => s,
@@ -191,19 +199,24 @@ impl ExoSession {
 
     /// Pre-spawn the process if it's not running.
     /// Called after a clean exit so the process is warm for the next message.
+    /// The reader thread ignores content events until send_message activates it.
     pub fn ensure_alive(&mut self) {
         if self.stdin.is_none() {
+            self.active.store(false, Ordering::Relaxed);
             self.spawn_process();
         }
     }
 }
 
 /// Background reader: parses stream-json stdout and sends ExoEvents.
+/// Content events (text, tools, turn-done) are only forwarded when `active`
+/// is true, so pre-spawn warmup / session replay is silently discarded.
 fn read_stdout(
     mut child: Child,
     stdout: std::process::ChildStdout,
     tx: mpsc::Sender<ExoEvent>,
     cancel: Arc<AtomicBool>,
+    active: Arc<AtomicBool>,
 ) {
     let reader = std::io::BufReader::new(stdout);
 
@@ -232,39 +245,17 @@ fn read_stdout(
 
         let event_type = parsed.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
+        let is_active = active.load(Ordering::Relaxed);
+
         match event_type {
+            // Session metadata — always forwarded (even during warmup)
             "system" => {
                 if let Some(sid) = parsed.get("session_id").and_then(|s| s.as_str()) {
                     let _ = tx.send(ExoEvent::SessionId(sid.to_string()));
                 }
             }
-            "assistant" => {
-                if let Some(content) = parsed
-                    .get("message")
-                    .and_then(|m| m.get("content"))
-                    .and_then(|c| c.as_array())
-                {
-                    for block in content {
-                        match block.get("type").and_then(|t| t.as_str()) {
-                            Some("text") => {
-                                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                                    let _ = tx.send(ExoEvent::TextDelta(text.to_string()));
-                                }
-                            }
-                            Some("tool_use") => {
-                                let name = block
-                                    .get("name")
-                                    .and_then(|n| n.as_str())
-                                    .unwrap_or("tool")
-                                    .to_string();
-                                let _ = tx.send(ExoEvent::ToolStart(name));
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            "content_block_start" => {
+            // Content events — only forwarded when active (not during pre-spawn warmup)
+            "content_block_start" if is_active => {
                 if let Some(cb) = parsed.get("content_block")
                     && cb.get("type").and_then(|t| t.as_str()) == Some("tool_use")
                 {
@@ -276,7 +267,7 @@ fn read_stdout(
                     let _ = tx.send(ExoEvent::ToolStart(name));
                 }
             }
-            "content_block_delta" => {
+            "content_block_delta" if is_active => {
                 if let Some(delta) = parsed.get("delta")
                     && delta.get("type").and_then(|t| t.as_str()) == Some("text_delta")
                     && let Some(text) = delta.get("text").and_then(|t| t.as_str())
@@ -284,16 +275,17 @@ fn read_stdout(
                     let _ = tx.send(ExoEvent::TextDelta(text.to_string()));
                 }
             }
-            "result" => {
+            "result" if is_active => {
                 if let Some(sid) = parsed.get("session_id").and_then(|s| s.as_str()) {
                     let _ = tx.send(ExoEvent::SessionId(sid.to_string()));
                 }
-                // A result event marks the end of a conversational turn,
-                // but the process stays alive for the next message.
                 let _ = tx.send(ExoEvent::TurnDone);
             }
+            // "assistant" and "result" during warmup — silently ignored.
+            // The "assistant" event contains the full post-turn message which
+            // is redundant with content_block_delta streaming.
+            "assistant" | "content_block_start" | "content_block_delta" | "result" => {}
             other => {
-                // Log unknown events for protocol discovery
                 if !other.is_empty() {
                     let debug_path = std::env::temp_dir().join("cc-exo-debug.jsonl");
                     if let Ok(mut f) = std::fs::OpenOptions::new()
