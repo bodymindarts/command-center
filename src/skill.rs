@@ -41,6 +41,8 @@ fn default_model() -> String {
 
 #[derive(Debug, Deserialize)]
 pub struct TemplateDef {
+    #[serde(default)]
+    pub system: Option<String>,
     pub prompt: String,
 }
 
@@ -61,6 +63,13 @@ impl SkillFile {
             }
         }
         Ok(())
+    }
+
+    pub fn render_system(&self) -> Result<Option<String>> {
+        match &self.template.system {
+            Some(system) => Ok(Some(system.trim().to_string())),
+            None => Ok(None),
+        }
     }
 
     pub fn render_prompt(&self, params: &HashMap<String, String>) -> Result<String> {

@@ -11,7 +11,13 @@ pub struct SpawnResult {
 
 pub trait Runtime {
     fn create_worktree(&self, repo_root: &Path, name: &str) -> Result<PathBuf>;
-    fn spawn_agent(&self, task_name: &str, prompt: &str, work_dir: &Path) -> Result<SpawnResult>;
+    fn spawn_agent(
+        &self,
+        task_name: &str,
+        system_prompt: Option<&str>,
+        user_prompt: &str,
+        work_dir: &Path,
+    ) -> Result<SpawnResult>;
     fn resume_agent(&self, task_name: &str, work_dir: &Path) -> Result<SpawnResult>;
     fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> Result<()>;
     fn capture_pane_output(&self, pane_id: &str) -> Result<String>;
@@ -169,13 +175,18 @@ impl Runtime for TmuxRuntime {
     fn spawn_agent(
         &self,
         task_name: &str,
-        rendered_prompt: &str,
+        system_prompt: Option<&str>,
+        user_prompt: &str,
         work_dir: &Path,
     ) -> Result<SpawnResult> {
         let claude_bin = self.resolve_binary("claude")?;
 
-        let escaped_prompt = shell_escape::escape(rendered_prompt.into());
-        let claude_cmd = format!("{claude_bin} --system-prompt {escaped_prompt}");
+        let escaped_user = shell_escape::escape(user_prompt.into());
+        let mut claude_cmd = format!("{claude_bin} -p {escaped_user}");
+        if let Some(sys) = system_prompt {
+            let escaped_sys = shell_escape::escape(sys.into());
+            claude_cmd = format!("{claude_cmd} --system-prompt {escaped_sys}");
+        }
         self.launch_agent_window(task_name, work_dir, &claude_cmd)
     }
 

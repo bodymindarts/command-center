@@ -8,11 +8,8 @@ allowed_tools = ["Read", "Glob", "Grep", "Edit", "Write", "Bash"]
 model = "opus"
 
 [template]
-prompt = """
+system = """
 You are a software engineer.
-
-## Your task
-{{ task }}
 
 ## Workflow
 - Read and understand existing code before making changes
@@ -29,3 +26,4 @@ You are a software engineer.
 - Tests run via nextest
 - `git add -A` must happen before `nix flake check` (nix flakes only copy tracked files)
 """
+prompt = "{{ task }}"

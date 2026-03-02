@@ -71,7 +71,8 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         let params_map: HashMap<String, String> = params.into_iter().collect();
         skill.validate_params(&params_map)?;
 
-        let rendered = skill.render_prompt(&params_map)?;
+        let system_prompt = skill.render_system()?;
+        let user_prompt = skill.render_prompt(&params_map)?;
 
         let id = TaskId::generate();
         let worktree_name = format!("{task_name}-{}", id.short());
@@ -83,11 +84,14 @@ impl<'a, R: Runtime> TaskService<'a, R> {
 
         self.store.insert_task(&task)?;
         self.store
-            .insert_message(task.id.as_str(), "system", &rendered)?;
+            .insert_message(task.id.as_str(), "system", &user_prompt)?;
 
-        let result = self
-            .runtime
-            .spawn_agent(task_name, &rendered, &worktree_path)?;
+        let result = self.runtime.spawn_agent(
+            task_name,
+            system_prompt.as_deref(),
+            &user_prompt,
+            &worktree_path,
+        )?;
         self.store
             .update_tmux_pane(task.id.as_str(), &result.pane_id)?;
         self.store
@@ -370,7 +374,8 @@ mod tests {
         fn spawn_agent(
             &self,
             task_name: &str,
-            _prompt: &str,
+            _system_prompt: Option<&str>,
+            _user_prompt: &str,
             _work_dir: &Path,
         ) -> Result<SpawnResult> {
             self.calls.borrow_mut().push(Call::SpawnAgent {
