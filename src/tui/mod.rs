@@ -465,6 +465,10 @@ fn run_loop<R: Runtime>(
                                     }
                                     KeyCode::Char('l') if ctrl => {
                                         app.focus = Focus::TaskList;
+                                        if app.list_state.selected().is_some() {
+                                            app.show_detail = true;
+                                            app.detail_scroll = 0;
+                                        }
                                     }
                                     KeyCode::Enter => {
                                         app.chat_scroll = 0;

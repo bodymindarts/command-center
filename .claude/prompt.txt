@@ -1,0 +1,9 @@
+Fix three TUI navigation bugs in src/tui/mod.rs:
+
+1. **Ctrl+L from ExO chat doesn't show task detail**: When pressing Ctrl+L from ChatInput (ExO mode, show_detail=false) to go to TaskList, a task gets highlighted in the list but the chat window doesn't switch to show that task's detail. It should set show_detail=true when transitioning to TaskList if there are tasks selected. Compare with how Tab works - Tab correctly shows the detail.
+
+2. **Shift+Tab should cycle backwards**: Tab cycles forward through tasks (and wraps to ExO). Shift+Tab (BackTab keycode in crossterm) should do the reverse - cycle from ExO to the last task, or from a task to the previous one, wrapping to ExO at the beginning.
+
+3. **Input text lost on focus changes**: The input buffer text sometimes disappears when changing focus between ExO chat, task chat, and TaskList. Audit all focus transitions (Ctrl+L, Ctrl+H, Tab, Shift+Tab, Esc, Enter from TaskList) and ensure save_current_input() is called before switching away and restore_input() is called after arriving. Look at how Tab already does this correctly and apply the same pattern everywhere.
+
+Read src/tui/mod.rs and src/tui/app.rs to understand the current Focus enum, show_detail flag, and input buffer save/restore pattern. Commit each fix separately with conventional commits. Run 'nix develop -c sh -c "cargo fmt && git add -A && nix flake check"' before each commit.
