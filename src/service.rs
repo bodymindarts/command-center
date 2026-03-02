@@ -90,9 +90,11 @@ impl<'a, R: Runtime> TaskService<'a, R> {
 
         let id = TaskId::generate();
         let worktree_name = format!("{task_name}-{}", id.short());
-        let worktree_path = self
-            .runtime
-            .create_worktree(&self.paths.root, &worktree_name)?;
+        let worktree_path = self.runtime.create_worktree(
+            &self.paths.root,
+            &worktree_name,
+            &skill.agent.allowed_tools,
+        )?;
 
         let task = Task::new(id, task_name, skill_name, &params_map, &worktree_path);
 
@@ -383,7 +385,12 @@ mod tests {
     }
 
     impl Runtime for FakeRuntime {
-        fn create_worktree(&self, _repo_root: &Path, name: &str) -> Result<PathBuf> {
+        fn create_worktree(
+            &self,
+            _repo_root: &Path,
+            name: &str,
+            _skill_tools: &[String],
+        ) -> Result<PathBuf> {
             self.calls.borrow_mut().push(Call::CreateWorktree {
                 name: name.to_string(),
             });

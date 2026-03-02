@@ -10,7 +10,12 @@ pub struct SpawnResult {
 }
 
 pub trait Runtime {
-    fn create_worktree(&self, repo_root: &Path, name: &str) -> Result<PathBuf>;
+    fn create_worktree(
+        &self,
+        repo_root: &Path,
+        name: &str,
+        skill_tools: &[String],
+    ) -> Result<PathBuf>;
     fn spawn_agent(
         &self,
         task_name: &str,
@@ -113,7 +118,12 @@ impl TmuxRuntime {
 }
 
 impl Runtime for TmuxRuntime {
-    fn create_worktree(&self, repo_root: &Path, name: &str) -> Result<PathBuf> {
+    fn create_worktree(
+        &self,
+        repo_root: &Path,
+        name: &str,
+        skill_tools: &[String],
+    ) -> Result<PathBuf> {
         let worktree_dir = repo_root.join(".claude").join("worktrees");
         std::fs::create_dir_all(&worktree_dir)?;
 
@@ -169,7 +179,15 @@ impl Runtime for TmuxRuntime {
             } else {
                 serde_json::json!({})
             };
-            settings["allowedTools"] = serde_json::json!(base_allowed_tools());
+            // Merge skill-level tools (Read, Glob, Edit, etc.) with base
+            // Bash-pattern tools (nix develop, cargo fmt, etc.) into a single
+            // permissions.allow list.  Claude Code reads this key from settings
+            // files — "allowedTools" is only valid as a CLI flag.
+            let mut allowed: Vec<String> = skill_tools.to_vec();
+            for tool in base_allowed_tools() {
+                allowed.push(tool.to_string());
+            }
+            settings["permissions"] = serde_json::json!({"allow": allowed});
             // Embed CC_PERM_SOCKET into hook commands so agents connect
             // to this dashboard's session-scoped permission socket.
             if let Ok(sock_path) = std::env::var(crate::permission::SOCKET_ENV) {
