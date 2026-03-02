@@ -1,14 +1,14 @@
 #!/usr/bin/env bats
 # Tests the socket-based permission IPC:
-# clat permission gate reads stdin, connects to socket, prints response.
+# clat permission gate reads CC_PERM_SOCKET, connects to socket, prints response.
 # When no socket exists and no tmux, auto-denies.
 
 setup() {
     TEST_DIR="$(mktemp -d)"
     # Canonicalize to avoid macOS /var vs /private/var issues
     TEST_DIR="$(cd "$TEST_DIR" && pwd -P)"
-    export TMPDIR="$TEST_DIR"
     SOCK="$TEST_DIR/cc-permissions.sock"
+    export CC_PERM_SOCKET="$SOCK"
 
     # Prevent popup fallback from triggering tmux display-popup during tests
     unset TMUX
@@ -55,7 +55,7 @@ sock.close()
 
     start_mock_server "$allow_resp"
 
-    run bash -c "echo '$input' | TMPDIR='$TMPDIR' clat permission gate"
+    run bash -c "echo '$input' | CC_PERM_SOCKET='$CC_PERM_SOCKET' clat permission gate"
     [ "$status" -eq 0 ]
     [ "$(echo "$output" | jq -r '.hookSpecificOutput.decision.behavior')" = "allow" ]
 
@@ -68,7 +68,7 @@ sock.close()
 
     start_mock_server "$deny_resp"
 
-    run bash -c "echo '$input' | TMPDIR='$TMPDIR' clat permission gate"
+    run bash -c "echo '$input' | CC_PERM_SOCKET='$CC_PERM_SOCKET' clat permission gate"
     [ "$status" -eq 0 ]
     [ "$(echo "$output" | jq -r '.hookSpecificOutput.decision.behavior')" = "deny" ]
 
@@ -78,7 +78,8 @@ sock.close()
 @test "gate: no socket + no tmux auto-denies" {
     local input='{"tool_name":"Bash","tool_input":{"command":"echo timeout"},"cwd":"/tmp"}'
 
-    run bash -c "echo '$input' | TMPDIR='$TMPDIR' clat permission gate"
+    # Point CC_PERM_SOCKET at a nonexistent path
+    run bash -c "echo '$input' | CC_PERM_SOCKET='$TEST_DIR/nonexistent.sock' clat permission gate"
     [ "$status" -eq 0 ]
     [ "$(echo "$output" | jq -r '.hookSpecificOutput.decision.behavior')" = "deny" ]
     [ "$(echo "$output" | jq -r '.hookSpecificOutput.decision.message')" = "No approval UI available" ]

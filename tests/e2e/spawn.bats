@@ -188,7 +188,7 @@ task_field() {
 @test "permission roundtrip through TUI" {
     cd "$PROJECT_DIR"
 
-    # Canonicalize TMPDIR to match what clat's socket_path() does
+    # Canonicalize TMPDIR so socket glob matches
     export TMPDIR
     TMPDIR="$(cd "$TEST_DIR" && pwd -P)"
 
@@ -217,16 +217,18 @@ DASHSCRIPT
     tmux select-window -t test:0
     tmux send-keys -t "$dash_pane" "'$TEST_DIR/run-dash.sh'" Enter
 
-    # Wait for socket to appear (check both canonical and original path)
-    local sock="$TMPDIR/cc-permissions.sock"
+    # Wait for session-scoped socket to appear (includes dashboard PID)
+    local sock=""
     local found_sock=false
     for i in $(seq 1 40); do
+        # shellcheck disable=SC2012
+        sock=$(ls "$TMPDIR"/cc-permissions-*.sock 2>/dev/null | head -1)
         [ -S "$sock" ] && { found_sock=true; break; }
         sleep 0.5
     done
 
     if [ "$found_sock" != true ]; then
-        echo "Socket not found at: $sock" >&2
+        echo "Socket not found in: $TMPDIR" >&2
         echo "Dashboard stderr:" >&2
         cat "$TEST_DIR/dash-stderr" 2>/dev/null >&2 || true
         echo "Dashboard pane:" >&2
@@ -242,7 +244,7 @@ DASHSCRIPT
 {"tool_name":"Bash","tool_input":{"command":"echo hi"},"cwd":"$worktree"}
 REQJSON
     )
-    printf '%s' "$req_json" | TMPDIR="$TMPDIR" clat permission gate > "$TEST_DIR/gate-stdout" &
+    printf '%s' "$req_json" | CC_PERM_SOCKET="$sock" clat permission gate > "$TEST_DIR/gate-stdout" &
     local gate_pid=$!
 
     # Poll until TUI shows the permission prompt
