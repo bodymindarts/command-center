@@ -282,12 +282,12 @@ REQJSON
     printf '%s' "$req_json" | CC_PERM_SOCKET="$sock" clat agent permission-gate > "$TEST_DIR/gate-stdout" &
     local gate_pid=$!
 
-    # Poll until TUI shows the permission prompt
+    # Poll until TUI shows the permission indicator in the task list
     local found=false
     for i in $(seq 1 20); do
         local capture
         capture=$(tmux capture-pane -t "$dash_pane" -p)
-        if echo "$capture" | grep -q "wants to use Bash"; then
+        if echo "$capture" | grep -q "! Bash"; then
             found=true
             break
         fi
@@ -295,7 +295,11 @@ REQJSON
     done
     [ "$found" = true ]
 
-    # Approve via Ctrl+Y (global keybinding)
+    # Ctrl+P navigates to the task with pending permission (opens detail view)
+    tmux send-keys -t "$dash_pane" C-p
+    sleep 0.5
+
+    # Approve via Ctrl+Y (requires detail view to be open)
     tmux send-keys -t "$dash_pane" C-y
     sleep 1
 
