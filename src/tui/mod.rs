@@ -291,6 +291,25 @@ fn run_loop<R: Runtime>(
                                 {
                                     app.detail_scroll = app.detail_scroll.saturating_sub(10);
                                 }
+                                KeyCode::Char('g')
+                                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                {
+                                    if let Some(task) = app.selected_task() {
+                                        if task.status.is_running() {
+                                            if let Some(window_id) = &task.tmux_window {
+                                                service.goto_window(window_id);
+                                            }
+                                        } else {
+                                            let id = task.id.as_str().to_string();
+                                            if let Ok(window_id) = service.reopen(&id) {
+                                                if let Ok(tasks) = service.list_visible() {
+                                                    app.refresh_tasks(tasks);
+                                                }
+                                                service.goto_window(&window_id);
+                                            }
+                                        }
+                                    }
+                                }
                                 KeyCode::Enter => {
                                     if let Some(task) = app.selected_task() {
                                         if task.status.is_running() {
