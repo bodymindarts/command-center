@@ -53,6 +53,7 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
     // Permission socket listener
     let (perm_tx, perm_rx) = mpsc::channel::<(UnixStream, PermissionRequest)>();
     let (resolved_tx, resolved_rx) = mpsc::channel::<String>(); // CWD of resolved tool
+    let (idle_tx, idle_rx) = mpsc::channel::<String>(); // CWD of idle agent
     let perm_cancel = Arc::clone(&cancel);
     let (listener, socket_path) = crate::permission::start_socket_listener()?;
     // SAFETY: called once at startup before spawning threads that read env vars.
@@ -71,6 +72,8 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
                     if std::io::Read::read_to_string(&mut stream, &mut buf).is_ok() {
                         if let Some(cwd) = crate::permission::parse_resolved_json(&buf) {
                             let _ = resolved_tx.send(cwd);
+                        } else if let Some(cwd) = crate::permission::parse_idle_json(&buf) {
+                            let _ = idle_tx.send(cwd);
                         } else if let Some(req) = crate::permission::parse_request_json(&buf) {
                             let _ = perm_tx.send((stream, req));
                         }
@@ -93,6 +96,7 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
         &rx,
         &perm_rx,
         &resolved_rx,
+        &idle_rx,
     );
 
     cancel.store(true, Ordering::Relaxed);
@@ -149,6 +153,7 @@ fn run_loop<R: Runtime>(
     rx: &mpsc::Receiver<ExoEvent>,
     perm_rx: &mpsc::Receiver<(UnixStream, PermissionRequest)>,
     resolved_rx: &mpsc::Receiver<String>,
+    idle_rx: &mpsc::Receiver<String>,
 ) -> Result<()> {
     let mut last_tick = Instant::now();
 
@@ -714,6 +719,27 @@ fn run_loop<R: Runtime>(
                 while let Some(perm) = app.take_permission(&name) {
                     let _ = write_response_to_stream(perm.stream, true, None);
                 }
+            }
+        }
+
+        // Handle idle notifications from Stop hooks.
+        // Mark the matching task as fresh so the ● indicator appears.
+        while let Ok(cwd) = idle_rx.try_recv() {
+            let idle_cwd =
+                std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
+            let task_id = app
+                .tasks
+                .iter()
+                .find(|t| {
+                    t.work_dir.as_deref().is_some_and(|wd| {
+                        let canon = std::fs::canonicalize(wd)
+                            .unwrap_or_else(|_| std::path::PathBuf::from(wd));
+                        idle_cwd.starts_with(&canon)
+                    })
+                })
+                .map(|t| t.id.as_str().to_string());
+            if let Some(id) = task_id {
+                app.fresh_tasks.insert(id);
             }
         }
 

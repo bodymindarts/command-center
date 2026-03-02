@@ -77,6 +77,16 @@ pub fn parse_resolved_json(json: &str) -> Option<String> {
     None
 }
 
+/// Check if a message is an "idle" notification from a Stop hook.
+/// Returns the CWD if so.
+pub fn parse_idle_json(json: &str) -> Option<String> {
+    let parsed: Value = serde_json::from_str(json).ok()?;
+    if parsed.get("_idle")?.as_bool()? {
+        return parsed.get("cwd").and_then(|c| c.as_str()).map(String::from);
+    }
+    None
+}
+
 pub fn parse_request_json(json: &str) -> Option<PermissionRequest> {
     let parsed: Value = serde_json::from_str(json).ok()?;
 

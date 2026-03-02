@@ -65,6 +65,7 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
         .map(|task| {
             let is_fresh = app.fresh_tasks.contains(task.id.as_str());
             let status_char = match task.status {
+                TaskStatus::Running if is_fresh => "●",
                 TaskStatus::Running => "r",
                 TaskStatus::Completed if is_fresh => "●",
                 TaskStatus::Failed if is_fresh => "●",
