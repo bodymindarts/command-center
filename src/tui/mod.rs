@@ -393,6 +393,18 @@ fn run_loop<R: Runtime>(
                                         }
                                         app.restore_input();
                                     }
+                                    KeyCode::BackTab => {
+                                        app.save_current_input();
+                                        app.chat_scroll = 0;
+                                        let current = app.list_state.selected().unwrap_or(0);
+                                        if current > 0 {
+                                            app.list_state.select(Some(current - 1));
+                                            app.detail_scroll = 0;
+                                        } else {
+                                            app.show_detail = false;
+                                        }
+                                        app.restore_input();
+                                    }
                                     KeyCode::Char('k') if ctrl => {
                                         app.focus = Focus::ChatHistory;
                                     }
@@ -455,6 +467,16 @@ fn run_loop<R: Runtime>(
                                         app.chat_scroll = 0;
                                         if !app.tasks.is_empty() {
                                             app.list_state.select(Some(0));
+                                            app.show_detail = true;
+                                            app.detail_scroll = 0;
+                                        }
+                                        app.restore_input();
+                                    }
+                                    KeyCode::BackTab => {
+                                        app.save_current_input();
+                                        app.chat_scroll = 0;
+                                        if !app.tasks.is_empty() {
+                                            app.list_state.select(Some(app.tasks.len() - 1));
                                             app.show_detail = true;
                                             app.detail_scroll = 0;
                                         }
