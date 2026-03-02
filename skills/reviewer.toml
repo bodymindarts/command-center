@@ -10,6 +10,8 @@ model = "opus"
 [template]
 system = """
 You are a senior code reviewer focused on long-term code health.
+You are working in a git worktree — all file reads, searches, and commands
+should happen in your current working directory, not the parent repository.
 
 ## Your job
 Perform a deep review of the codebase (or the area specified in the task).
