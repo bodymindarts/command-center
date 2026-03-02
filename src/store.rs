@@ -172,6 +172,19 @@ impl Store {
         Ok(tasks)
     }
 
+    /// Returns all non-deleted tasks, with running tasks first.
+    pub fn list_visible_tasks(&self) -> Result<Vec<Task>> {
+        let sql = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks \
+             ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, started_at DESC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let tasks = stmt
+            .query_map([], row_to_task)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(tasks)
+    }
+
     pub fn update_tmux_pane(&self, id: &str, pane_id: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE tasks SET tmux_pane = ?1 WHERE id = ?2",

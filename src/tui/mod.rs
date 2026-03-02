@@ -33,7 +33,7 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let tasks = service.list_active()?;
+    let tasks = service.list_visible()?;
     let mut app = App::new(tasks);
     let mut exo = ExoState::new();
     if let Some(sid) = resume_session {
@@ -293,7 +293,7 @@ fn run_loop<R: Runtime>(
                                         } else {
                                             let id = task.id.as_str().to_string();
                                             if let Ok(window_id) = service.reopen(&id) {
-                                                if let Ok(tasks) = service.list_active() {
+                                                if let Ok(tasks) = service.list_visible() {
                                                     app.refresh_tasks(tasks);
                                                 }
                                                 service.goto_window(&window_id);
@@ -307,7 +307,7 @@ fn run_loop<R: Runtime>(
                                     {
                                         let id = task.id.as_str().to_string();
                                         let _ = service.close(&id);
-                                        if let Ok(tasks) = service.list_active() {
+                                        if let Ok(tasks) = service.list_visible() {
                                             app.refresh_tasks(tasks);
                                         }
                                     }
@@ -347,7 +347,7 @@ fn run_loop<R: Runtime>(
                                                 "engineer",
                                                 vec![("task".to_string(), name.clone())],
                                             );
-                                            if let Ok(tasks) = service.list_active() {
+                                            if let Ok(tasks) = service.list_visible() {
                                                 app.refresh_tasks(tasks);
                                             }
                                         }
@@ -402,7 +402,7 @@ fn run_loop<R: Runtime>(
                                             } else {
                                                 let id = task.id.as_str().to_string();
                                                 if let Ok(window_id) = service.reopen(&id) {
-                                                    if let Ok(tasks) = service.list_active() {
+                                                    if let Ok(tasks) = service.list_visible() {
                                                         app.refresh_tasks(tasks);
                                                     }
                                                     service.goto_window(&window_id);
@@ -530,7 +530,7 @@ fn run_loop<R: Runtime>(
                                 KeyCode::Char('y') => {
                                     let id = task_id.clone();
                                     let _ = service.delete(id.as_str());
-                                    if let Ok(tasks) = service.list_active() {
+                                    if let Ok(tasks) = service.list_visible() {
                                         app.refresh_tasks(tasks);
                                     }
                                     app.focus = Focus::TaskList;
@@ -548,7 +548,7 @@ fn run_loop<R: Runtime>(
         }
 
         if last_tick.elapsed() >= tick_rate {
-            if let Ok(tasks) = service.list_active() {
+            if let Ok(tasks) = service.list_visible() {
                 app.refresh_tasks(tasks);
             }
             app.window_numbers = crate::runtime::tmux_window_numbers();

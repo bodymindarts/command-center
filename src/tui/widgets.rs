@@ -46,7 +46,13 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
                 TaskStatus::Failed => "f",
                 TaskStatus::Closed => "x",
             };
+            let is_running = task.status.is_running();
             let color = status_color(&task.status);
+            let dim = if is_running {
+                Modifier::empty()
+            } else {
+                Modifier::DIM
+            };
             let time = task.started_at.format("%H:%M");
             let win_num = task
                 .tmux_window
@@ -57,11 +63,20 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
             let main_line = Line::from(vec![
                 Span::styled(
                     format!("{:<2} ", win_num),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(Color::DarkGray).add_modifier(dim),
                 ),
-                Span::styled(format!("{status_char} "), Style::default().fg(color)),
-                Span::raw(format!("{:<10} ", task.name)),
-                Span::styled(format!("{time}"), Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{status_char} "),
+                    Style::default().fg(color).add_modifier(dim),
+                ),
+                Span::styled(
+                    format!("{:<10} ", task.name),
+                    Style::default().add_modifier(dim),
+                ),
+                Span::styled(
+                    format!("{time}"),
+                    Style::default().fg(Color::DarkGray).add_modifier(dim),
+                ),
             ]);
 
             // Permission sub-line if this task has pending permissions

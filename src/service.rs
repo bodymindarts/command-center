@@ -261,6 +261,10 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         self.store.list_tasks()
     }
 
+    pub fn list_visible(&self) -> Result<Vec<Task>> {
+        self.store.list_visible_tasks()
+    }
+
     pub fn messages(&self, task_id: &str) -> Result<Vec<TaskMessage>> {
         self.store.list_messages(task_id)
     }
