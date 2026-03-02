@@ -101,6 +101,7 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
         " Tasks ".to_string()
     };
 
+    let show_highlight = app.show_detail || focused;
     let list = List::new(items)
         .block(
             Block::default()
@@ -108,12 +109,14 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color)),
         )
-        .highlight_style(
+        .highlight_style(if show_highlight {
             Style::default()
                 .add_modifier(Modifier::BOLD)
-                .fg(Color::White),
-        )
-        .highlight_symbol("> ");
+                .fg(Color::White)
+        } else {
+            Style::default()
+        })
+        .highlight_symbol(if show_highlight { "> " } else { "  " });
 
     frame.render_stateful_widget(list, area, &mut app.list_state);
 }
@@ -302,7 +305,7 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool
         "[spawn] > ".to_string()
     } else if app.show_detail {
         let name = app.selected_task().map(|t| t.name.as_str()).unwrap_or("?");
-        format!("[agent:{name}] > ")
+        format!("[infocus:{name}] keys → pane")
     } else {
         "[ExO] > ".to_string()
     };
@@ -311,13 +314,17 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool
     // Visible width inside borders
     let visible_width = area.width.saturating_sub(2);
 
+    let buf = if app.show_detail && matches!(app.focus, Focus::ChatInput) {
+        String::new()
+    } else {
+        app.input.buffer()
+    };
     let (display, cursor_pos, scroll) = if app.input.has_paste() {
         let n = app.input.paste_line_count();
         let label = format!("{prefix}[{n} lines pasted]");
         let cpos = label.len() as u16;
         (label, cpos, 0u16)
     } else {
-        let buf = app.input.buffer();
         let cpos = prefix_len + app.input.cursor as u16;
         let s = if cpos >= visible_width {
             cpos - visible_width + 1
@@ -358,6 +365,24 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::raw(" cancel"),
         ],
+        Focus::ChatInput if app.show_detail => {
+            let mut s = vec![
+                Span::styled(" ^G", Style::default().fg(Color::Yellow)),
+                Span::raw(" goto  "),
+                Span::styled("Tab", Style::default().fg(Color::Yellow)),
+                Span::raw(" next  "),
+                Span::styled("^L", Style::default().fg(Color::Yellow)),
+                Span::raw(" tasks  "),
+                Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                Span::raw(" back"),
+            ];
+            if app.total_pending_permissions() > 0 {
+                s.push(Span::raw("  "));
+                s.push(Span::styled("^P", Style::default().fg(Color::Green)));
+                s.push(Span::raw(" perm"));
+            }
+            s
+        }
         Focus::ChatInput => {
             let mut s = vec![
                 Span::styled(" Enter", Style::default().fg(Color::Yellow)),

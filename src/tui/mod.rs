@@ -260,10 +260,12 @@ fn run_loop<R: Runtime>(
                                 }
                                 KeyCode::Char('j') | KeyCode::Down => {
                                     app.next();
+                                    app.show_detail = true;
                                     app.detail_scroll = 0;
                                 }
                                 KeyCode::Char('k') | KeyCode::Up => {
                                     app.previous();
+                                    app.show_detail = true;
                                     app.detail_scroll = 0;
                                 }
                                 KeyCode::PageDown => {
@@ -369,33 +371,87 @@ fn run_loop<R: Runtime>(
                                     _ => {}
                                 }
                             }
+                            Focus::ChatInput if app.show_detail => {
+                                // Infocus mode — forward keystrokes to tmux pane
+                                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                                match key.code {
+                                    KeyCode::Esc => {
+                                        app.show_detail = false;
+                                        app.chat_scroll = 0;
+                                    }
+                                    KeyCode::Tab => {
+                                        app.save_current_input();
+                                        app.chat_scroll = 0;
+                                        let current = app.list_state.selected().unwrap_or(0);
+                                        if current + 1 < app.tasks.len() {
+                                            app.list_state.select(Some(current + 1));
+                                            app.detail_scroll = 0;
+                                        } else {
+                                            app.show_detail = false;
+                                        }
+                                        app.restore_input();
+                                    }
+                                    KeyCode::Char('l') if ctrl => {
+                                        app.focus = Focus::TaskList;
+                                    }
+                                    KeyCode::Char('g') if ctrl => {
+                                        if let Some(task) = app.selected_task() {
+                                            if task.status.is_running() {
+                                                if let Some(window_id) = &task.tmux_window {
+                                                    service.goto_window(window_id);
+                                                }
+                                            } else {
+                                                let id = task.id.as_str().to_string();
+                                                if let Ok(window_id) = service.reopen(&id) {
+                                                    if let Ok(tasks) = service.list_active() {
+                                                        app.refresh_tasks(tasks);
+                                                    }
+                                                    service.goto_window(&window_id);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    KeyCode::Char(c) => {
+                                        if let Some(task) = app.selected_task()
+                                            && let Some(pane) = task.tmux_pane.as_deref()
+                                        {
+                                            service.forward_literal(pane, &c.to_string());
+                                        }
+                                    }
+                                    KeyCode::Enter => {
+                                        if let Some(task) = app.selected_task()
+                                            && let Some(pane) = task.tmux_pane.as_deref()
+                                        {
+                                            service.forward_key(pane, "Enter");
+                                        }
+                                    }
+                                    KeyCode::Backspace => {
+                                        if let Some(task) = app.selected_task()
+                                            && let Some(pane) = task.tmux_pane.as_deref()
+                                        {
+                                            service.forward_key(pane, "BSpace");
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
                             Focus::ChatInput => {
+                                // ExO chat mode
                                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                                 match key.code {
                                     KeyCode::Esc => {
                                         if exo.streaming {
                                             exo.finish_streaming();
                                         }
-                                        app.show_detail = false;
+                                        app.chat_scroll = 0;
                                     }
                                     KeyCode::Tab => {
                                         app.save_current_input();
-                                        if !app.show_detail {
-                                            // ExO -> first task
-                                            if !app.tasks.is_empty() {
-                                                app.list_state.select(Some(0));
-                                                app.show_detail = true;
-                                                app.detail_scroll = 0;
-                                            }
-                                        } else {
-                                            // Task detail -> next task or wrap to ExO
-                                            let current = app.list_state.selected().unwrap_or(0);
-                                            if current + 1 < app.tasks.len() {
-                                                app.list_state.select(Some(current + 1));
-                                                app.detail_scroll = 0;
-                                            } else {
-                                                app.show_detail = false;
-                                            }
+                                        app.chat_scroll = 0;
+                                        if !app.tasks.is_empty() {
+                                            app.list_state.select(Some(0));
+                                            app.show_detail = true;
+                                            app.detail_scroll = 0;
                                         }
                                         app.restore_input();
                                     }
@@ -403,6 +459,7 @@ fn run_loop<R: Runtime>(
                                         app.focus = Focus::TaskList;
                                     }
                                     KeyCode::Enter => {
+                                        app.chat_scroll = 0;
                                         if !app.input.is_empty() {
                                             let perm_key = app.focused_perm_key();
                                             let buf = app.input.buffer();
@@ -417,20 +474,7 @@ fn run_loop<R: Runtime>(
                                                         allow,
                                                     );
                                                 }
-                                            } else if app.show_detail {
-                                                // Send to task agent
-                                                let msg = app.input.take();
-                                                if let Some(task) = app.selected_task()
-                                                    && let Some(pane) = task.tmux_pane.as_deref()
-                                                {
-                                                    service.send_by_id(
-                                                        task.id.as_str(),
-                                                        pane,
-                                                        &msg,
-                                                    );
-                                                }
                                             } else if !exo.streaming {
-                                                // Send to ExO
                                                 let msg = app.input.take();
                                                 claude::spawn_claude(
                                                     &msg,

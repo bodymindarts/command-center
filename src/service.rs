@@ -208,9 +208,12 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         })
     }
 
-    pub fn send_by_id(&self, task_id: &str, pane_id: &str, message: &str) {
-        let _ = self.runtime.send_keys_to_pane(pane_id, message);
-        let _ = self.store.insert_message(task_id, "user", message);
+    pub fn forward_key(&self, pane_id: &str, key: &str) {
+        let _ = self.runtime.forward_key(pane_id, key);
+    }
+
+    pub fn forward_literal(&self, pane_id: &str, text: &str) {
+        let _ = self.runtime.forward_literal(pane_id, text);
     }
 
     pub fn goto(&self, id_prefix: &str) -> Result<()> {
@@ -413,6 +416,22 @@ mod tests {
             self.calls.borrow_mut().push(Call::SendKeys {
                 pane_id: pane_id.to_string(),
                 message: message.to_string(),
+            });
+            Ok(())
+        }
+
+        fn forward_key(&self, pane_id: &str, key: &str) -> Result<()> {
+            self.calls.borrow_mut().push(Call::SendKeys {
+                pane_id: pane_id.to_string(),
+                message: key.to_string(),
+            });
+            Ok(())
+        }
+
+        fn forward_literal(&self, pane_id: &str, text: &str) -> Result<()> {
+            self.calls.borrow_mut().push(Call::SendKeys {
+                pane_id: pane_id.to_string(),
+                message: text.to_string(),
             });
             Ok(())
         }
@@ -702,18 +721,6 @@ prompt = "noop prompt"
 
         let all = service.list_all().unwrap();
         assert_eq!(all.len(), 2);
-    }
-
-    #[test]
-    fn send_by_id_swallows_errors() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
-        let service = TaskService::new(&store, &runtime, &paths);
-
-        // Sending to a nonexistent task/pane should not panic
-        service.send_by_id("nonexistent", "%bad-pane", "hello");
     }
 
     #[test]

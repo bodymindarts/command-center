@@ -20,6 +20,8 @@ pub trait Runtime {
     ) -> Result<SpawnResult>;
     fn resume_agent(&self, task_name: &str, work_dir: &Path) -> Result<SpawnResult>;
     fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> Result<()>;
+    fn forward_key(&self, pane_id: &str, key: &str) -> Result<()>;
+    fn forward_literal(&self, pane_id: &str, text: &str) -> Result<()>;
     fn capture_pane_output(&self, pane_id: &str) -> Result<String>;
     fn kill_tmux_window(&self, window_id: &str) -> Result<()>;
     fn select_window(&self, window_id: &str) -> Result<()>;
@@ -98,8 +100,10 @@ impl TmuxRuntime {
             &work_dir_str,
         ])?;
 
-        self.tmux_cmd(&["send-keys", "-t", &claude_pane, claude_cmd, "Enter"])?;
-        self.tmux_cmd(&["send-keys", "-t", &top_pane, "nvim .", "Enter"])?;
+        self.tmux_cmd(&["send-keys", "-t", &claude_pane, "-l", claude_cmd])?;
+        self.tmux_cmd(&["send-keys", "-t", &claude_pane, "Enter"])?;
+        self.tmux_cmd(&["send-keys", "-t", &top_pane, "-l", "nvim ."])?;
+        self.tmux_cmd(&["send-keys", "-t", &top_pane, "Enter"])?;
 
         Ok(SpawnResult {
             window_id,
@@ -200,6 +204,16 @@ impl Runtime for TmuxRuntime {
     fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> Result<()> {
         self.tmux_cmd(&["send-keys", "-t", pane_id, "-l", message])?;
         self.tmux_cmd(&["send-keys", "-t", pane_id, "Enter"])?;
+        Ok(())
+    }
+
+    fn forward_key(&self, pane_id: &str, key: &str) -> Result<()> {
+        self.tmux_cmd(&["send-keys", "-t", pane_id, key])?;
+        Ok(())
+    }
+
+    fn forward_literal(&self, pane_id: &str, text: &str) -> Result<()> {
+        self.tmux_cmd(&["send-keys", "-t", pane_id, "-l", text])?;
         Ok(())
     }
 
