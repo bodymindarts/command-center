@@ -27,7 +27,9 @@ fn main() -> Result<()> {
     let runtime = TmuxRuntime;
     let service = TaskService::new(&store, &runtime, &paths);
 
-    match cli.command {
+    let command = cli.command.unwrap_or(Command::Dash { resume: None });
+
+    match command {
         Command::Spawn { name, skill, param } => cmd_spawn(&service, &name, &skill, param)?,
         Command::List { all } => cmd_list(&service, all)?,
         Command::History => cmd_list(&service, true)?,
