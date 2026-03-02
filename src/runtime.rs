@@ -185,19 +185,21 @@ impl Runtime for TmuxRuntime {
     ) -> Result<SpawnResult> {
         let claude_bin = self.resolve_binary("claude")?;
 
-        // Write prompts to files and build a launcher script.
-        // This avoids all shell-escaping and tmux send-keys issues —
-        // the pane starts with the script as its command, no send-keys needed.
-        std::fs::write(work_dir.join(".claude-prompt.txt"), user_prompt)?;
+        // Write prompts and launcher script into .claude/ so they never
+        // pollute the project's git status (works in any repo).
+        let claude_dir = work_dir.join(".claude");
+        std::fs::create_dir_all(&claude_dir)?;
+
+        std::fs::write(claude_dir.join("prompt.txt"), user_prompt)?;
 
         let mut script = format!("#!/bin/sh\nunset CLAUDECODE\nexec {claude_bin}");
-        script.push_str(" \"$(cat .claude-prompt.txt)\"");
+        script.push_str(" \"$(cat .claude/prompt.txt)\"");
         if let Some(sys) = system_prompt {
-            std::fs::write(work_dir.join(".claude-system-prompt.txt"), sys)?;
-            script.push_str(" --system-prompt \"$(cat .claude-system-prompt.txt)\"");
+            std::fs::write(claude_dir.join("system-prompt.txt"), sys)?;
+            script.push_str(" --system-prompt \"$(cat .claude/system-prompt.txt)\"");
         }
 
-        let script_path = work_dir.join(".claude-launch.sh");
+        let script_path = claude_dir.join("launch.sh");
         std::fs::write(&script_path, script)?;
         #[cfg(unix)]
         {
@@ -205,7 +207,7 @@ impl Runtime for TmuxRuntime {
             std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
         }
 
-        self.launch_agent_window(task_name, work_dir, "sh .claude-launch.sh")
+        self.launch_agent_window(task_name, work_dir, "sh .claude/launch.sh")
     }
 
     fn resume_agent(&self, task_name: &str, work_dir: &Path) -> Result<SpawnResult> {
