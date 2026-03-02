@@ -185,11 +185,16 @@ impl Runtime for TmuxRuntime {
     ) -> Result<SpawnResult> {
         let claude_bin = self.resolve_binary("claude")?;
 
-        let escaped_user = shell_escape::escape(user_prompt.into());
-        let mut claude_cmd = format!("{claude_bin} -p {escaped_user}");
+        // Write prompts to files to avoid shell escaping / tmux newline issues.
+        let prompt_file = work_dir.join(".claude-prompt.txt");
+        std::fs::write(&prompt_file, user_prompt)?;
+
+        let mut claude_cmd = format!("{claude_bin} -p \"$(cat .claude-prompt.txt)\"");
         if let Some(sys) = system_prompt {
-            let escaped_sys = shell_escape::escape(sys.into());
-            claude_cmd = format!("{claude_cmd} --system-prompt {escaped_sys}");
+            let sys_file = work_dir.join(".claude-system-prompt.txt");
+            std::fs::write(&sys_file, sys)?;
+            claude_cmd =
+                format!("{claude_cmd} --system-prompt \"$(cat .claude-system-prompt.txt)\"");
         }
         self.launch_agent_window(task_name, work_dir, &claude_cmd)
     }
