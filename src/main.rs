@@ -31,7 +31,13 @@ fn main() -> Result<()> {
     let command = cli.command.unwrap_or(Command::Dash { resume: None });
 
     match command {
-        Command::Spawn { name, skill, param } => cmd_spawn(&service, &name, &skill, param)?,
+        Command::Spawn {
+            name,
+            skill,
+            param,
+            repo,
+            branch,
+        } => cmd_spawn(&service, &name, &skill, param, repo, branch)?,
         Command::List { all } => cmd_list(&service, all)?,
         Command::History => cmd_list(&service, true)?,
         Command::Log { id } => cmd_log(&service, &id)?,
@@ -65,8 +71,16 @@ fn cmd_spawn(
     task_name: &str,
     skill_name: &str,
     params: Vec<(String, String)>,
+    repo: Option<std::path::PathBuf>,
+    branch: Option<String>,
 ) -> Result<()> {
-    let result = service.spawn(task_name, skill_name, params)?;
+    let result = service.spawn(
+        task_name,
+        skill_name,
+        params,
+        repo.as_deref(),
+        branch.as_deref(),
+    )?;
     println!(
         "Spawned task {} ({})",
         result.task_name,

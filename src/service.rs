@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use anyhow::{Result, bail};
 
@@ -80,6 +81,8 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         task_name: &str,
         skill_name: &str,
         params: Vec<(String, String)>,
+        repo_path: Option<&Path>,
+        branch: Option<&str>,
     ) -> Result<SpawnOutput> {
         let skill = SkillFile::load(&self.paths.skills_dir, skill_name)?;
 
@@ -92,12 +95,15 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         let system_prompt = skill.render_system()?;
         let user_prompt = skill.render_prompt(&params_map)?;
 
+        let repo = repo_path.unwrap_or(&self.paths.root);
         let id = TaskId::generate();
         let worktree_name = format!("{task_name}-{}", id.short());
         let worktree_path = self.runtime.create_worktree(
-            &self.paths.root,
+            repo,
             &worktree_name,
             &skill.agent.allowed_tools,
+            branch,
+            &self.paths.root,
         )?;
 
         let task = Task::new(id, task_name, skill_name, &params_map, &worktree_path);
@@ -399,6 +405,8 @@ mod tests {
             _repo_root: &Path,
             name: &str,
             _skill_tools: &[String],
+            _branch: Option<&str>,
+            _hooks_source: &Path,
         ) -> Result<PathBuf> {
             self.calls.borrow_mut().push(Call::CreateWorktree {
                 name: name.to_string(),
@@ -526,7 +534,7 @@ prompt = "noop prompt"
 
     fn spawn_test_task(service: &TaskService<impl Runtime>) -> SpawnOutput {
         service
-            .spawn("test-task", "noop", vec![])
+            .spawn("test-task", "noop", vec![], None, None)
             .expect("spawn should succeed")
     }
 

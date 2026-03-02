@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -21,6 +23,14 @@ pub enum Command {
         /// Parameters as key=value pairs
         #[arg(short, long, value_parser = parse_param)]
         param: Vec<(String, String)>,
+
+        /// Path to target git repository (default: command-center repo)
+        #[arg(long)]
+        repo: Option<PathBuf>,
+
+        /// Existing branch to check out in the worktree (instead of creating a new one)
+        #[arg(long)]
+        branch: Option<String>,
     },
 
     /// List tasks and their status

@@ -436,6 +436,8 @@ fn run_loop<R: Runtime>(
                                                 &name,
                                                 "engineer",
                                                 vec![("task".to_string(), name.clone())],
+                                                None,
+                                                None,
                                             );
                                             if let Ok(tasks) = service.list_visible() {
                                                 app.refresh_tasks(tasks);

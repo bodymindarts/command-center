@@ -15,6 +15,8 @@ pub trait Runtime {
         repo_root: &Path,
         name: &str,
         skill_tools: &[String],
+        branch: Option<&str>,
+        hooks_source: &Path,
     ) -> Result<PathBuf>;
     fn recreate_worktree(&self, repo_root: &Path, work_dir: &Path) -> Result<()>;
     fn spawn_agent(
@@ -124,21 +126,31 @@ impl Runtime for TmuxRuntime {
         repo_root: &Path,
         name: &str,
         skill_tools: &[String],
+        branch: Option<&str>,
+        hooks_source: &Path,
     ) -> Result<PathBuf> {
         let worktree_dir = repo_root.join(".claude").join("worktrees");
         std::fs::create_dir_all(&worktree_dir)?;
 
         let worktree_path = worktree_dir.join(name);
-        let branch_name = format!("task/{name}");
+
+        let mut git_args = vec![
+            "worktree".to_string(),
+            "add".to_string(),
+            worktree_path.display().to_string(),
+        ];
+        if let Some(existing_branch) = branch {
+            // Check out an existing branch
+            git_args.push(existing_branch.to_string());
+        } else {
+            // Create a new branch from HEAD
+            let branch_name = format!("task/{name}");
+            git_args.push("-b".to_string());
+            git_args.push(branch_name);
+        }
 
         let output = Command::new("git")
-            .args([
-                "worktree",
-                "add",
-                &worktree_path.display().to_string(),
-                "-b",
-                &branch_name,
-            ])
+            .args(&git_args)
             .current_dir(repo_root)
             .output()
             .context("failed to run git worktree add")?;
@@ -148,7 +160,7 @@ impl Runtime for TmuxRuntime {
             bail!("git worktree add failed: {stderr}");
         }
 
-        setup_worktree_config(repo_root, &worktree_path, skill_tools)?;
+        setup_worktree_config(hooks_source, &worktree_path, skill_tools)?;
 
         Ok(worktree_path)
     }
