@@ -263,6 +263,7 @@ fn run_loop<R: Runtime>(
                                 KeyCode::Esc => {
                                     app.show_detail = false;
                                     app.focus = Focus::ChatInput;
+                                    app.restore_input();
                                 }
                                 KeyCode::Char('j') | KeyCode::Down => {
                                     app.next();
@@ -330,11 +331,13 @@ fn run_loop<R: Runtime>(
                                 }
                                 KeyCode::Tab => {
                                     app.focus = Focus::ChatInput;
+                                    app.restore_input();
                                 }
                                 KeyCode::Char('h')
                                     if key.modifiers.contains(KeyModifiers::CONTROL) =>
                                 {
                                     app.focus = Focus::ChatInput;
+                                    app.restore_input();
                                 }
                                 _ => {}
                             },
@@ -378,8 +381,10 @@ fn run_loop<R: Runtime>(
                                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                                 match key.code {
                                     KeyCode::Esc => {
+                                        app.save_current_input();
                                         app.show_detail = false;
                                         app.chat_scroll = 0;
+                                        app.restore_input();
                                     }
                                     KeyCode::Tab => {
                                         app.save_current_input();
@@ -409,6 +414,7 @@ fn run_loop<R: Runtime>(
                                         app.focus = Focus::ChatHistory;
                                     }
                                     KeyCode::Char('l') if ctrl => {
+                                        app.save_current_input();
                                         app.focus = Focus::TaskList;
                                     }
                                     KeyCode::Char('g') if ctrl => {
@@ -486,6 +492,7 @@ fn run_loop<R: Runtime>(
                                         app.focus = Focus::ChatHistory;
                                     }
                                     KeyCode::Char('l') if ctrl => {
+                                        app.save_current_input();
                                         app.focus = Focus::TaskList;
                                         if app.list_state.selected().is_some() {
                                             app.show_detail = true;
