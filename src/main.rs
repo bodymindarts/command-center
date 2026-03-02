@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use tabled::{Table, Tabled};
 
-use crate::cli::{Cli, Command, PermissionAction, SkillAction};
+use crate::cli::{AgentCommand, Cli, Command, SkillAction};
 use crate::config::Paths;
 use crate::primitives::MessageRole;
 use crate::runtime::{Runtime, TmuxRuntime};
@@ -42,19 +42,19 @@ fn main() -> Result<()> {
         Command::Goto { id } => cmd_goto(&service, &id)?,
         Command::Send { id, message } => cmd_send(&service, &id, &message)?,
         Command::Skill { action } => cmd_skill(action, &service)?,
-        Command::Permission { action } => match action {
-            PermissionAction::Gate => permission::gate_request()?,
-            PermissionAction::Prompt {
+        Command::Agent { action } => match action {
+            AgentCommand::PermissionGate => permission::gate_request()?,
+            AgentCommand::PermissionPrompt {
                 tool,
                 input,
                 response_file,
             } => permission::prompt_request(&tool, &input, &response_file)?,
+            AgentCommand::Complete {
+                id,
+                exit_code,
+                output_file,
+            } => cmd_complete(&service, &id, exit_code, output_file.as_deref())?,
         },
-        Command::Complete {
-            id,
-            exit_code,
-            output_file,
-        } => cmd_complete(&service, &id, exit_code, output_file.as_deref())?,
     }
 
     Ok(())

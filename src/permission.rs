@@ -118,7 +118,7 @@ fn popup_fallback(request_json: &str) -> Result<()> {
     let resp_file = std::env::temp_dir().join(format!("cc-perm-{}.resp", std::process::id()));
 
     let popup_cmd = format!(
-        "{} permission prompt --tool {} --input {} --response-file {}",
+        "{} agent permission-prompt --tool {} --input {} --response-file {}",
         shell_escape::unix::escape(exe.display().to_string().into()),
         shell_escape::unix::escape(req.tool_name.clone().into()),
         shell_escape::unix::escape(req.tool_input_summary.clone().into()),

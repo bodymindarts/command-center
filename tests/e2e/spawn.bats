@@ -74,7 +74,7 @@ TOML
     # .claude dir with hooks (spawn copies this into worktrees)
     mkdir -p "$PROJECT_DIR/.claude/hooks"
     cat > "$PROJECT_DIR/.claude/settings.local.json" << 'JSON'
-{"hooks":{"PreToolUse":[{"matcher":".*","hooks":[{"type":"command","command":"clat permission gate"}]}]}}
+{"hooks":{"PreToolUse":[{"matcher":".*","hooks":[{"type":"command","command":"clat agent permission-gate"}]}]}}
 JSON
 
     # Git repo (needed for worktree creation)
@@ -184,7 +184,7 @@ task_field() {
     local task_id
     task_id=$(task_field id done-test)
 
-    run clat complete "$task_id" 0
+    run clat agent complete "$task_id" 0
     [ "$status" -eq 0 ]
 
     [ "$(task_field status done-test)" = "completed" ]
@@ -197,7 +197,7 @@ task_field() {
     local task_id
     task_id=$(task_field id fail-test)
 
-    run clat complete "$task_id" 1
+    run clat agent complete "$task_id" 1
     [ "$status" -eq 0 ]
 
     [ "$(task_field status fail-test)" = "failed" ]
@@ -279,7 +279,7 @@ DASHSCRIPT
 {"tool_name":"Bash","tool_input":{"command":"echo hi"},"cwd":"$worktree"}
 REQJSON
     )
-    printf '%s' "$req_json" | CC_PERM_SOCKET="$sock" clat permission gate > "$TEST_DIR/gate-stdout" &
+    printf '%s' "$req_json" | CC_PERM_SOCKET="$sock" clat agent permission-gate > "$TEST_DIR/gate-stdout" &
     local gate_pid=$!
 
     # Poll until TUI shows the permission prompt
@@ -373,7 +373,7 @@ REQJSON
 
     local task_id
     task_id=$(task_field id close-done)
-    clat complete "$task_id" 0
+    clat agent complete "$task_id" 0
 
     local short_id
     short_id=$(task_field "substr(id, 1, 8)" close-done)
@@ -390,7 +390,7 @@ REQJSON
 
     local task_id
     task_id=$(task_field id active-two)
-    clat complete "$task_id" 0
+    clat agent complete "$task_id" 0
 
     # Default list should only show active (running) tasks
     run clat list

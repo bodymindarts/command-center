@@ -86,23 +86,11 @@ pub enum Command {
         action: SkillAction,
     },
 
-    /// Manage permission requests from spawned agents
-    Permission {
-        #[command(subcommand)]
-        action: PermissionAction,
-    },
-
-    /// Mark a task as completed (called by wrapper script)
+    /// Commands called by spawned agents (hooks, lifecycle)
     #[command(hide = true)]
-    Complete {
-        /// Task ID
-        id: String,
-
-        /// Exit code from the agent process
-        exit_code: i32,
-
-        /// Path to output file
-        output_file: Option<String>,
+    Agent {
+        #[command(subcommand)]
+        action: AgentCommand,
     },
 }
 
@@ -113,20 +101,30 @@ pub enum SkillAction {
 }
 
 #[derive(Subcommand)]
-pub enum PermissionAction {
+pub enum AgentCommand {
     /// Gate a permission request (stdin→socket/popup→stdout)
-    #[command(hide = true)]
-    Gate,
+    PermissionGate,
 
     /// Interactive y/n prompt inside tmux popup
-    #[command(hide = true)]
-    Prompt {
+    PermissionPrompt {
         #[arg(long)]
         tool: String,
         #[arg(long)]
         input: String,
         #[arg(long)]
         response_file: String,
+    },
+
+    /// Mark a task as completed (called by wrapper script)
+    Complete {
+        /// Task ID
+        id: String,
+
+        /// Exit code from the agent process
+        exit_code: i32,
+
+        /// Path to output file
+        output_file: Option<String>,
     },
 }
 

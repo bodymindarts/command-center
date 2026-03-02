@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # Tests the socket-based permission IPC:
-# clat permission gate reads CC_PERM_SOCKET, connects to socket, prints response.
+# clat agent permission-gate reads CC_PERM_SOCKET, connects to socket, prints response.
 # When no socket exists and no tmux, auto-denies.
 
 setup() {
@@ -55,7 +55,7 @@ sock.close()
 
     start_mock_server "$allow_resp"
 
-    run bash -c "echo '$input' | CC_PERM_SOCKET='$CC_PERM_SOCKET' clat permission gate"
+    run bash -c "echo '$input' | CC_PERM_SOCKET='$CC_PERM_SOCKET' clat agent permission-gate"
     [ "$status" -eq 0 ]
     [ "$(echo "$output" | jq -r '.hookSpecificOutput.decision.behavior')" = "allow" ]
 
@@ -68,7 +68,7 @@ sock.close()
 
     start_mock_server "$deny_resp"
 
-    run bash -c "echo '$input' | CC_PERM_SOCKET='$CC_PERM_SOCKET' clat permission gate"
+    run bash -c "echo '$input' | CC_PERM_SOCKET='$CC_PERM_SOCKET' clat agent permission-gate"
     [ "$status" -eq 0 ]
     [ "$(echo "$output" | jq -r '.hookSpecificOutput.decision.behavior')" = "deny" ]
 
@@ -79,7 +79,7 @@ sock.close()
     local input='{"tool_name":"Bash","tool_input":{"command":"echo timeout"},"cwd":"/tmp"}'
 
     # Point CC_PERM_SOCKET at a nonexistent path
-    run bash -c "echo '$input' | CC_PERM_SOCKET='$TEST_DIR/nonexistent.sock' clat permission gate"
+    run bash -c "echo '$input' | CC_PERM_SOCKET='$TEST_DIR/nonexistent.sock' clat agent permission-gate"
     [ "$status" -eq 0 ]
     [ "$(echo "$output" | jq -r '.hookSpecificOutput.decision.behavior')" = "deny" ]
     [ "$(echo "$output" | jq -r '.hookSpecificOutput.decision.message')" = "No approval UI available" ]
