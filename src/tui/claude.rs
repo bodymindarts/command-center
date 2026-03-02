@@ -69,11 +69,11 @@ impl ExoSession {
             tx,
             session_id: session_id.map(|s| s.to_string()),
         };
-        session.spawn_process();
+        session.spawn_process(true);
         session
     }
 
-    fn spawn_process(&mut self) {
+    fn spawn_process(&mut self, resume: bool) {
         let mut args = vec![
             "-p".to_string(),
             "--input-format".to_string(),
@@ -87,7 +87,7 @@ impl ExoSession {
             EXO_SYSTEM_PROMPT.to_string(),
         ];
 
-        if let Some(ref sid) = self.session_id {
+        if resume && let Some(ref sid) = self.session_id {
             args.push("--resume".to_string());
             args.push(sid.clone());
         }
@@ -145,9 +145,9 @@ impl ExoSession {
             self.session_id = Some(sid.to_string());
         }
 
-        // Respawn if process is gone
+        // Respawn if process is gone (with --resume for context)
         if self.stdin.is_none() {
-            self.spawn_process();
+            self.spawn_process(true);
         }
 
         // Mark active so the reader thread forwards events for this turn
@@ -203,7 +203,7 @@ impl ExoSession {
     pub fn ensure_alive(&mut self) {
         if self.stdin.is_none() {
             self.active.store(false, Ordering::Relaxed);
-            self.spawn_process();
+            self.spawn_process(false);
         }
     }
 }
