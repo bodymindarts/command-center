@@ -190,7 +190,7 @@ impl Runtime for TmuxRuntime {
         // the pane starts with the script as its command, no send-keys needed.
         std::fs::write(work_dir.join(".claude-prompt.txt"), user_prompt)?;
 
-        let mut script = format!("#!/bin/sh\nexec {claude_bin}");
+        let mut script = format!("#!/bin/sh\nunset CLAUDECODE\nexec {claude_bin}");
         script.push_str(" -p \"$(cat .claude-prompt.txt)\"");
         if let Some(sys) = system_prompt {
             std::fs::write(work_dir.join(".claude-system-prompt.txt"), sys)?;
@@ -210,7 +210,7 @@ impl Runtime for TmuxRuntime {
 
     fn resume_agent(&self, task_name: &str, work_dir: &Path) -> Result<SpawnResult> {
         let claude_bin = self.resolve_binary("claude")?;
-        let claude_cmd = format!("{claude_bin} --continue");
+        let claude_cmd = format!("env -u CLAUDECODE {claude_bin} --continue");
 
         self.launch_agent_window(task_name, work_dir, &claude_cmd)
     }
