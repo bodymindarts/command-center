@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::{Result, bail};
 
 use crate::config::Paths;
-use crate::primitives::TaskId;
+use crate::primitives::{MessageRole, TaskId};
 use crate::runtime::Runtime;
 use crate::skill::SkillFile;
 use crate::store::Store;
@@ -98,7 +98,7 @@ impl<'a, R: Runtime> TaskService<'a, R> {
 
         self.store.insert_task(&task)?;
         self.store
-            .insert_message(task.id.as_str(), "system", &user_prompt)?;
+            .insert_message(task.id.as_str(), MessageRole::System, &user_prompt)?;
 
         let result = self.runtime.spawn_agent(
             task_name,
@@ -203,7 +203,7 @@ impl<'a, R: Runtime> TaskService<'a, R> {
 
         self.runtime.send_keys_to_pane(pane_id, message)?;
         self.store
-            .insert_message(task.id.as_str(), "user", message)?;
+            .insert_message(task.id.as_str(), MessageRole::User, message)?;
 
         Ok(SendOutput {
             task_id: task.id,
@@ -299,7 +299,7 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         self.runtime.capture_pane_output(pane_id).ok()
     }
 
-    pub fn insert_exo_message(&self, role: &str, content: &str) -> Result<()> {
+    pub fn insert_exo_message(&self, role: MessageRole, content: &str) -> Result<()> {
         self.store.insert_message(EXO_CHAT_ID, role, content)
     }
 
@@ -529,7 +529,7 @@ prompt = "noop prompt"
         // Verify system message recorded
         let messages = store.list_messages(tasks[0].id.as_str()).unwrap();
         assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].role, "system");
+        assert_eq!(messages[0].role, MessageRole::System);
 
         // Verify call order
         let calls = runtime.calls.borrow();
@@ -636,7 +636,7 @@ prompt = "noop prompt"
         assert!(
             messages
                 .iter()
-                .any(|m| m.role == "user" && m.content == "hello agent")
+                .any(|m| m.role == MessageRole::User && m.content == "hello agent")
         );
     }
 

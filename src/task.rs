@@ -3,7 +3,7 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 
-use crate::primitives::{TaskId, TaskStatus};
+use crate::primitives::{MessageRole, TaskId, TaskStatus};
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -52,7 +52,7 @@ impl Task {
 pub struct TaskMessage {
     pub id: String,
     pub task_id: String,
-    pub role: String,
+    pub role: MessageRole,
     pub content: String,
     pub created_at: DateTime<Utc>,
 }

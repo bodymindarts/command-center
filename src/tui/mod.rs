@@ -18,6 +18,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use crate::permission::PermissionRequest;
+use crate::primitives::MessageRole;
 use crate::runtime::Runtime;
 use crate::service::TaskService;
 use app::{ActivePermission, App, Focus};
@@ -143,20 +144,20 @@ fn run_loop<R: Runtime>(
                 ExoEvent::Done => {
                     exo.finish_streaming();
                     if let Some(msg) = exo.messages.last()
-                        && matches!(msg.role, chat::Role::Assistant)
+                        && matches!(msg.role, MessageRole::Assistant)
                         && !msg.content.is_empty()
                     {
-                        let _ = service.insert_exo_message("assistant", &msg.content);
+                        let _ = service.insert_exo_message(MessageRole::Assistant, &msg.content);
                     }
                 }
                 ExoEvent::Error(e) => {
                     exo.append_text(&format!("\n[Error: {e}]"));
                     exo.finish_streaming();
                     if let Some(msg) = exo.messages.last()
-                        && matches!(msg.role, chat::Role::Assistant)
+                        && matches!(msg.role, MessageRole::Assistant)
                         && !msg.content.is_empty()
                     {
-                        let _ = service.insert_exo_message("assistant", &msg.content);
+                        let _ = service.insert_exo_message(MessageRole::Assistant, &msg.content);
                     }
                 }
             }
@@ -484,7 +485,8 @@ fn run_loop<R: Runtime>(
                                                     Arc::clone(cancel),
                                                     tx.clone(),
                                                 );
-                                                let _ = service.insert_exo_message("user", &msg);
+                                                let _ = service
+                                                    .insert_exo_message(MessageRole::User, &msg);
                                                 exo.add_user_message(msg);
                                             }
                                         }

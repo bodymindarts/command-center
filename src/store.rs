@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, Row};
 
-use crate::primitives::{TaskId, TaskStatus};
+use crate::primitives::{MessageRole, TaskId, TaskStatus};
 use crate::task::{Task, TaskMessage};
 
 fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
@@ -217,13 +217,13 @@ impl Store {
         Ok(tasks.pop())
     }
 
-    pub fn insert_message(&self, task_id: &str, role: &str, content: &str) -> Result<()> {
+    pub fn insert_message(&self, task_id: &str, role: MessageRole, content: &str) -> Result<()> {
         let id = uuid::Uuid::now_v7().to_string();
         let now = Utc::now().to_rfc3339();
         self.conn.execute(
             "INSERT INTO task_messages (id, task_id, role, content, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            (&id, task_id, role, content, &now),
+            (&id, task_id, role.as_str(), content, &now),
         )?;
         Ok(())
     }
@@ -240,7 +240,7 @@ impl Store {
                 Ok(TaskMessage {
                     id: row.get(0)?,
                     task_id: row.get(1)?,
-                    role: row.get(2)?,
+                    role: MessageRole::from(row.get::<_, String>(2)?),
                     content: row.get(3)?,
                     created_at: DateTime::parse_from_rfc3339(&created_at)
                         .unwrap_or_default()
@@ -329,17 +329,17 @@ mod tests {
         insert_running_task(&store, "msg-task", "t1");
 
         store
-            .insert_message("msg-task", "system", "initial prompt")
+            .insert_message("msg-task", MessageRole::System, "initial prompt")
             .unwrap();
         store
-            .insert_message("msg-task", "user", "hello agent")
+            .insert_message("msg-task", MessageRole::User, "hello agent")
             .unwrap();
 
         let messages = store.list_messages("msg-task").unwrap();
         assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].role, "system");
+        assert_eq!(messages[0].role, MessageRole::System);
         assert_eq!(messages[0].content, "initial prompt");
-        assert_eq!(messages[1].role, "user");
+        assert_eq!(messages[1].role, MessageRole::User);
         assert_eq!(messages[1].content, "hello agent");
     }
 
@@ -355,9 +355,15 @@ mod tests {
         let store = test_store();
         insert_running_task(&store, "ord-task", "t1");
 
-        store.insert_message("ord-task", "system", "first").unwrap();
-        store.insert_message("ord-task", "user", "second").unwrap();
-        store.insert_message("ord-task", "user", "third").unwrap();
+        store
+            .insert_message("ord-task", MessageRole::System, "first")
+            .unwrap();
+        store
+            .insert_message("ord-task", MessageRole::User, "second")
+            .unwrap();
+        store
+            .insert_message("ord-task", MessageRole::User, "third")
+            .unwrap();
 
         let messages = store.list_messages("ord-task").unwrap();
         assert_eq!(messages.len(), 3);

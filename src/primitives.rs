@@ -86,3 +86,37 @@ impl From<String> for TaskStatus {
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageRole {
+    System,
+    User,
+    Assistant,
+}
+
+impl MessageRole {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::System => "system",
+            Self::User => "user",
+            Self::Assistant => "assistant",
+        }
+    }
+}
+
+impl fmt::Display for MessageRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<String> for MessageRole {
+    fn from(s: String) -> Self {
+        match s.as_str() {
+            "system" => Self::System,
+            "user" => Self::User,
+            "assistant" => Self::Assistant,
+            _ => Self::User,
+        }
+    }
+}

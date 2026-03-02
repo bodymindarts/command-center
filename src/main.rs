@@ -15,6 +15,7 @@ use tabled::{Table, Tabled};
 
 use crate::cli::{Cli, Command, PermissionAction, SkillAction};
 use crate::config::Paths;
+use crate::primitives::MessageRole;
 use crate::runtime::{Runtime, TmuxRuntime};
 use crate::service::TaskService;
 use crate::store::Store;
@@ -167,10 +168,10 @@ fn cmd_log(service: &TaskService<impl Runtime>, id_prefix: &str) -> Result<()> {
     }
 
     for msg in &log.messages {
-        let label = match msg.role.as_str() {
-            "system" => "PROMPT",
-            "user" => "YOU",
-            _ => &msg.role,
+        let label = match msg.role {
+            MessageRole::System => "PROMPT",
+            MessageRole::User => "YOU",
+            MessageRole::Assistant => "ASSISTANT",
         };
         let time = msg.created_at.format("%H:%M:%S");
         println!("[{time}] {label}:");

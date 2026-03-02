@@ -3,10 +3,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 
-use crate::primitives::TaskStatus;
+use crate::primitives::{MessageRole, TaskStatus};
 
 use super::app::{App, Focus};
-use super::chat::{ExoState, Role};
+use super::chat::ExoState;
 
 pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState) {
     let outer = Layout::default()
@@ -198,10 +198,10 @@ fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: 
             )));
         } else {
             for msg in &app.selected_messages {
-                let (label, label_color) = match msg.role.as_str() {
-                    "system" => ("PROMPT", Color::Cyan),
-                    "user" => ("YOU", Color::Green),
-                    _ => (&*msg.role, Color::White),
+                let (label, label_color) = match msg.role {
+                    MessageRole::System => ("PROMPT", Color::Cyan),
+                    MessageRole::User => ("YOU", Color::Green),
+                    MessageRole::Assistant => ("ASSISTANT", Color::White),
                 };
 
                 lines.push(Line::from(Span::styled(
@@ -234,8 +234,9 @@ fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: 
         // Render ExO chat
         for msg in &exo.messages {
             let (label, label_color) = match msg.role {
-                Role::User => ("You", Color::Green),
-                Role::Assistant => ("ExO", Color::Cyan),
+                MessageRole::User => ("You", Color::Green),
+                MessageRole::Assistant => ("ExO", Color::Cyan),
+                MessageRole::System => ("System", Color::DarkGray),
             };
 
             lines.push(Line::from(Span::styled(
@@ -245,7 +246,8 @@ fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: 
                     .add_modifier(Modifier::BOLD),
             )));
 
-            if msg.content.is_empty() && matches!(msg.role, Role::Assistant) && exo.streaming {
+            if msg.content.is_empty() && matches!(msg.role, MessageRole::Assistant) && exo.streaming
+            {
                 lines.push(Line::from(Span::styled(
                     "...",
                     Style::default().fg(Color::DarkGray),

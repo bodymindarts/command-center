@@ -1,0 +1,5 @@
+Replace stringly-typed message role with a MessageRole enum. Currently task.rs:55 has role: String matched as 'system', 'user', 'assistant' in four separate files (main.rs, widgets.rs, chat.rs, store.rs) with inconsistent fallback behavior.
+
+Fix: Add a MessageRole enum to task.rs (or a primitives module) following the existing TaskStatus pattern — as_str(), Display, From<String>. Use it in TaskMessage.role. The chat::Role enum in tui/chat.rs can either be replaced entirely or kept as a TUI-specific subset that converts From<MessageRole>. The store serializes to/from string only at the SQLite boundary. This is a mechanical refactor — the compiler will flag every match site that needs updating.
+
+Read task.rs, store.rs, main.rs, tui/widgets.rs, and tui/chat.rs to understand current usage. Commit with conventional commits. Run 'nix develop -c sh -c "cargo fmt && git add -A && nix flake check"' before each commit.

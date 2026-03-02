@@ -1,12 +1,8 @@
+use crate::primitives::MessageRole;
 use crate::task::TaskMessage;
 
-pub enum Role {
-    User,
-    Assistant,
-}
-
 pub struct ChatMessage {
-    pub role: Role,
+    pub role: MessageRole,
     pub content: String,
     pub tool_activity: Vec<String>,
 }
@@ -28,12 +24,12 @@ impl ExoState {
 
     pub fn add_user_message(&mut self, content: String) {
         self.messages.push(ChatMessage {
-            role: Role::User,
+            role: MessageRole::User,
             content,
             tool_activity: Vec::new(),
         });
         self.messages.push(ChatMessage {
-            role: Role::Assistant,
+            role: MessageRole::Assistant,
             content: String::new(),
             tool_activity: Vec::new(),
         });
@@ -44,7 +40,7 @@ impl ExoState {
         if let Some(msg) = self
             .messages
             .last_mut()
-            .filter(|m| matches!(m.role, Role::Assistant))
+            .filter(|m| matches!(m.role, MessageRole::Assistant))
         {
             msg.content.push_str(text);
         }
@@ -54,7 +50,7 @@ impl ExoState {
         if let Some(msg) = self
             .messages
             .last_mut()
-            .filter(|m| matches!(m.role, Role::Assistant))
+            .filter(|m| matches!(m.role, MessageRole::Assistant))
         {
             msg.tool_activity.push(tool);
         }
@@ -66,22 +62,15 @@ impl ExoState {
 
     pub fn load_history(&mut self, messages: Vec<TaskMessage>) {
         for msg in messages {
-            match msg.role.as_str() {
-                "user" => {
+            match msg.role {
+                MessageRole::User | MessageRole::Assistant => {
                     self.messages.push(ChatMessage {
-                        role: Role::User,
+                        role: msg.role,
                         content: msg.content,
                         tool_activity: Vec::new(),
                     });
                 }
-                "assistant" => {
-                    self.messages.push(ChatMessage {
-                        role: Role::Assistant,
-                        content: msg.content,
-                        tool_activity: Vec::new(),
-                    });
-                }
-                _ => {}
+                MessageRole::System => {}
             }
         }
     }
