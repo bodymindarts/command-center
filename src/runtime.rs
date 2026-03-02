@@ -191,7 +191,7 @@ impl Runtime for TmuxRuntime {
         std::fs::write(work_dir.join(".claude-prompt.txt"), user_prompt)?;
 
         let mut script = format!("#!/bin/sh\nunset CLAUDECODE\nexec {claude_bin}");
-        script.push_str(" -p \"$(cat .claude-prompt.txt)\"");
+        script.push_str(" \"$(cat .claude-prompt.txt)\"");
         if let Some(sys) = system_prompt {
             std::fs::write(work_dir.join(".claude-system-prompt.txt"), sys)?;
             script.push_str(" --system-prompt \"$(cat .claude-system-prompt.txt)\"");
