@@ -4,5 +4,6 @@
 data/
 .claude/settings.local.json
 .claude/worktrees/
+.claude/perm-socket
 .bacon-locations
 TASK.md

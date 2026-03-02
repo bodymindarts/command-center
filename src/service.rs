@@ -60,6 +60,10 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         }
     }
 
+    pub fn project_root(&self) -> &std::path::Path {
+        &self.paths.root
+    }
+
     pub fn read_exo_session_id(&self) -> Option<String> {
         std::fs::read_to_string(self.paths.exo_session_file())
             .ok()

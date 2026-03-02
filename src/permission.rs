@@ -14,6 +14,26 @@ pub struct PermissionRequest {
 /// Environment variable that spawned agents read to locate the permission socket.
 pub const SOCKET_ENV: &str = "CC_PERM_SOCKET";
 
+/// Breadcrumb file written by the dashboard so that CLI-spawned tasks
+/// (which don't inherit the TUI's env) can discover the active socket.
+const SOCKET_BREADCRUMB: &str = ".claude/perm-socket";
+
+/// Write the active socket path to a breadcrumb file in the project root.
+pub fn write_socket_breadcrumb(project_root: &std::path::Path, sock: &std::path::Path) {
+    let path = project_root.join(SOCKET_BREADCRUMB);
+    let _ = std::fs::write(&path, sock.display().to_string());
+}
+
+/// Remove the breadcrumb file on shutdown.
+pub fn remove_socket_breadcrumb(project_root: &std::path::Path) {
+    let _ = std::fs::remove_file(project_root.join(SOCKET_BREADCRUMB));
+}
+
+/// Read the socket path from the breadcrumb file.
+pub fn read_socket_breadcrumb(project_root: &std::path::Path) -> Option<String> {
+    std::fs::read_to_string(project_root.join(SOCKET_BREADCRUMB)).ok()
+}
+
 /// Generate a unique socket path for this dashboard session (includes PID).
 pub fn session_socket_path() -> PathBuf {
     let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());

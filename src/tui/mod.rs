@@ -59,6 +59,9 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
     unsafe {
         std::env::set_var(crate::permission::SOCKET_ENV, &socket_path);
     }
+    // Write breadcrumb so CLI-spawned tasks (which don't inherit our env)
+    // can discover the active socket path.
+    crate::permission::write_socket_breadcrumb(service.project_root(), &socket_path);
     std::thread::spawn(move || {
         while !perm_cancel.load(Ordering::Relaxed) {
             match listener.accept() {
@@ -97,6 +100,7 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
         }
     }
     let _ = std::fs::remove_file(&socket_path);
+    crate::permission::remove_socket_breadcrumb(service.project_root());
 
     terminal::disable_raw_mode()?;
     crossterm::execute!(

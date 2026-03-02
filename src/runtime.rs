@@ -190,7 +190,11 @@ impl Runtime for TmuxRuntime {
             settings["permissions"] = serde_json::json!({"allow": allowed});
             // Embed CC_PERM_SOCKET into hook commands so agents connect
             // to this dashboard's session-scoped permission socket.
-            if let Ok(sock_path) = std::env::var(crate::permission::SOCKET_ENV) {
+            // Try env var first (TUI process), then breadcrumb file (CLI spawns).
+            let sock_path = std::env::var(crate::permission::SOCKET_ENV)
+                .ok()
+                .or_else(|| crate::permission::read_socket_breadcrumb(repo_root));
+            if let Some(sock_path) = sock_path {
                 embed_socket_in_hooks(&mut settings, &sock_path);
             }
             std::fs::write(&target_settings, settings.to_string())?;
