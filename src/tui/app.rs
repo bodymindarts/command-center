@@ -69,21 +69,24 @@ impl InputState {
         self.pasted = Some(text);
     }
 
-    fn clear_paste(&mut self) {
-        self.pasted = None;
+    /// Transfer pasted content into the char buffer for normal editing.
+    /// After this call, `pasted` is `None` and `chars` + `cursor` reflect
+    /// the full content with the cursor at the end.
+    fn materialize_paste(&mut self) {
+        if let Some(p) = self.pasted.take() {
+            self.chars = p.chars().collect();
+            self.cursor = self.chars.len();
+        }
     }
 
     pub fn insert(&mut self, c: char) {
-        self.clear_paste();
+        self.materialize_paste();
         self.chars.insert(self.cursor, c);
         self.cursor += 1;
     }
 
     pub fn backspace(&mut self) {
-        if self.pasted.is_some() {
-            self.clear_paste();
-            return;
-        }
+        self.materialize_paste();
         if self.cursor > 0 {
             self.cursor -= 1;
             self.chars.remove(self.cursor);
@@ -91,48 +94,49 @@ impl InputState {
     }
 
     pub fn delete(&mut self) {
-        if self.pasted.is_some() {
-            self.clear_paste();
-            return;
-        }
+        self.materialize_paste();
         if self.cursor < self.chars.len() {
             self.chars.remove(self.cursor);
         }
     }
 
     pub fn left(&mut self) {
+        self.materialize_paste();
         if self.cursor > 0 {
             self.cursor -= 1;
         }
     }
 
     pub fn right(&mut self) {
+        self.materialize_paste();
         if self.cursor < self.chars.len() {
             self.cursor += 1;
         }
     }
 
     pub fn home(&mut self) {
+        self.materialize_paste();
         self.cursor = 0;
     }
 
     pub fn end(&mut self) {
+        self.materialize_paste();
         self.cursor = self.chars.len();
     }
 
     pub fn kill_line(&mut self) {
-        self.clear_paste();
+        self.materialize_paste();
         self.chars.truncate(self.cursor);
     }
 
     pub fn kill_before(&mut self) {
-        self.clear_paste();
+        self.materialize_paste();
         self.chars.drain(..self.cursor);
         self.cursor = 0;
     }
 
     pub fn kill_word(&mut self) {
-        self.clear_paste();
+        self.materialize_paste();
         if self.cursor == 0 {
             return;
         }
@@ -332,5 +336,178 @@ impl App {
         } else {
             "exo".to_string()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn single_char_insert() {
+        let mut input = InputState::new();
+        input.insert('a');
+        input.insert('b');
+        input.insert('c');
+        assert_eq!(input.buffer(), "abc");
+        assert_eq!(input.cursor, 3);
+    }
+
+    #[test]
+    fn insert_at_cursor() {
+        let mut input = InputState::new();
+        input.insert('a');
+        input.insert('c');
+        input.left();
+        input.insert('b');
+        assert_eq!(input.buffer(), "abc");
+        assert_eq!(input.cursor, 2);
+    }
+
+    #[test]
+    fn paste_then_insert_preserves_content() {
+        let mut input = InputState::new();
+        input.set_paste("line1\nline2\nline3".to_string());
+        assert!(input.has_paste());
+        assert_eq!(input.paste_line_count(), 3);
+
+        // Typing a char should append to the pasted content, not replace it
+        input.insert('!');
+        assert!(!input.has_paste());
+        assert_eq!(input.buffer(), "line1\nline2\nline3!");
+    }
+
+    #[test]
+    fn paste_then_backspace_removes_last_char() {
+        let mut input = InputState::new();
+        input.set_paste("hello\nworld".to_string());
+        input.backspace();
+        assert!(!input.has_paste());
+        assert_eq!(input.buffer(), "hello\nworl");
+    }
+
+    #[test]
+    fn paste_then_delete_at_end_is_noop() {
+        let mut input = InputState::new();
+        input.set_paste("hello".to_string());
+        input.delete();
+        assert_eq!(input.buffer(), "hello");
+    }
+
+    #[test]
+    fn paste_then_home_delete_removes_first_char() {
+        let mut input = InputState::new();
+        input.set_paste("hello".to_string());
+        input.home();
+        assert_eq!(input.cursor, 0);
+        input.delete();
+        assert_eq!(input.buffer(), "ello");
+    }
+
+    #[test]
+    fn paste_then_cursor_movement() {
+        let mut input = InputState::new();
+        input.set_paste("abc".to_string());
+        // After materialize, cursor should be at end (3)
+        input.left();
+        assert_eq!(input.cursor, 2);
+        input.left();
+        assert_eq!(input.cursor, 1);
+        input.right();
+        assert_eq!(input.cursor, 2);
+        input.home();
+        assert_eq!(input.cursor, 0);
+        input.end();
+        assert_eq!(input.cursor, 3);
+    }
+
+    #[test]
+    fn paste_then_kill_line() {
+        let mut input = InputState::new();
+        input.set_paste("hello\nworld".to_string());
+        // Materialize puts cursor at end; kill_line truncates at cursor (noop)
+        input.kill_line();
+        assert_eq!(input.buffer(), "hello\nworld");
+
+        // Now move cursor and kill
+        input.home();
+        input.kill_line();
+        assert_eq!(input.buffer(), "");
+    }
+
+    #[test]
+    fn paste_then_kill_before() {
+        let mut input = InputState::new();
+        input.set_paste("hello\nworld".to_string());
+        // Cursor at end after materialize; kill_before clears everything
+        input.kill_before();
+        assert_eq!(input.buffer(), "");
+        assert_eq!(input.cursor, 0);
+    }
+
+    #[test]
+    fn paste_then_kill_word() {
+        let mut input = InputState::new();
+        input.set_paste("hello world".to_string());
+        input.kill_word();
+        assert_eq!(input.buffer(), "hello ");
+    }
+
+    #[test]
+    fn paste_take_returns_pasted_content() {
+        let mut input = InputState::new();
+        input.set_paste("pasted\ntext".to_string());
+        let taken = input.take();
+        assert_eq!(taken, "pasted\ntext");
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn paste_buffer_returns_pasted_content() {
+        let mut input = InputState::new();
+        input.set_paste("multi\nline".to_string());
+        assert_eq!(input.buffer(), "multi\nline");
+    }
+
+    #[test]
+    fn set_after_paste_replaces() {
+        let mut input = InputState::new();
+        input.set_paste("pasted".to_string());
+        input.set("replaced");
+        assert!(!input.has_paste());
+        assert_eq!(input.buffer(), "replaced");
+    }
+
+    #[test]
+    fn multiple_inserts_after_paste() {
+        let mut input = InputState::new();
+        input.set_paste("base".to_string());
+        input.insert('!');
+        input.insert('!');
+        input.insert('!');
+        assert_eq!(input.buffer(), "base!!!");
+    }
+
+    #[test]
+    fn single_line_paste_chars_then_type() {
+        // Simulates single-line paste (inserted char-by-char in event loop)
+        let mut input = InputState::new();
+        for c in "pasted".chars() {
+            input.insert(c);
+        }
+        assert_eq!(input.buffer(), "pasted");
+        input.insert('!');
+        assert_eq!(input.buffer(), "pasted!");
+    }
+
+    #[test]
+    fn backspace_on_empty_after_paste_clear() {
+        let mut input = InputState::new();
+        input.set_paste("x".to_string());
+        input.backspace(); // materializes "x", cursor=1, then removes 'x'
+        assert!(input.is_empty());
+        // Another backspace should be safe
+        input.backspace();
+        assert!(input.is_empty());
     }
 }
