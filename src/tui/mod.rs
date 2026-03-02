@@ -43,7 +43,10 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
         exo.session_id = Some(sid);
     }
     if let Ok(messages) = service.exo_messages() {
-        exo.load_history(messages);
+        // Load only the last few messages to provide context without
+        // flooding the chat view with hundreds of old messages.
+        let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
+        exo.load_history(recent.into_iter().rev().collect());
     }
     let (tx, rx) = mpsc::channel::<ExoEvent>();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -616,8 +619,6 @@ fn run_loop<R: Runtime>(
                                         app.chat_scroll = 0;
                                         if !app.input.is_empty() {
                                             // Finish any in-progress streaming from a previous turn
-                                            // (stream-json doesn't emit `result` events, so
-                                            // streaming may still be true from the last turn).
                                             if exo.streaming {
                                                 exo.finish_streaming();
                                                 // Persist the previous assistant response
