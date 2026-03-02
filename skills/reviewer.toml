@@ -4,7 +4,7 @@ description = "Code health reviewer — architecture, types, duplication, mainta
 params = [{ name = "task", required = false, default = "Review the full codebase" }]
 
 [agent]
-allowed_tools = ["Read", "Glob", "Grep", "Bash"]
+allowed_tools = ["Read", "Glob", "Grep"]
 model = "opus"
 
 [template]
