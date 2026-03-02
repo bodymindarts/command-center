@@ -25,7 +25,7 @@ use app::{ActivePermission, App, Focus};
 
 const EXO_PERM_KEY: &str = "exo";
 use chat::ExoState;
-use claude::ExoEvent;
+use claude::{ExoEvent, ExoSession};
 
 pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -> Result<()> {
     terminal::enable_raw_mode()?;
@@ -47,6 +47,8 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
     }
     let (tx, rx) = mpsc::channel::<ExoEvent>();
     let cancel = Arc::new(AtomicBool::new(false));
+    let mut exo_session =
+        ExoSession::start(exo.session_id.as_deref(), Arc::clone(&cancel), tx.clone());
 
     // Permission socket listener
     let (perm_tx, perm_rx) = mpsc::channel::<(UnixStream, PermissionRequest)>();
@@ -80,10 +82,9 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
         &mut terminal,
         &mut app,
         &mut exo,
+        &mut exo_session,
         service,
         &rx,
-        &tx,
-        &cancel,
         &perm_rx,
     );
 
@@ -120,10 +121,9 @@ fn run_loop<R: Runtime>(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     exo: &mut ExoState,
+    exo_session: &mut ExoSession,
     service: &TaskService<R>,
     rx: &mpsc::Receiver<ExoEvent>,
-    tx: &mpsc::Sender<ExoEvent>,
-    cancel: &Arc<AtomicBool>,
     perm_rx: &mpsc::Receiver<(UnixStream, PermissionRequest)>,
 ) -> Result<()> {
     let mut last_tick = Instant::now();
@@ -144,15 +144,23 @@ fn run_loop<R: Runtime>(
                 ExoEvent::ToolStart(name) => exo.add_tool_activity(name),
                 ExoEvent::SessionId(id) => {
                     service.write_exo_session_id(&id);
-                    exo.session_id = Some(id);
+                    exo.session_id = Some(id.clone());
+                    exo_session.set_session_id(id);
                 }
-                ExoEvent::Done => {
+                ExoEvent::TurnDone => {
                     exo.finish_streaming();
                     if let Some(msg) = exo.messages.last()
                         && matches!(msg.role, MessageRole::Assistant)
                         && !msg.content.is_empty()
                     {
                         let _ = service.insert_exo_message(MessageRole::Assistant, &msg.content);
+                    }
+                }
+                ExoEvent::ProcessExited => {
+                    exo_session.mark_exited();
+                    // If still streaming, the process died mid-turn
+                    if exo.streaming {
+                        exo.add_error("Claude process exited unexpectedly");
                     }
                 }
                 ExoEvent::Error(e) => {
@@ -535,12 +543,8 @@ fn run_loop<R: Runtime>(
                                                 }
                                             } else if !exo.streaming {
                                                 let msg = app.input.take();
-                                                claude::spawn_claude(
-                                                    &msg,
-                                                    exo.session_id.as_deref(),
-                                                    Arc::clone(cancel),
-                                                    tx.clone(),
-                                                );
+                                                exo_session
+                                                    .send_message(&msg, exo.session_id.as_deref());
                                                 let _ = service
                                                     .insert_exo_message(MessageRole::User, &msg);
                                                 exo.add_user_message(msg);
