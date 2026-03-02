@@ -9,7 +9,8 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.38", features = ["bundled"] }
+rusqlite_migration = "2.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"

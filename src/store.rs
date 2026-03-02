@@ -3,9 +3,35 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, Row};
+use rusqlite_migration::{M, Migrations};
 
 use crate::primitives::{MessageRole, TaskId, TaskStatus};
 use crate::task::{Task, TaskMessage};
+
+static MIGRATION_STEPS: [M<'static>; 1] = [M::up(
+    "CREATE TABLE tasks (
+        id           TEXT PRIMARY KEY,
+        name         TEXT NOT NULL DEFAULT '',
+        skill_name   TEXT NOT NULL,
+        params_json  TEXT NOT NULL,
+        status       TEXT NOT NULL DEFAULT 'running',
+        tmux_pane    TEXT,
+        tmux_window  TEXT,
+        work_dir     TEXT,
+        started_at   TEXT NOT NULL,
+        completed_at TEXT,
+        exit_code    INTEGER,
+        output       TEXT
+    );
+    CREATE TABLE task_messages (
+        id         TEXT PRIMARY KEY,
+        task_id    TEXT NOT NULL,
+        role       TEXT NOT NULL,
+        content    TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );",
+)];
+static MIGRATIONS: Migrations<'static> = Migrations::from_slice(&MIGRATION_STEPS);
 
 fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
     let started_at: String = row.get(8)?;
@@ -43,52 +69,22 @@ pub struct Store {
 impl Store {
     #[cfg(test)]
     pub fn open_in_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory().context("failed to open in-memory database")?;
-        let store = Self { conn };
-        store.init_schema()?;
-        Ok(store)
+        let mut conn = Connection::open_in_memory().context("failed to open in-memory database")?;
+        Self::run_migrations(&mut conn)?;
+        Ok(Self { conn })
     }
 
     pub fn open(db_path: &Path) -> Result<Self> {
-        let conn = Connection::open(db_path)
+        let mut conn = Connection::open(db_path)
             .with_context(|| format!("failed to open database at {}", db_path.display()))?;
-        let store = Self { conn };
-        store.init_schema()?;
-        Ok(store)
+        Self::run_migrations(&mut conn)?;
+        Ok(Self { conn })
     }
 
-    fn init_schema(&self) -> Result<()> {
-        self.conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS tasks (
-                id           TEXT PRIMARY KEY,
-                skill_name   TEXT NOT NULL,
-                params_json  TEXT NOT NULL,
-                status       TEXT NOT NULL DEFAULT 'running',
-                tmux_pane    TEXT,
-                tmux_window  TEXT,
-                work_dir     TEXT,
-                started_at   TEXT NOT NULL,
-                completed_at TEXT,
-                exit_code    INTEGER,
-                output       TEXT
-            );",
-        )?;
-        self.conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS task_messages (
-                id         TEXT PRIMARY KEY,
-                task_id    TEXT NOT NULL,
-                role       TEXT NOT NULL,
-                content    TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );",
-        )?;
-        // Migrations: add columns to existing databases
-        let _ = self
-            .conn
-            .execute_batch("ALTER TABLE tasks ADD COLUMN tmux_window TEXT");
-        let _ = self
-            .conn
-            .execute_batch("ALTER TABLE tasks ADD COLUMN name TEXT NOT NULL DEFAULT ''");
+    fn run_migrations(conn: &mut Connection) -> Result<()> {
+        MIGRATIONS
+            .to_latest(conn)
+            .context("failed to run database migrations")?;
         Ok(())
     }
 
