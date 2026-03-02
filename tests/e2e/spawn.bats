@@ -103,16 +103,6 @@ task_field() {
     git -C "$PROJECT_DIR" branch --list "$branch" | grep -q "task/"
 }
 
-@test "spawn writes TASK.md with rendered prompt" {
-    cd "$PROJECT_DIR"
-    clat spawn prompt-test --skill noop
-
-    local worktree
-    worktree=$(find_worktree prompt-test)
-    [ -f "$worktree/TASK.md" ]
-    grep -q "Task complete" "$worktree/TASK.md"
-}
-
 @test "spawn copies .claude hooks into worktree" {
     cd "$PROJECT_DIR"
     clat spawn sym-test --skill noop

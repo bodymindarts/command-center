@@ -174,12 +174,8 @@ impl Runtime for TmuxRuntime {
     ) -> Result<SpawnResult> {
         let claude_bin = self.resolve_binary("claude")?;
 
-        // Write skill prompt to TASK.md in the worktree so claude has context
-        let task_md = work_dir.join("TASK.md");
-        std::fs::write(&task_md, rendered_prompt).context("failed to write TASK.md")?;
-
-        let claude_cmd =
-            format!("{claude_bin} \"Read TASK.md and complete the task described in it.\"");
+        let escaped_prompt = shell_escape::escape(rendered_prompt.into());
+        let claude_cmd = format!("{claude_bin} --system-prompt {escaped_prompt}");
         self.launch_agent_window(task_name, work_dir, &claude_cmd)
     }
 

@@ -5,3 +5,4 @@ data/
 .claude/settings.local.json
 .claude/worktrees/
 .bacon-locations
+TASK.md
