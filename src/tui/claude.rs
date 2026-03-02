@@ -86,7 +86,14 @@ pub fn spawn_claude(
     // Send initial user message via stream-json protocol, then close stdin
     // so the process knows no more messages are coming.
     {
-        let mut stdin = child.stdin.take().unwrap();
+        let mut stdin = match child.stdin.take() {
+            Some(s) => s,
+            None => {
+                let _ = tx.send(ExoEvent::Error("Failed to open stdin pipe".into()));
+                let _ = child.kill();
+                return;
+            }
+        };
         let sid = session_id.as_deref().unwrap_or("default");
         let msg_json = serde_json::json!({
             "type": "user",
@@ -97,11 +104,30 @@ pub fn spawn_claude(
             "session_id": sid,
             "parent_tool_use_id": null,
         });
-        let _ = writeln!(stdin, "{}", msg_json);
-        let _ = stdin.flush();
+        if let Err(e) = writeln!(stdin, "{}", msg_json) {
+            let _ = tx.send(ExoEvent::Error(format!(
+                "Failed to write to claude stdin: {e}"
+            )));
+            let _ = child.kill();
+            return;
+        }
+        if let Err(e) = stdin.flush() {
+            let _ = tx.send(ExoEvent::Error(format!(
+                "Failed to flush claude stdin: {e}"
+            )));
+            let _ = child.kill();
+            return;
+        }
     }
 
-    let stdout = child.stdout.take().unwrap();
+    let stdout = match child.stdout.take() {
+        Some(s) => s,
+        None => {
+            let _ = tx.send(ExoEvent::Error("Failed to open stdout pipe".into()));
+            let _ = child.kill();
+            return;
+        }
+    };
 
     thread::spawn(move || {
         let reader = std::io::BufReader::new(stdout);
@@ -114,7 +140,10 @@ pub fn spawn_claude(
 
             let line = match line {
                 Ok(l) => l,
-                Err(_) => break,
+                Err(e) => {
+                    let _ = tx.send(ExoEvent::Error(format!("Error reading claude output: {e}")));
+                    break;
+                }
             };
 
             if line.is_empty() {
@@ -201,7 +230,19 @@ pub fn spawn_claude(
             }
         }
 
-        let _ = child.wait();
+        match child.wait() {
+            Ok(status) if !status.success() => {
+                let _ = tx.send(ExoEvent::Error(format!(
+                    "Claude process exited with {status}"
+                )));
+            }
+            Err(e) => {
+                let _ = tx.send(ExoEvent::Error(format!(
+                    "Failed to wait on claude process: {e}"
+                )));
+            }
+            _ => {}
+        }
         let _ = tx.send(ExoEvent::Done);
     });
 }

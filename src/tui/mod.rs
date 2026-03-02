@@ -156,8 +156,7 @@ fn run_loop<R: Runtime>(
                     }
                 }
                 ExoEvent::Error(e) => {
-                    exo.append_text(&format!("\n[Error: {e}]"));
-                    exo.finish_streaming();
+                    exo.add_error(&e);
                     if let Some(msg) = exo.messages.last()
                         && matches!(msg.role, MessageRole::Assistant)
                         && !msg.content.is_empty()

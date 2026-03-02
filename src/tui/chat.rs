@@ -56,6 +56,24 @@ impl ExoState {
         }
     }
 
+    /// Surface an error in the chat history. If there's already a pending
+    /// assistant message (streaming), append to it; otherwise create one.
+    pub fn add_error(&mut self, error: &str) {
+        let has_assistant = self
+            .messages
+            .last()
+            .is_some_and(|m| matches!(m.role, MessageRole::Assistant));
+        if !has_assistant {
+            self.messages.push(ChatMessage {
+                role: MessageRole::Assistant,
+                content: String::new(),
+                tool_activity: Vec::new(),
+            });
+        }
+        self.append_text(&format!("\n[Error: {error}]"));
+        self.streaming = false;
+    }
+
     pub fn finish_streaming(&mut self) {
         self.streaming = false;
     }
