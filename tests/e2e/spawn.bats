@@ -5,6 +5,16 @@
 # Isolation: a tmux wrapper forces ALL tmux commands (including those
 # inside clat) through a dedicated -L socket, so the user's real
 # tmux session is never touched.
+#
+# NOTE: These tests use a mock `sleep infinity` binary in place of
+# the real claude CLI.  This validates that settings.local.json is
+# assembled correctly (format, keys, content) but cannot confirm
+# that Claude Code actually reads and honours the permissions at
+# runtime.  To add a live-CLI smoke test you would need:
+#   1. `claude` on PATH with a valid API key
+#   2. A prompt like "Run: echo ok" with `--allowedTools Bash`
+#   3. Assert the command ran without a PermissionRequest hook firing
+# That requires API access so it is left out of the default suite.
 
 setup() {
     TEST_DIR="$(mktemp -d)"
