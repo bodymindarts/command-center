@@ -545,8 +545,10 @@ fn run_loop<R: Runtime>(
                                             if let Some(task) = app.selected_task()
                                                 && let Some(pane) = task.tmux_pane.as_deref()
                                             {
+                                                let id = task.id.as_str().to_string();
                                                 service.forward_literal(pane, &msg);
                                                 service.forward_key(pane, "Enter");
+                                                app.acknowledge_fresh(&id);
                                             }
                                         }
                                     }
@@ -608,11 +610,11 @@ fn run_loop<R: Runtime>(
                                         app.chat_scroll = 0;
                                         if !app.input.is_empty() && !exo.streaming {
                                             let msg = app.input.take();
-                                            exo_session
-                                                .send_message(&msg, exo.session_id.as_deref());
                                             let _ =
                                                 service.insert_exo_message(MessageRole::User, &msg);
-                                            exo.add_user_message(msg);
+                                            exo.add_user_message(msg.clone());
+                                            exo_session
+                                                .send_message(&msg, exo.session_id.as_deref());
                                         }
                                     }
                                     KeyCode::Char('u') if ctrl => app.input.kill_before(),
@@ -770,14 +772,6 @@ fn run_loop<R: Runtime>(
                 permission_suggestions: req.permission_suggestions,
             };
             app.add_permission(perm);
-        }
-
-        // Acknowledge fresh indicator when user is viewing a task's detail
-        if app.show_detail
-            && let Some(task) = app.selected_task()
-        {
-            let id = task.id.as_str().to_string();
-            app.acknowledge_fresh(&id);
         }
 
         if app.should_quit {

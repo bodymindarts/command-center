@@ -272,7 +272,7 @@ fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: 
                             if !tool_spans.is_empty() {
                                 lines.push(Line::from(std::mem::take(&mut tool_spans)));
                             }
-                            for l in text.lines() {
+                            for l in text.trim_start_matches('\n').lines() {
                                 lines.push(Line::from(l.to_string()));
                             }
                         }
