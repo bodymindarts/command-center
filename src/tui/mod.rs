@@ -216,6 +216,8 @@ fn run_loop<R: Runtime>(
                     }
                 }
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    // Clear transient status error on any keypress
+                    app.status_error = None;
                     // Global: Ctrl+C quits
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('c')
@@ -351,11 +353,16 @@ fn run_loop<R: Runtime>(
                                             }
                                         } else {
                                             let id = task.id.as_str().to_string();
-                                            if let Ok(window_id) = service.reopen(&id) {
-                                                if let Ok(tasks) = service.list_visible() {
-                                                    app.refresh_tasks(tasks);
+                                            match service.reopen(&id) {
+                                                Ok(window_id) => {
+                                                    if let Ok(tasks) = service.list_visible() {
+                                                        app.refresh_tasks(tasks);
+                                                    }
+                                                    service.goto_window(&window_id);
                                                 }
-                                                service.goto_window(&window_id);
+                                                Err(e) => {
+                                                    app.status_error = Some(format!("reopen: {e}"));
+                                                }
                                             }
                                         }
                                     }
@@ -368,11 +375,16 @@ fn run_loop<R: Runtime>(
                                             }
                                         } else {
                                             let id = task.id.as_str().to_string();
-                                            if let Ok(window_id) = service.reopen(&id) {
-                                                if let Ok(tasks) = service.list_visible() {
-                                                    app.refresh_tasks(tasks);
+                                            match service.reopen(&id) {
+                                                Ok(window_id) => {
+                                                    if let Ok(tasks) = service.list_visible() {
+                                                        app.refresh_tasks(tasks);
+                                                    }
+                                                    service.goto_window(&window_id);
                                                 }
-                                                service.goto_window(&window_id);
+                                                Err(e) => {
+                                                    app.status_error = Some(format!("reopen: {e}"));
+                                                }
                                             }
                                         }
                                     }
@@ -494,11 +506,17 @@ fn run_loop<R: Runtime>(
                                                 }
                                             } else {
                                                 let id = task.id.as_str().to_string();
-                                                if let Ok(window_id) = service.reopen(&id) {
-                                                    if let Ok(tasks) = service.list_visible() {
-                                                        app.refresh_tasks(tasks);
+                                                match service.reopen(&id) {
+                                                    Ok(window_id) => {
+                                                        if let Ok(tasks) = service.list_visible() {
+                                                            app.refresh_tasks(tasks);
+                                                        }
+                                                        service.goto_window(&window_id);
                                                     }
-                                                    service.goto_window(&window_id);
+                                                    Err(e) => {
+                                                        app.status_error =
+                                                            Some(format!("reopen: {e}"));
+                                                    }
                                                 }
                                             }
                                         }

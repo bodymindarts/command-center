@@ -191,6 +191,8 @@ pub struct App {
     /// Task IDs that recently transitioned from Running to Completed/Failed.
     /// Cleared when the user views the task detail.
     pub fresh_tasks: HashSet<String>,
+    /// Transient error message shown in the prompt bar. Cleared on next keypress.
+    pub status_error: Option<String>,
 }
 
 impl App {
@@ -215,6 +217,7 @@ impl App {
             chat_scroll: 0,
             chat_viewport_height: 0,
             fresh_tasks: HashSet::new(),
+            status_error: None,
         }
     }
 

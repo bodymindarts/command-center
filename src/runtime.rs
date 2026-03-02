@@ -16,6 +16,7 @@ pub trait Runtime {
         name: &str,
         skill_tools: &[String],
     ) -> Result<PathBuf>;
+    fn recreate_worktree(&self, repo_root: &Path, work_dir: &Path) -> Result<()>;
     fn spawn_agent(
         &self,
         task_name: &str,
@@ -147,66 +148,67 @@ impl Runtime for TmuxRuntime {
             bail!("git worktree add failed: {stderr}");
         }
 
-        // Copy hooks config into worktree so spawned agents route permissions
-        // through the dashboard. We copy instead of symlinking because Claude
-        // replaces symlinked .claude/ dirs with real ones when writing settings,
-        // which loses the hooks config.
-        let source_claude_dir = repo_root.join(".claude");
-        let target_claude_dir = worktree_path.join(".claude");
-        if source_claude_dir.is_dir() {
-            std::fs::create_dir_all(&target_claude_dir)?;
-
-            // Copy hooks directory
-            let source_hooks = source_claude_dir.join("hooks");
-            let target_hooks = target_claude_dir.join("hooks");
-            if source_hooks.is_dir() {
-                copy_dir_recursive(&source_hooks, &target_hooks)?;
-            }
-
-            // Write settings with hooks and base allowed tools.
-            // Hooks route permission requests to the dashboard.
-            // Base allowed tools let agents run common safe commands
-            // (git, cargo, nix, etc.) without manual approval each time.
-            let source_settings = source_claude_dir.join("settings.local.json");
-            let target_settings = target_claude_dir.join("settings.local.json");
-            let mut settings = if source_settings.is_file()
-                && let Ok(content) = std::fs::read_to_string(&source_settings)
-                && let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(&content)
-                && parsed.get("hooks").is_some()
-            {
-                parsed.as_object_mut().unwrap().retain(|k, _| k == "hooks");
-                parsed
-            } else {
-                serde_json::json!({})
-            };
-            // Merge skill-level tools (Read, Glob, Edit, etc.) with base
-            // Bash-pattern tools (nix develop, cargo fmt, etc.) into a single
-            // permissions.allow list.  Claude Code reads this key from settings
-            // files — "allowedTools" is only valid as a CLI flag.
-            let mut allowed: Vec<String> = skill_tools.to_vec();
-            for tool in base_allowed_tools() {
-                allowed.push(tool.to_string());
-            }
-            settings["permissions"] = serde_json::json!({"allow": allowed});
-            // Embed CC_PERM_SOCKET into hook commands so agents connect
-            // to this dashboard's session-scoped permission socket.
-            // Try env var first (TUI process), then breadcrumb file (CLI spawns).
-            let sock_path = std::env::var(crate::permission::SOCKET_ENV)
-                .ok()
-                .or_else(|| crate::permission::read_socket_breadcrumb(repo_root));
-            if let Some(sock_path) = sock_path {
-                embed_socket_in_hooks(&mut settings, &sock_path);
-            }
-            std::fs::write(&target_settings, settings.to_string())?;
-
-            // Ignore generated launcher files so agents don't commit them.
-            std::fs::write(
-                target_claude_dir.join(".gitignore"),
-                "launch.sh\nprompt.txt\nsystem-prompt.txt\n",
-            )?;
-        }
+        setup_worktree_config(repo_root, &worktree_path, skill_tools)?;
 
         Ok(worktree_path)
+    }
+
+    fn recreate_worktree(&self, repo_root: &Path, work_dir: &Path) -> Result<()> {
+        let name = work_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| anyhow::anyhow!("invalid worktree path: {}", work_dir.display()))?;
+        let branch_name = format!("task/{name}");
+
+        // Clean up stale worktree bookkeeping so git doesn't reject the add.
+        let _ = Command::new("git")
+            .args(["worktree", "prune"])
+            .current_dir(repo_root)
+            .output();
+
+        // Check whether the branch still exists (it usually survives merge).
+        let branch_check = Command::new("git")
+            .args(["branch", "--list", &branch_name])
+            .current_dir(repo_root)
+            .output()
+            .context("failed to check branch existence")?;
+        let branch_exists = !String::from_utf8_lossy(&branch_check.stdout)
+            .trim()
+            .is_empty();
+
+        let output = if branch_exists {
+            Command::new("git")
+                .args([
+                    "worktree",
+                    "add",
+                    &work_dir.display().to_string(),
+                    &branch_name,
+                ])
+                .current_dir(repo_root)
+                .output()
+                .context("failed to run git worktree add")?
+        } else {
+            // Branch was deleted after merge — create a fresh one from HEAD.
+            Command::new("git")
+                .args([
+                    "worktree",
+                    "add",
+                    &work_dir.display().to_string(),
+                    "-b",
+                    &branch_name,
+                ])
+                .current_dir(repo_root)
+                .output()
+                .context("failed to run git worktree add")?
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("git worktree add failed: {stderr}");
+        }
+
+        setup_worktree_config(repo_root, work_dir, &[])?;
+        Ok(())
     }
 
     fn spawn_agent(
@@ -279,6 +281,70 @@ impl Runtime for TmuxRuntime {
         self.tmux_cmd(&["select-window", "-t", window_id])?;
         Ok(())
     }
+}
+
+/// Copy hooks config and write settings into a worktree's `.claude/` directory.
+/// This is shared between initial creation and worktree recreation (reopen).
+fn setup_worktree_config(
+    repo_root: &Path,
+    worktree_path: &Path,
+    skill_tools: &[String],
+) -> Result<()> {
+    let source_claude_dir = repo_root.join(".claude");
+    let target_claude_dir = worktree_path.join(".claude");
+    if source_claude_dir.is_dir() {
+        std::fs::create_dir_all(&target_claude_dir)?;
+
+        // Copy hooks directory
+        let source_hooks = source_claude_dir.join("hooks");
+        let target_hooks = target_claude_dir.join("hooks");
+        if source_hooks.is_dir() {
+            copy_dir_recursive(&source_hooks, &target_hooks)?;
+        }
+
+        // Write settings with hooks and base allowed tools.
+        // Hooks route permission requests to the dashboard.
+        // Base allowed tools let agents run common safe commands
+        // (git, cargo, nix, etc.) without manual approval each time.
+        let source_settings = source_claude_dir.join("settings.local.json");
+        let target_settings = target_claude_dir.join("settings.local.json");
+        let mut settings = if source_settings.is_file()
+            && let Ok(content) = std::fs::read_to_string(&source_settings)
+            && let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(&content)
+            && parsed.get("hooks").is_some()
+        {
+            parsed.as_object_mut().unwrap().retain(|k, _| k == "hooks");
+            parsed
+        } else {
+            serde_json::json!({})
+        };
+        // Merge skill-level tools (Read, Glob, Edit, etc.) with base
+        // Bash-pattern tools (nix develop, cargo fmt, etc.) into a single
+        // permissions.allow list.  Claude Code reads this key from settings
+        // files — "allowedTools" is only valid as a CLI flag.
+        let mut allowed: Vec<String> = skill_tools.to_vec();
+        for tool in base_allowed_tools() {
+            allowed.push(tool.to_string());
+        }
+        settings["permissions"] = serde_json::json!({"allow": allowed});
+        // Embed CC_PERM_SOCKET into hook commands so agents connect
+        // to this dashboard's session-scoped permission socket.
+        // Try env var first (TUI process), then breadcrumb file (CLI spawns).
+        let sock_path = std::env::var(crate::permission::SOCKET_ENV)
+            .ok()
+            .or_else(|| crate::permission::read_socket_breadcrumb(repo_root));
+        if let Some(sock_path) = sock_path {
+            embed_socket_in_hooks(&mut settings, &sock_path);
+        }
+        std::fs::write(&target_settings, settings.to_string())?;
+
+        // Ignore generated launcher files so agents don't commit them.
+        std::fs::write(
+            target_claude_dir.join(".gitignore"),
+            "launch.sh\nprompt.txt\nsystem-prompt.txt\n",
+        )?;
+    }
+    Ok(())
 }
 
 /// Base set of tool permissions that every spawned agent inherits.

@@ -188,7 +188,9 @@ impl<'a, R: Runtime> TaskService<'a, R> {
 
         let work_dir = std::path::Path::new(work_dir);
         if !work_dir.is_dir() {
-            bail!("worktree directory {} no longer exists", work_dir.display(),);
+            // Worktree was removed (e.g. after merging and cleaning up).
+            // Recreate it so the agent can resume with --continue.
+            self.runtime.recreate_worktree(&self.paths.root, work_dir)?;
         }
 
         let result = self.runtime.resume_agent(&task.name, work_dir)?;
@@ -344,6 +346,9 @@ mod tests {
         CreateWorktree {
             name: String,
         },
+        RecreateWorktree {
+            work_dir: PathBuf,
+        },
         SpawnAgent {
             task_name: String,
         },
@@ -401,6 +406,14 @@ mod tests {
             let path = self.worktree_dir.join(name);
             std::fs::create_dir_all(&path)?;
             Ok(path)
+        }
+
+        fn recreate_worktree(&self, _repo_root: &Path, work_dir: &Path) -> Result<()> {
+            self.calls.borrow_mut().push(Call::RecreateWorktree {
+                work_dir: work_dir.to_path_buf(),
+            });
+            std::fs::create_dir_all(work_dir)?;
+            Ok(())
         }
 
         fn spawn_agent(
@@ -819,7 +832,7 @@ prompt = "deploy to {{ env }}"
     }
 
     #[test]
-    fn reopen_errors_if_work_dir_missing() {
+    fn reopen_recreates_missing_worktree() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
@@ -829,7 +842,7 @@ prompt = "deploy to {{ env }}"
         let spawned = spawn_test_task(&service);
         service.complete(spawned.task_id.as_str(), 0, None).unwrap();
 
-        // Delete the worktree directory
+        // Delete the worktree directory to simulate post-merge cleanup
         let task = store
             .get_task_by_prefix(spawned.task_id.as_str())
             .unwrap()
@@ -837,9 +850,25 @@ prompt = "deploy to {{ env }}"
         let work_dir = task.work_dir.as_deref().unwrap();
         std::fs::remove_dir_all(work_dir).unwrap();
 
-        let err = service.reopen(spawned.task_id.as_str());
-        assert!(err.is_err());
-        assert!(err.unwrap_err().to_string().contains("no longer exists"));
+        // Reopen should recreate the worktree and succeed
+        let window_id = service.reopen(spawned.task_id.as_str()).unwrap();
+        assert_eq!(window_id, "@fake-win");
+
+        // Verify RecreateWorktree was called
+        let calls = runtime.calls.borrow();
+        assert!(
+            calls
+                .iter()
+                .any(|c| matches!(c, Call::RecreateWorktree { .. })),
+            "expected RecreateWorktree call"
+        );
+
+        // Verify task is back to running
+        let task = store
+            .get_task_by_prefix(spawned.task_id.as_str())
+            .unwrap()
+            .unwrap();
+        assert_eq!(task.status, TaskStatus::Running);
     }
 
     #[test]

@@ -483,6 +483,16 @@ fn perm_hint_spans() -> Vec<Span<'static>> {
 }
 
 fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
+    // Show transient error in red, replacing normal keybinding hints
+    if let Some(ref err) = app.status_error {
+        let bar = Paragraph::new(Line::from(vec![Span::styled(
+            format!(" {err}"),
+            Style::default().fg(Color::Red),
+        )]));
+        frame.render_widget(bar, area);
+        return;
+    }
+
     let has_perms = app.show_detail && app.peek_permission(&app.focused_perm_key()).is_some();
     let mut spans = match &app.focus {
         Focus::SpawnInput => vec![
