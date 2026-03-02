@@ -328,9 +328,11 @@ fn run_loop<R: Runtime>(
                                     exo.finish_streaming();
                                 }
                                 app.show_detail = false;
+                                app.chat_scroll = 0;
                             }
                             KeyCode::Tab => {
                                 app.save_current_input();
+                                app.chat_scroll = 0;
                                 if !app.show_detail {
                                     // ExO -> first task
                                     if !app.tasks.is_empty() {
@@ -354,6 +356,7 @@ fn run_loop<R: Runtime>(
                                 app.focus = Focus::TaskList;
                             }
                             KeyCode::Enter => {
+                                app.chat_scroll = 0;
                                 if !app.input.is_empty() {
                                     let perm_key = app.focused_perm_key();
                                     let buf = app.input.buffer();
@@ -387,7 +390,14 @@ fn run_loop<R: Runtime>(
                                     }
                                 }
                             }
-                            KeyCode::Char('u') if ctrl => app.input.kill_before(),
+                            KeyCode::Char('u') if ctrl => {
+                                let half = (app.chat_viewport_height / 2).max(1);
+                                app.chat_scroll = app.chat_scroll.saturating_add(half);
+                            }
+                            KeyCode::Char('d') if ctrl => {
+                                let half = (app.chat_viewport_height / 2).max(1);
+                                app.chat_scroll = app.chat_scroll.saturating_sub(half);
+                            }
                             KeyCode::Char('k') if ctrl => app.input.kill_line(),
                             KeyCode::Char('w') if ctrl => app.input.kill_word(),
                             KeyCode::Char('a') if ctrl => app.input.home(),

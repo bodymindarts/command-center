@@ -131,6 +131,8 @@ pub struct App {
     pub detail_live_output: Option<String>,
     pub window_numbers: HashMap<String, String>,
     pub chat_buffers: HashMap<String, String>,
+    pub chat_scroll: u16,
+    pub chat_viewport_height: u16,
 }
 
 impl App {
@@ -152,6 +154,8 @@ impl App {
             detail_live_output: None,
             window_numbers: HashMap::new(),
             chat_buffers: HashMap::new(),
+            chat_scroll: 0,
+            chat_viewport_height: 0,
         }
     }
 

@@ -123,7 +123,7 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
     frame.render_stateful_widget(list, area, &mut app.list_state);
 }
 
-fn render_chat(frame: &mut ratatui::Frame, app: &App, exo: &ExoState, area: Rect) {
+fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: Rect) {
     let in_task_chat = app.show_detail && app.selected_task().is_some();
     let mut lines: Vec<Line> = Vec::new();
 
@@ -279,7 +279,10 @@ fn render_chat(frame: &mut ratatui::Frame, app: &App, exo: &ExoState, area: Rect
         })
         .sum();
 
-    let scroll = rendered_lines.saturating_sub(inner_height) as u16;
+    let max_scroll = rendered_lines.saturating_sub(inner_height) as u16;
+    app.chat_viewport_height = inner_height as u16;
+    app.chat_scroll = app.chat_scroll.min(max_scroll);
+    let scroll = max_scroll.saturating_sub(app.chat_scroll);
 
     let chat = Paragraph::new(lines)
         .block(
