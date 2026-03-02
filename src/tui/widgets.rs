@@ -14,11 +14,13 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState) {
         .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
         .split(frame.area());
 
-    // Left side: chat + (optional permission panel) + input + prompt bar
+    // Left side: chat + (optional mid-panel) + input + prompt bar
     let in_task_chat = app.show_detail && app.selected_task().is_some();
     let focused_perm_key = app.focused_perm_key();
     let show_perm = in_task_chat && app.peek_permission(&focused_perm_key).is_some();
-    let left = if show_perm {
+    let show_delete = matches!(app.focus, Focus::ConfirmDelete(_));
+    let show_mid_panel = show_perm || show_delete;
+    let left = if show_mid_panel {
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -41,7 +43,9 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState) {
     };
 
     render_chat(frame, app, exo, left[0]);
-    if show_perm {
+    if show_delete {
+        render_delete_confirm_panel(frame, app, left[1]);
+    } else if show_perm {
         render_permission_panel(frame, app, left[1]);
     }
 
@@ -192,19 +196,6 @@ fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: 
 
     // Build chat content lines
     let mut lines: Vec<Line> = Vec::new();
-
-    if let Focus::ConfirmDelete(id) = &app.focus {
-        let name = app
-            .tasks
-            .iter()
-            .find(|t| t.id == *id)
-            .map(|t| t.name.as_str())
-            .unwrap_or("?");
-        lines.push(Line::from(Span::styled(
-            format!("Delete task '{name}'?"),
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        )));
-    }
 
     if in_task_chat {
         // Render task messages
@@ -378,6 +369,51 @@ fn render_permission_panel(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+fn render_delete_confirm_panel(frame: &mut ratatui::Frame, app: &App, area: Rect) {
+    let Focus::ConfirmDelete(ref id) = app.focus else {
+        return;
+    };
+    let name = app
+        .tasks
+        .iter()
+        .find(|t| t.id == *id)
+        .map(|t| t.name.as_str())
+        .unwrap_or("?");
+    let lines = vec![
+        Line::from(vec![
+            Span::raw(" Delete task "),
+            Span::styled(
+                name,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("?"),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "y",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" delete   "),
+            Span::styled(
+                "n",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" cancel"),
+        ]),
+    ];
+    let block = Block::default()
+        .title(" Confirm Delete ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red));
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
 fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool) {
     let focused_has_perms =
         app.show_detail && app.peek_permission(&app.focused_perm_key()).is_some();
@@ -449,12 +485,6 @@ fn perm_hint_spans() -> Vec<Span<'static>> {
 fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     let has_perms = app.show_detail && app.peek_permission(&app.focused_perm_key()).is_some();
     let mut spans = match &app.focus {
-        Focus::ConfirmDelete(_) => vec![
-            Span::styled(" y", Style::default().fg(Color::Red)),
-            Span::raw(" delete  "),
-            Span::styled("n", Style::default().fg(Color::Green)),
-            Span::raw(" cancel"),
-        ],
         Focus::SpawnInput => vec![
             Span::styled(" Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" send  "),
@@ -501,7 +531,7 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 Span::raw(" back"),
             ]
         }
-        Focus::TaskList => {
+        Focus::ConfirmDelete(_) | Focus::TaskList => {
             vec![
                 Span::styled(" j/k", Style::default().fg(Color::Yellow)),
                 Span::raw(" navigate  "),
