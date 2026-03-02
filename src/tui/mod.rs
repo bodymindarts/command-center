@@ -285,10 +285,6 @@ fn run_loop<R: Runtime>(
                                     app.detail_scroll = app.detail_scroll.saturating_sub(10);
                                 }
                                 KeyCode::Enter => {
-                                    app.show_detail = true;
-                                    app.focus = Focus::ChatInput;
-                                }
-                                KeyCode::Char('g') => {
                                     if let Some(task) = app.selected_task() {
                                         if task.status.is_running() {
                                             if let Some(window_id) = &task.tmux_window {
