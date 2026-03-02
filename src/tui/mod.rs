@@ -198,16 +198,13 @@ fn run_loop<R: Runtime>(
                     }
                 }
                 ExoEvent::ProcessExited => {
-                    let had_error = std::mem::take(&mut exo.had_process_error);
+                    exo.had_process_error = false;
                     exo_session.mark_exited();
                     if exo.streaming {
-                        // Process died mid-turn
                         exo.add_error("Claude process exited unexpectedly");
-                    } else if !had_error {
-                        // Clean exit after a completed turn (or idle timeout).
-                        // Pre-spawn so the next message skips ~10s startup cost.
-                        exo_session.ensure_alive();
                     }
+                    // Process stays alive across turns, so exit means it
+                    // truly died. Next send_message() will respawn with --resume.
                 }
                 ExoEvent::Error(e) => {
                     exo.had_process_error = true;

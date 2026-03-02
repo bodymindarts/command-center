@@ -43,13 +43,14 @@ pub enum ExoEvent {
     Error(String),
 }
 
-/// Persistent ExO claude session. Keeps the process alive across messages
-/// so subsequent sends skip process startup latency entirely.
+/// Persistent ExO claude session. The claude process stays alive across turns
+/// — messages are sent on stdin and responses streamed back on stdout without
+/// any respawn between turns.
 pub struct ExoSession {
     stdin: Option<ChildStdin>,
     cancel: Arc<AtomicBool>,
     /// When true, the reader thread forwards content events. Set to false
-    /// during pre-spawn warmup so replayed history is ignored.
+    /// during --resume startup so replayed history is ignored.
     active: Arc<AtomicBool>,
     tx: mpsc::Sender<ExoEvent>,
     session_id: Option<String>,
@@ -69,7 +70,7 @@ impl ExoSession {
             tx,
             session_id: session_id.map(|s| s.to_string()),
         };
-        session.spawn_process(true);
+        session.spawn_process(session_id.is_some());
         session
     }
 
@@ -81,6 +82,7 @@ impl ExoSession {
             "--output-format".to_string(),
             "stream-json".to_string(),
             "--verbose".to_string(),
+            "--include-partial-messages".to_string(),
             "--allowedTools".to_string(),
             "Read,Grep,Glob,Bash,Edit,Write".to_string(),
             "--append-system-prompt".to_string(),
@@ -94,6 +96,7 @@ impl ExoSession {
 
         let mut child = match Command::new("claude")
             .args(&args)
+            .env_remove("CLAUDECODE")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -138,7 +141,7 @@ impl ExoSession {
     }
 
     /// Send a message to the running claude process.
-    /// If the process has exited, spawns a new one first.
+    /// If the process has exited, spawns a new one first (with --resume).
     pub fn send_message(&mut self, message: &str, session_id: Option<&str>) {
         // Update session_id if provided
         if let Some(sid) = session_id {
@@ -196,21 +199,19 @@ impl ExoSession {
     pub fn mark_exited(&mut self) {
         self.stdin = None;
     }
-
-    /// Pre-spawn the process if it's not running.
-    /// Called after a clean exit so the process is warm for the next message.
-    /// The reader thread ignores content events until send_message activates it.
-    pub fn ensure_alive(&mut self) {
-        if self.stdin.is_none() {
-            self.active.store(false, Ordering::Relaxed);
-            self.spawn_process(false);
-        }
-    }
 }
 
 /// Background reader: parses stream-json stdout and sends ExoEvents.
-/// Content events (text, tools, turn-done) are only forwarded when `active`
-/// is true, so pre-spawn warmup / session replay is silently discarded.
+///
+/// With `--include-partial-messages`, streaming events arrive as:
+///   `{"type": "stream_event", "event": {"type": "content_block_delta", ...}}`
+/// The inner `event` is unwrapped and matched for text deltas and tool starts.
+///
+/// The `assistant` event (full message) is ignored since text was already
+/// streamed via deltas. The `result` event signals turn completion.
+///
+/// Content events are only forwarded when `active` is true, so session replay
+/// during `--resume` startup is silently discarded.
 fn read_stdout(
     mut child: Child,
     stdout: std::process::ChildStdout,
@@ -248,79 +249,37 @@ fn read_stdout(
         let is_active = active.load(Ordering::Relaxed);
 
         match event_type {
-            // Session metadata — always forwarded (even during warmup)
+            // Session metadata — always forwarded (even during startup replay)
             "system" => {
                 if let Some(sid) = parsed.get("session_id").and_then(|s| s.as_str()) {
                     let _ = tx.send(ExoEvent::SessionId(sid.to_string()));
                 }
             }
-            // Content events — only forwarded when active (not during pre-spawn warmup)
-            "assistant" if is_active => {
-                if let Some(content) = parsed
-                    .get("message")
-                    .and_then(|m| m.get("content"))
-                    .and_then(|c| c.as_array())
-                {
-                    for block in content {
-                        match block.get("type").and_then(|t| t.as_str()) {
-                            Some("text") => {
-                                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                                    let _ = tx.send(ExoEvent::TextDelta(text.to_string()));
-                                }
-                            }
-                            Some("tool_use") => {
-                                let name = block
-                                    .get("name")
-                                    .and_then(|n| n.as_str())
-                                    .unwrap_or("tool")
-                                    .to_string();
-                                let _ = tx.send(ExoEvent::ToolStart(name));
-                            }
-                            _ => {}
-                        }
-                    }
+
+            // Streaming events from --include-partial-messages
+            // Wrapped as: {"type": "stream_event", "event": {<API event>}}
+            "stream_event" if is_active => {
+                if let Some(inner) = parsed.get("event") {
+                    handle_stream_event(inner, &tx);
                 }
             }
-            "content_block_start" if is_active => {
-                if let Some(cb) = parsed.get("content_block")
-                    && cb.get("type").and_then(|t| t.as_str()) == Some("tool_use")
-                {
-                    let name = cb
-                        .get("name")
-                        .and_then(|n| n.as_str())
-                        .unwrap_or("tool")
-                        .to_string();
-                    let _ = tx.send(ExoEvent::ToolStart(name));
-                }
-            }
-            "content_block_delta" if is_active => {
-                if let Some(delta) = parsed.get("delta")
-                    && delta.get("type").and_then(|t| t.as_str()) == Some("text_delta")
-                    && let Some(text) = delta.get("text").and_then(|t| t.as_str())
-                {
-                    let _ = tx.send(ExoEvent::TextDelta(text.to_string()));
-                }
-            }
+
+            // Result event — signals turn completion
             "result" if is_active => {
                 if let Some(sid) = parsed.get("session_id").and_then(|s| s.as_str()) {
                     let _ = tx.send(ExoEvent::SessionId(sid.to_string()));
                 }
                 let _ = tx.send(ExoEvent::TurnDone);
             }
-            // During warmup: silently ignore replayed content events
-            "assistant" | "content_block_start" | "content_block_delta" | "result" => {}
-            other => {
-                if !other.is_empty() {
-                    let debug_path = std::env::temp_dir().join("cc-exo-debug.jsonl");
-                    if let Ok(mut f) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&debug_path)
-                    {
-                        let _ = writeln!(f, "{}", line);
-                    }
-                }
-            }
+
+            // During --resume replay: silently ignore content events
+            "stream_event"
+            | "assistant"
+            | "content_block_start"
+            | "content_block_delta"
+            | "result" => {}
+
+            _ => {}
         }
     }
 
@@ -338,4 +297,33 @@ fn read_stdout(
         _ => {}
     }
     let _ = tx.send(ExoEvent::ProcessExited);
+}
+
+/// Handle an inner streaming event (unwrapped from the stream_event wrapper).
+/// Matches content_block_delta for text and content_block_start for tool_use.
+fn handle_stream_event(event: &serde_json::Value, tx: &mpsc::Sender<ExoEvent>) {
+    let inner_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    match inner_type {
+        "content_block_delta" => {
+            if let Some(delta) = event.get("delta")
+                && delta.get("type").and_then(|t| t.as_str()) == Some("text_delta")
+                && let Some(text) = delta.get("text").and_then(|t| t.as_str())
+            {
+                let _ = tx.send(ExoEvent::TextDelta(text.to_string()));
+            }
+        }
+        "content_block_start" => {
+            if let Some(cb) = event.get("content_block")
+                && cb.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+            {
+                let name = cb
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("tool")
+                    .to_string();
+                let _ = tx.send(ExoEvent::ToolStart(name));
+            }
+        }
+        _ => {}
+    }
 }
