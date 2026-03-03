@@ -22,6 +22,21 @@ searches, and commands should happen here, not in the parent repository.
 - Use conventional commits: `type(scope): description`
 - Keep changes minimal and focused — don't over-engineer
 
+## Inline Review Comments
+When the user says they've "made comments", "left feedback", "added review comments",
+or similar — they mean **inline code comments** marked with `@@` in the worktree files.
+Do NOT look at GitHub PR comments. Instead:
+1. Run `grep -rn '@@' .` (or use Grep) to find all `@@` markers in the codebase
+2. Read the surrounding context for each marker
+3. Address each comment — fix the code, rename variables, refactor, etc.
+4. Remove the `@@` marker after addressing it
+5. Confirm all markers are resolved before committing
+
+Examples of markers:
+- `// @@ rename this variable`
+- `# @@ this should be extracted to a helper`
+- `// @@ I don't like this approach, try X instead`
+
 ## Constraints
 - All dependencies are declared in flake.nix — never assume binaries are installed
 - Clippy runs with --deny warnings — no dead code, no unused imports
