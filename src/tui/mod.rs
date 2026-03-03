@@ -570,48 +570,103 @@ fn run_loop<R: Runtime>(
                             app.focus = Focus::ChatInput;
                             app.chat_scroll = 0;
                             app.restore_input();
-                        // If in ExO view, restore last active project
-                        } else if app.active_project_id.is_none()
-                            && let Some(saved) = app.last_project.take()
-                        {
-                            app.save_current_input();
-                            app.active_project = Some(saved.name);
-                            app.active_project_id = Some(saved.id.clone());
-                            app.show_projects = false;
-                            if let Ok(msgs) = service.pm_messages(&saved.id) {
-                                app.pm_messages = msgs;
+                        // If in ExO view, restore last active project (or first project)
+                        } else if app.active_project_id.is_none() {
+                            // Refresh project list
+                            if let Ok(projects) = service.list_projects() {
+                                app.projects = projects;
                             }
-                            if let Ok(tasks) = service.list_visible(Some(&saved.id)) {
-                                app.refresh_tasks(tasks);
-                            }
-                            // Restore the view state the user had when they left
-                            if saved.show_detail {
-                                if let Some(ref task_name) = saved.selected_task_name
-                                    && let Some(idx) =
-                                        app.tasks.iter().position(|t| &t.name == task_name)
-                                {
-                                    app.list_state.select(Some(idx));
-                                    app.show_detail = true;
-                                    app.detail_scroll = 0;
+                            // Pick target: last visited project, or first available
+                            let target = app
+                                .last_project
+                                .take()
+                                .map(|s| (s.name, s.id, s.show_detail, s.selected_task_name))
+                                .or_else(|| {
+                                    app.projects
+                                        .first()
+                                        .map(|p| (p.name.clone(), p.id.clone(), false, None))
+                                });
+                            if let Some((name, id, saved_show_detail, saved_task_name)) = target {
+                                app.save_current_input();
+                                app.active_project = Some(name);
+                                app.active_project_id = Some(id.clone());
+                                app.show_projects = false;
+                                if let Ok(msgs) = service.pm_messages(&id) {
+                                    app.pm_messages = msgs;
+                                }
+                                if let Ok(tasks) = service.list_visible(Some(&id)) {
+                                    app.refresh_tasks(tasks);
+                                }
+                                // Restore the view state the user had when they left
+                                if saved_show_detail {
+                                    if let Some(ref task_name) = saved_task_name
+                                        && let Some(idx) =
+                                            app.tasks.iter().position(|t| &t.name == task_name)
+                                    {
+                                        app.list_state.select(Some(idx));
+                                        app.show_detail = true;
+                                        app.detail_scroll = 0;
+                                    } else {
+                                        app.show_detail = false;
+                                    }
                                 } else {
                                     app.show_detail = false;
                                 }
-                            } else {
+                                // Restore PM state
+                                pm_cancel.store(true, Ordering::Relaxed);
+                                *pm_cancel = Arc::new(AtomicBool::new(false));
+                                *pm_session = None;
+                                *pm = ExoState::new();
+                                pm.session_id = service.read_pm_session_id(&id);
+                                if let Ok(messages) = service.pm_messages(&id) {
+                                    let recent: Vec<_> =
+                                        messages.into_iter().rev().take(20).collect();
+                                    pm.load_history(recent.into_iter().rev().collect());
+                                }
+                                app.focus = Focus::ChatInput;
+                                app.chat_scroll = 0;
+                                app.restore_input();
+                            }
+                        // If in a project PM view, cycle to next project
+                        } else if app.active_project_id.is_some() && !app.show_detail {
+                            app.save_current_input();
+                            // Refresh project list and find the next one
+                            if let Ok(projects) = service.list_projects() {
+                                app.projects = projects;
+                            }
+                            let cur_idx = app
+                                .active_project_id
+                                .as_deref()
+                                .and_then(|pid| app.projects.iter().position(|p| p.id == pid));
+                            if let Some(ci) = cur_idx {
+                                let next_idx = (ci + 1) % app.projects.len();
+                                let next = &app.projects[next_idx];
+                                let next_id = next.id.clone();
+                                let next_name = next.name.clone();
+                                app.active_project = Some(next_name);
+                                app.active_project_id = Some(next_id.clone());
                                 app.show_detail = false;
+                                app.show_projects = false;
+                                if let Ok(msgs) = service.pm_messages(&next_id) {
+                                    app.pm_messages = msgs;
+                                }
+                                if let Ok(tasks) = service.list_visible(Some(&next_id)) {
+                                    app.refresh_tasks(tasks);
+                                }
+                                pm_cancel.store(true, Ordering::Relaxed);
+                                *pm_cancel = Arc::new(AtomicBool::new(false));
+                                *pm_session = None;
+                                *pm = ExoState::new();
+                                pm.session_id = service.read_pm_session_id(&next_id);
+                                if let Ok(messages) = service.pm_messages(&next_id) {
+                                    let recent: Vec<_> =
+                                        messages.into_iter().rev().take(20).collect();
+                                    pm.load_history(recent.into_iter().rev().collect());
+                                }
+                                app.focus = Focus::ChatInput;
+                                app.chat_scroll = 0;
+                                app.restore_input();
                             }
-                            // Restore PM state
-                            pm_cancel.store(true, Ordering::Relaxed);
-                            *pm_cancel = Arc::new(AtomicBool::new(false));
-                            *pm_session = None;
-                            *pm = ExoState::new();
-                            pm.session_id = service.read_pm_session_id(&saved.id);
-                            if let Ok(messages) = service.pm_messages(&saved.id) {
-                                let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
-                                pm.load_history(recent.into_iter().rev().collect());
-                            }
-                            app.focus = Focus::ChatInput;
-                            app.chat_scroll = 0;
-                            app.restore_input();
                         }
                     } else {
                         match &app.focus {
