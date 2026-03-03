@@ -462,7 +462,7 @@ fn run_loop<R: Runtime>(
                                     }
                                 }
                                 KeyCode::Char('/') => {
-                                    app.search_query.clear();
+                                    app.search_input.take();
                                     app.update_search_filter();
                                     app.focus = Focus::TaskSearch;
                                 }
@@ -482,7 +482,7 @@ fn run_loop<R: Runtime>(
                                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                                 match key.code {
                                     KeyCode::Esc => {
-                                        app.search_query.clear();
+                                        app.search_input.take();
                                         app.filtered_indices.clear();
                                         if !app.tasks.is_empty() {
                                             let sel = app
@@ -505,7 +505,7 @@ fn run_loop<R: Runtime>(
                                         } else {
                                             app.focus = Focus::TaskList;
                                         }
-                                        app.search_query.clear();
+                                        app.search_input.take();
                                         app.filtered_indices.clear();
                                     }
                                     KeyCode::Down | KeyCode::Tab => {
@@ -514,18 +514,39 @@ fn run_loop<R: Runtime>(
                                     KeyCode::Up | KeyCode::BackTab => {
                                         app.search_prev();
                                     }
-                                    KeyCode::Char('j') if ctrl => {
-                                        app.search_next();
+                                    KeyCode::Char('n') if ctrl => app.search_next(),
+                                    KeyCode::Char('p') if ctrl => app.search_prev(),
+                                    // Standard input controls
+                                    KeyCode::Backspace => {
+                                        app.search_input.backspace();
+                                        app.update_search_filter();
+                                    }
+                                    KeyCode::Delete => {
+                                        app.search_input.delete();
+                                        app.update_search_filter();
+                                    }
+                                    KeyCode::Left => app.search_input.left(),
+                                    KeyCode::Right => app.search_input.right(),
+                                    KeyCode::Home | KeyCode::Char('a') if ctrl => {
+                                        app.search_input.home();
+                                    }
+                                    KeyCode::End | KeyCode::Char('e') if ctrl => {
+                                        app.search_input.end();
+                                    }
+                                    KeyCode::Char('u') if ctrl => {
+                                        app.search_input.kill_before();
+                                        app.update_search_filter();
                                     }
                                     KeyCode::Char('k') if ctrl => {
-                                        app.search_prev();
+                                        app.search_input.kill_line();
+                                        app.update_search_filter();
                                     }
-                                    KeyCode::Backspace => {
-                                        app.search_query.pop();
+                                    KeyCode::Char('w') if ctrl => {
+                                        app.search_input.kill_word();
                                         app.update_search_filter();
                                     }
                                     KeyCode::Char(c) if !ctrl => {
-                                        app.search_query.push(c);
+                                        app.search_input.insert(c);
                                         app.update_search_filter();
                                     }
                                     _ => {}

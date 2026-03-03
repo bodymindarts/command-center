@@ -212,7 +212,7 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
 
     // Render search input bar above the task list
     if let Some(search_area) = search_area {
-        let query = &app.search_query;
+        let query = app.search_input.buffer();
         let search_line = Line::from(vec![
             Span::styled(" / ", Style::default().fg(Color::Black).bg(Color::Yellow)),
             Span::styled(

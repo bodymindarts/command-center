@@ -199,8 +199,8 @@ pub struct App {
     pub status_error: Option<String>,
     /// Currently active project name. None = default (ExO).
     pub active_project: Option<String>,
-    /// Current search query for task list filtering.
-    pub search_query: String,
+    /// Input state for the task search filter.
+    pub search_input: InputState,
     /// Indices into `tasks` that match the current search query.
     pub filtered_indices: Vec<usize>,
 }
@@ -229,7 +229,7 @@ impl App {
             fresh_tasks: HashSet::new(),
             status_error: None,
             active_project: None,
-            search_query: String::new(),
+            search_input: InputState::new(),
             filtered_indices: Vec::new(),
         }
     }
@@ -393,7 +393,7 @@ impl App {
     /// Recompute `filtered_indices` based on `search_query`.
     /// Fuzzy match: each query char must appear in order (e.g. "res" matches "r.*e.*s.*").
     pub fn update_search_filter(&mut self) {
-        let query: Vec<char> = self.search_query.to_lowercase().chars().collect();
+        let query: Vec<char> = self.search_input.buffer().to_lowercase().chars().collect();
         self.filtered_indices = self
             .tasks
             .iter()
