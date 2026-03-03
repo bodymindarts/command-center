@@ -67,6 +67,13 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
     // Write breadcrumb so CLI-spawned tasks (which don't inherit our env)
     // can discover the active socket path.
     crate::permission::write_socket_breadcrumb(service.project_root(), &socket_path);
+    // Re-embed socket path in active worktrees so hooks from pre-existing
+    // tasks connect to this dashboard's socket after a restart.
+    if let Ok(tasks) = service.list_visible() {
+        let work_dirs: Vec<String> = tasks.iter().filter_map(|t| t.work_dir.clone()).collect();
+        let sock_str = socket_path.to_string_lossy().to_string();
+        crate::runtime::reembed_socket_in_worktrees(&work_dirs, &sock_str);
+    }
     std::thread::spawn(move || {
         while !perm_cancel.load(Ordering::Relaxed) {
             match listener.accept() {

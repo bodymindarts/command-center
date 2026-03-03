@@ -414,15 +414,43 @@ fn embed_socket_in_hooks(settings: &mut serde_json::Value, sock_path: &str) {
                     && let Some(cmd) = hook.get("command").and_then(|c| c.as_str())
                     && cmd.contains(".claude/hooks/")
                 {
+                    // Strip existing CC_PERM_SOCKET= prefix to avoid stacking
+                    let clean_cmd =
+                        if let Some(rest) = cmd.strip_prefix(crate::permission::SOCKET_ENV) {
+                            // Skip "=<path> " to get the original command
+                            rest.split_once(' ')
+                                .map(|(_, c)| c)
+                                .unwrap_or(rest)
+                                .trim_start_matches('=')
+                        } else {
+                            cmd
+                        };
                     hook["command"] = serde_json::json!(format!(
                         "{}={} {}",
                         crate::permission::SOCKET_ENV,
                         sock_path,
-                        cmd
+                        clean_cmd
                     ));
                 }
             }
         }
+    }
+}
+
+/// Re-embed the current socket path into all active worktrees' settings.
+/// Called at dashboard startup so hooks from pre-existing tasks connect
+/// to the new socket.
+pub fn reembed_socket_in_worktrees(work_dirs: &[String], sock_path: &str) {
+    for wd in work_dirs {
+        let settings_path = Path::new(wd).join(".claude/settings.local.json");
+        let Ok(content) = std::fs::read_to_string(&settings_path) else {
+            continue;
+        };
+        let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
+        embed_socket_in_hooks(&mut settings, sock_path);
+        let _ = std::fs::write(&settings_path, settings.to_string());
     }
 }
 
