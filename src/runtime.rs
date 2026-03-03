@@ -318,8 +318,14 @@ impl Runtime for TmuxRuntime {
         let claude_dir = work_dir.join(".claude");
         std::fs::create_dir_all(&claude_dir)?;
 
+        std::fs::write(
+            claude_dir.join("idle-prompt.txt"),
+            "Await further instructions.",
+        )?;
+
         let mut script = format!("#!/bin/sh\nunset CLAUDECODE\nexec {claude_bin}");
         script.push_str(&format!(" --session-id {session_id}"));
+        script.push_str(" \"$(cat .claude/idle-prompt.txt)\"");
         if let Some(sys) = system_prompt {
             std::fs::write(claude_dir.join("system-prompt.txt"), sys)?;
             script.push_str(" --append-system-prompt \"$(cat .claude/system-prompt.txt)\"");
