@@ -25,7 +25,7 @@ use app::{ActivePermission, App, Focus};
 
 const EXO_PERM_KEY: &str = "exo";
 use chat::ExoState;
-use claude::{EXO_SYSTEM_PROMPT, ExoEvent, ExoSession, PM_SYSTEM_PROMPT};
+use claude::{EXO_SYSTEM_PROMPT, ExoEvent, ExoSession, pm_system_prompt};
 
 pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -> Result<()> {
     terminal::enable_raw_mode()?;
@@ -1043,11 +1043,16 @@ fn run_loop<R: Runtime>(
                                                     let sid = service
                                                         .read_pm_session_id(pid)
                                                         .or_else(|| pm.session_id.clone());
+                                                    let proj_name = app
+                                                        .active_project
+                                                        .as_deref()
+                                                        .unwrap_or("unknown");
+                                                    let prompt = pm_system_prompt(proj_name);
                                                     *pm_session = Some(ExoSession::start(
                                                         sid.as_deref(),
                                                         Arc::clone(pm_cancel),
                                                         pm_tx.clone(),
-                                                        PM_SYSTEM_PROMPT,
+                                                        &prompt,
                                                     ));
                                                     if let Some(ref s) = sid {
                                                         pm.session_id = Some(s.clone());
