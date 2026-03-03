@@ -363,6 +363,34 @@ impl App {
         self.pending_permissions.values().map(|q| q.len()).sum()
     }
 
+    /// Count pending permissions for tasks NOT in the current project.
+    /// Returns a vec of (project_name_or_default, count) for display.
+    pub fn other_project_perm_counts(&self) -> Vec<(String, usize)> {
+        let current_pid = self.active_project_id.as_deref();
+        let mut counts: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        for (task_name, queue) in &self.pending_permissions {
+            let task_pid = self
+                .tasks
+                .iter()
+                .find(|t| t.name == *task_name)
+                .and_then(|t| t.project_id.as_deref());
+            if task_pid != current_pid {
+                let label = if let Some(pid) = task_pid {
+                    self.projects
+                        .iter()
+                        .find(|p| p.id == pid)
+                        .map(|p| p.name.clone())
+                        .unwrap_or_else(|| "?".to_string())
+                } else {
+                    "default".to_string()
+                };
+                *counts.entry(label).or_default() += queue.len();
+            }
+        }
+        counts.into_iter().collect()
+    }
+
     fn current_chat_key(&self) -> String {
         if self.show_detail {
             self.selected_task()

@@ -190,6 +190,16 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
     };
 
     let total_perm = app.total_pending_permissions();
+    let other_perms = app.other_project_perm_counts();
+    let other_perm_str = if other_perms.is_empty() {
+        String::new()
+    } else {
+        let parts: Vec<String> = other_perms
+            .iter()
+            .map(|(name, count)| format!("{name}:{count}"))
+            .collect();
+        format!(" [{}]", parts.join(", "))
+    };
     let title = if searching {
         format!(
             " Tasks ({}/{}) ",
@@ -198,12 +208,16 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
         )
     } else if let Some(ref name) = app.active_project {
         if total_perm > 0 {
-            format!(" {name} ({total_perm} perm) ")
+            format!(" {name} ({total_perm} perm){other_perm_str} ")
+        } else if !other_perm_str.is_empty() {
+            format!(" {name}{other_perm_str} ")
         } else {
             format!(" {name} ")
         }
     } else if total_perm > 0 {
-        format!(" Tasks ({total_perm} perm) ")
+        format!(" Tasks ({total_perm} perm){other_perm_str} ")
+    } else if !other_perm_str.is_empty() {
+        format!(" Tasks{other_perm_str} ")
     } else {
         " Tasks ".to_string()
     };
@@ -986,6 +1000,7 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     if has_perms {
         spans.extend(perm_hint_spans());
     }
+
     let bar = Paragraph::new(Line::from(spans)).style(Style::default().fg(Color::DarkGray));
 
     frame.render_widget(bar, area);
