@@ -421,21 +421,21 @@ fn run_loop<R: Runtime>(
                                 // Task is in a different project — switch to it
                                 let target_pid =
                                     app.global_task_projects.get(&name).cloned().flatten();
+                                // Save current project state before switching
+                                let selected_task_name =
+                                    app.selected_task().map(|t| t.name.clone());
+                                if let (Some(pname), Some(cur_pid)) =
+                                    (app.active_project.take(), app.active_project_id.take())
+                                {
+                                    app.last_project = Some(SavedProjectState {
+                                        name: pname,
+                                        id: cur_pid,
+                                        show_detail: app.show_detail,
+                                        selected_task_name,
+                                    });
+                                }
                                 if let Some(pid) = target_pid {
-                                    // Save current project state
-                                    let selected_task_name =
-                                        app.selected_task().map(|t| t.name.clone());
-                                    if let (Some(pname), Some(cur_pid)) =
-                                        (app.active_project.take(), app.active_project_id.take())
-                                    {
-                                        app.last_project = Some(SavedProjectState {
-                                            name: pname,
-                                            id: cur_pid,
-                                            show_detail: app.show_detail,
-                                            selected_task_name,
-                                        });
-                                    }
-                                    // Look up project name
+                                    // Switch to the target project
                                     let proj_name = app
                                         .projects
                                         .iter()
@@ -467,6 +467,25 @@ fn run_loop<R: Runtime>(
                                     }
                                     if let Ok(msgs) = service.pm_messages(&pid) {
                                         app.pm_messages = msgs;
+                                    }
+                                } else {
+                                    // Target is the default (ExO) view
+                                    app.active_project = None;
+                                    app.active_project_id = None;
+                                    app.show_projects = false;
+                                    app.pm_messages.clear();
+                                    pm_cancel.store(true, Ordering::Relaxed);
+                                    *pm_cancel = Arc::new(AtomicBool::new(false));
+                                    *pm_session = None;
+                                    *pm = ExoState::new();
+                                    if let Ok(tasks) = service.list_visible(None) {
+                                        app.refresh_tasks(tasks);
+                                    }
+                                    if let Some(pos) = app.tasks.iter().position(|t| t.name == name)
+                                    {
+                                        app.list_state.select(Some(pos));
+                                        app.show_detail = true;
+                                        app.detail_scroll = 0;
                                     }
                                 }
                             }
@@ -537,19 +556,7 @@ fn run_loop<R: Runtime>(
                         if let Ok(tasks) = service.list_visible(None) {
                             app.refresh_tasks(tasks);
                         }
-                        // If there are pending permissions, jump to the first task
-                        // that has one so the perm panel stays visible.
-                        let perm_tasks = app.tasks_with_permissions();
-                        if let Some(perm_name) = perm_tasks.first() {
-                            if let Some(idx) = app.tasks.iter().position(|t| &t.name == perm_name) {
-                                app.list_state.select(Some(idx));
-                                app.show_detail = true;
-                                app.detail_scroll = 0;
-                            }
-                            app.focus = Focus::ChatInput;
-                        } else {
-                            app.focus = Focus::ChatInput;
-                        }
+                        app.focus = Focus::ChatInput;
                         app.chat_scroll = 0;
                         app.restore_input();
                     // Global: Ctrl+R returns to PM (or last active project from ExO)
