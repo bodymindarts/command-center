@@ -386,18 +386,6 @@ fn run_loop<R: Runtime>(
                             app.chat_scroll = 0;
                             app.restore_input();
                         }
-                    // Global: '/' jumps to task search
-                    } else if key.code == KeyCode::Char('/')
-                        && !key.modifiers.contains(KeyModifiers::CONTROL)
-                        && matches!(
-                            app.focus,
-                            Focus::TaskList | Focus::ChatInput | Focus::ChatHistory
-                        )
-                    {
-                        app.save_current_input();
-                        app.search_input.take();
-                        app.update_search_filter();
-                        app.focus = Focus::TaskSearch;
                     } else {
                         match &app.focus {
                             Focus::TaskList => match key.code {
