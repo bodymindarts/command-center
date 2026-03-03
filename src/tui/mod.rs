@@ -636,50 +636,104 @@ fn run_loop<R: Runtime>(
                             },
                             Focus::TaskSearch => {
                                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                                let searching_projects = app.show_projects;
+                                let do_filter = |app: &mut App| {
+                                    if app.show_projects {
+                                        app.update_project_search_filter();
+                                    } else {
+                                        app.update_search_filter();
+                                    }
+                                };
                                 match key.code {
                                     KeyCode::Esc => {
                                         app.search_input.take();
-                                        app.filtered_indices.clear();
-                                        if !app.tasks.is_empty() {
-                                            let sel = app
-                                                .list_state
-                                                .selected()
-                                                .unwrap_or(0)
-                                                .min(app.tasks.len() - 1);
-                                            app.list_state.select(Some(sel));
-                                        }
-                                        app.focus = Focus::TaskList;
-                                    }
-                                    KeyCode::Enter => {
-                                        if let Some(real_idx) = app.selected_filtered_task_index() {
-                                            app.list_state.select(Some(real_idx));
-                                            app.show_detail = true;
-                                            app.detail_scroll = 0;
-                                            app.focus = Focus::ChatInput;
-                                            app.chat_scroll = 0;
-                                            app.restore_input();
+                                        if searching_projects {
+                                            app.filtered_project_indices.clear();
+                                            if !app.projects.is_empty() {
+                                                let sel = app
+                                                    .project_list_state
+                                                    .selected()
+                                                    .unwrap_or(0)
+                                                    .min(app.projects.len() - 1);
+                                                app.project_list_state.select(Some(sel));
+                                            }
+                                            app.focus = Focus::ProjectList;
                                         } else {
+                                            app.filtered_indices.clear();
+                                            if !app.tasks.is_empty() {
+                                                let sel = app
+                                                    .list_state
+                                                    .selected()
+                                                    .unwrap_or(0)
+                                                    .min(app.tasks.len() - 1);
+                                                app.list_state.select(Some(sel));
+                                            }
                                             app.focus = Focus::TaskList;
                                         }
-                                        app.search_input.take();
-                                        app.filtered_indices.clear();
+                                    }
+                                    KeyCode::Enter => {
+                                        if searching_projects {
+                                            if let Some(real_idx) =
+                                                app.selected_filtered_project_index()
+                                            {
+                                                app.project_list_state.select(Some(real_idx));
+                                            }
+                                            app.search_input.take();
+                                            app.filtered_project_indices.clear();
+                                            app.focus = Focus::ProjectList;
+                                        } else {
+                                            if let Some(real_idx) =
+                                                app.selected_filtered_task_index()
+                                            {
+                                                app.list_state.select(Some(real_idx));
+                                                app.show_detail = true;
+                                                app.detail_scroll = 0;
+                                                app.focus = Focus::ChatInput;
+                                                app.chat_scroll = 0;
+                                                app.restore_input();
+                                            } else {
+                                                app.focus = Focus::TaskList;
+                                            }
+                                            app.search_input.take();
+                                            app.filtered_indices.clear();
+                                        }
                                     }
                                     KeyCode::Down | KeyCode::Tab => {
-                                        app.search_next();
+                                        if searching_projects {
+                                            app.search_next_project();
+                                        } else {
+                                            app.search_next();
+                                        }
                                     }
                                     KeyCode::Up | KeyCode::BackTab => {
-                                        app.search_prev();
+                                        if searching_projects {
+                                            app.search_prev_project();
+                                        } else {
+                                            app.search_prev();
+                                        }
                                     }
-                                    KeyCode::Char('n') if ctrl => app.search_next(),
-                                    KeyCode::Char('p') if ctrl => app.search_prev(),
+                                    KeyCode::Char('n') if ctrl => {
+                                        if searching_projects {
+                                            app.search_next_project();
+                                        } else {
+                                            app.search_next();
+                                        }
+                                    }
+                                    KeyCode::Char('p') if ctrl => {
+                                        if searching_projects {
+                                            app.search_prev_project();
+                                        } else {
+                                            app.search_prev();
+                                        }
+                                    }
                                     // Standard input controls
                                     KeyCode::Backspace => {
                                         app.search_input.backspace();
-                                        app.update_search_filter();
+                                        do_filter(app);
                                     }
                                     KeyCode::Delete => {
                                         app.search_input.delete();
-                                        app.update_search_filter();
+                                        do_filter(app);
                                     }
                                     KeyCode::Left => app.search_input.left(),
                                     KeyCode::Right => app.search_input.right(),
@@ -691,19 +745,19 @@ fn run_loop<R: Runtime>(
                                     }
                                     KeyCode::Char('u') if ctrl => {
                                         app.search_input.kill_before();
-                                        app.update_search_filter();
+                                        do_filter(app);
                                     }
                                     KeyCode::Char('k') if ctrl => {
                                         app.search_input.kill_line();
-                                        app.update_search_filter();
+                                        do_filter(app);
                                     }
                                     KeyCode::Char('w') if ctrl => {
                                         app.search_input.kill_word();
-                                        app.update_search_filter();
+                                        do_filter(app);
                                     }
                                     KeyCode::Char(c) if !ctrl => {
                                         app.search_input.insert(c);
-                                        app.update_search_filter();
+                                        do_filter(app);
                                     }
                                     _ => {}
                                 }
@@ -715,6 +769,11 @@ fn run_loop<R: Runtime>(
                                 }
                                 KeyCode::Char('k') | KeyCode::Up => {
                                     app.previous_project();
+                                }
+                                KeyCode::Char('/') => {
+                                    app.search_input.take();
+                                    app.update_project_search_filter();
+                                    app.focus = Focus::TaskSearch;
                                 }
                                 KeyCode::Enter => {
                                     if let Some(project) = app.selected_project() {

@@ -4,6 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 
 use crate::primitives::{MessageRole, TaskStatus};
+use crate::task::Project;
 
 use super::app::{App, Focus};
 use super::chat::{ContentBlock, ExoState};
@@ -250,34 +251,62 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
 }
 
 fn render_project_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focused: bool) {
+    let searching = matches!(app.focus, Focus::TaskSearch) && app.show_projects;
+
+    let (list_area, search_area) = if searching {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(area);
+        (chunks[1], Some(chunks[0]))
+    } else {
+        (area, None)
+    };
+
     let border_color = if focused {
         Color::Blue
     } else {
         Color::DarkGray
     };
 
-    let items: Vec<ListItem> = app
-        .projects
-        .iter()
-        .map(|project| {
-            let main_line = Line::from(vec![
-                Span::styled(
-                    format!("{:<16} ", project.name),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    project.description.clone(),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]);
-            ListItem::new(main_line)
-        })
-        .collect();
+    let project_item = |project: &Project| {
+        let main_line = Line::from(vec![
+            Span::styled(
+                format!("{:<16} ", project.name),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                project.description.clone(),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]);
+        ListItem::new(main_line)
+    };
+
+    let items: Vec<ListItem> = if searching {
+        app.filtered_project_indices
+            .iter()
+            .filter_map(|&i| app.projects.get(i))
+            .map(project_item)
+            .collect()
+    } else {
+        app.projects.iter().map(project_item).collect()
+    };
+
+    let title = if searching {
+        format!(
+            " Projects ({}/{}) ",
+            app.filtered_project_indices.len(),
+            app.projects.len()
+        )
+    } else {
+        " Projects ".to_string()
+    };
 
     let list = List::new(items)
         .block(
             Block::default()
-                .title(" Projects ")
+                .title(title)
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color)),
         )
@@ -288,7 +317,23 @@ fn render_project_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, fo
         )
         .highlight_symbol("> ");
 
-    frame.render_stateful_widget(list, area, &mut app.project_list_state);
+    frame.render_stateful_widget(list, list_area, &mut app.project_list_state);
+
+    if let Some(search_area) = search_area {
+        let query = app.search_input.buffer();
+        let search_line = Line::from(vec![
+            Span::styled(" / ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::styled(
+                format!(" {query}"),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("_", Style::default().fg(Color::DarkGray)),
+        ]);
+        let search_bar = Paragraph::new(search_line).style(Style::default().bg(Color::DarkGray));
+        frame.render_widget(search_bar, search_area);
+    }
 }
 
 fn render_chat(

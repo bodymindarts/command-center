@@ -217,6 +217,8 @@ pub struct App {
     pub search_input: InputState,
     /// Indices into `tasks` that match the current search query.
     pub filtered_indices: Vec<usize>,
+    /// Indices into `projects` that match the current search query.
+    pub filtered_project_indices: Vec<usize>,
 }
 
 impl App {
@@ -251,6 +253,7 @@ impl App {
             project_list_state: ListState::default(),
             search_input: InputState::new(),
             filtered_indices: Vec::new(),
+            filtered_project_indices: Vec::new(),
         }
     }
 
@@ -513,6 +516,76 @@ impl App {
             None => 0,
         };
         self.list_state.select(Some(i));
+    }
+
+    pub fn update_project_search_filter(&mut self) {
+        let query: Vec<char> = self.search_input.buffer().to_lowercase().chars().collect();
+        self.filtered_project_indices = self
+            .projects
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| {
+                if query.is_empty() {
+                    return true;
+                }
+                let name = p.name.to_lowercase();
+                let mut qi = 0;
+                for c in name.chars() {
+                    if c == query[qi] {
+                        qi += 1;
+                        if qi == query.len() {
+                            return true;
+                        }
+                    }
+                }
+                false
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if self.filtered_project_indices.is_empty() {
+            self.project_list_state.select(None);
+        } else {
+            let sel = self.project_list_state.selected().unwrap_or(0);
+            if let Some(pos) = self.filtered_project_indices.iter().position(|&i| i == sel) {
+                self.project_list_state.select(Some(pos));
+            } else {
+                self.project_list_state.select(Some(0));
+            }
+        }
+    }
+
+    pub fn search_next_project(&mut self) {
+        if self.filtered_project_indices.is_empty() {
+            return;
+        }
+        let i = match self.project_list_state.selected() {
+            Some(i) => (i + 1) % self.filtered_project_indices.len(),
+            None => 0,
+        };
+        self.project_list_state.select(Some(i));
+    }
+
+    pub fn search_prev_project(&mut self) {
+        if self.filtered_project_indices.is_empty() {
+            return;
+        }
+        let i = match self.project_list_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.filtered_project_indices.len() - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.project_list_state.select(Some(i));
+    }
+
+    pub fn selected_filtered_project_index(&self) -> Option<usize> {
+        self.project_list_state
+            .selected()
+            .and_then(|i| self.filtered_project_indices.get(i).copied())
     }
 
     /// Resolve the currently selected filtered index back to the real task index.
