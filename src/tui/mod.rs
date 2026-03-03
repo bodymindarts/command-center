@@ -21,7 +21,7 @@ use crate::permission::PermissionRequest;
 use crate::primitives::MessageRole;
 use crate::runtime::Runtime;
 use crate::service::TaskService;
-use app::{ActivePermission, App, Focus};
+use app::{ActivePermission, App, Focus, SavedProjectState};
 
 const EXO_PERM_KEY: &str = "exo";
 
@@ -387,12 +387,88 @@ fn run_loop<R: Runtime>(
                                 .unwrap_or(0);
                             let name = names[idx].clone();
                             if name == EXO_PERM_KEY {
+                                // Navigate to ExO view
+                                if app.active_project_id.is_some() {
+                                    let selected_task_name =
+                                        app.selected_task().map(|t| t.name.clone());
+                                    if let (Some(pname), Some(pid)) =
+                                        (app.active_project.take(), app.active_project_id.take())
+                                    {
+                                        app.last_project = Some(SavedProjectState {
+                                            name: pname,
+                                            id: pid,
+                                            show_detail: app.show_detail,
+                                            selected_task_name,
+                                        });
+                                    }
+                                    pm_cancel.store(true, Ordering::Relaxed);
+                                    *pm_cancel = Arc::new(AtomicBool::new(false));
+                                    *pm_session = None;
+                                    *pm = ExoState::new();
+                                    app.pm_messages.clear();
+                                    if let Ok(tasks) = service.list_visible(None) {
+                                        app.refresh_tasks(tasks);
+                                    }
+                                }
                                 app.show_detail = false;
                             } else if let Some(pos) = app.tasks.iter().position(|t| t.name == name)
                             {
+                                // Task is in the current project view
                                 app.list_state.select(Some(pos));
                                 app.show_detail = true;
                                 app.detail_scroll = 0;
+                            } else {
+                                // Task is in a different project — switch to it
+                                let target_pid =
+                                    app.global_task_projects.get(&name).cloned().flatten();
+                                if let Some(pid) = target_pid {
+                                    // Save current project state
+                                    let selected_task_name =
+                                        app.selected_task().map(|t| t.name.clone());
+                                    if let (Some(pname), Some(cur_pid)) =
+                                        (app.active_project.take(), app.active_project_id.take())
+                                    {
+                                        app.last_project = Some(SavedProjectState {
+                                            name: pname,
+                                            id: cur_pid,
+                                            show_detail: app.show_detail,
+                                            selected_task_name,
+                                        });
+                                    }
+                                    // Look up project name
+                                    let proj_name = app
+                                        .projects
+                                        .iter()
+                                        .find(|p| p.id == pid)
+                                        .map(|p| p.name.clone())
+                                        .unwrap_or_else(|| pid.clone());
+                                    app.active_project = Some(proj_name);
+                                    app.active_project_id = Some(pid.clone());
+                                    app.show_projects = false;
+                                    if let Ok(tasks) = service.list_visible(Some(&pid)) {
+                                        app.refresh_tasks(tasks);
+                                    }
+                                    if let Some(pos) = app.tasks.iter().position(|t| t.name == name)
+                                    {
+                                        app.list_state.select(Some(pos));
+                                        app.show_detail = true;
+                                        app.detail_scroll = 0;
+                                    }
+                                    // Set up PM session for the target project
+                                    pm_cancel.store(true, Ordering::Relaxed);
+                                    *pm_cancel = Arc::new(AtomicBool::new(false));
+                                    *pm_session = None;
+                                    *pm = ExoState::new();
+                                    pm.session_id = service.read_pm_session_id(&pid);
+                                    if let Ok(messages) = service.pm_messages(&pid) {
+                                        let recent: Vec<_> =
+                                            messages.into_iter().rev().take(20).collect();
+                                        pm.load_history(recent.into_iter().rev().collect());
+                                    }
+                                    if let Ok(msgs) = service.pm_messages(&pid) {
+                                        app.pm_messages = msgs;
+                                    }
+                                }
                             }
                             app.focus = Focus::ChatInput;
                             app.chat_scroll = 0;
@@ -438,11 +514,17 @@ fn run_loop<R: Runtime>(
                         && key.code == KeyCode::Char('o')
                     {
                         app.save_current_input();
-                        // Remember last project so Ctrl+R can return to it
+                        // Remember last project + view state so Ctrl+R can restore it
                         if let (Some(name), Some(id)) =
                             (app.active_project.take(), app.active_project_id.take())
                         {
-                            app.last_project = Some((name, id));
+                            let selected_task_name = app.selected_task().map(|t| t.name.clone());
+                            app.last_project = Some(SavedProjectState {
+                                name,
+                                id,
+                                show_detail: app.show_detail,
+                                selected_task_name,
+                            });
                         }
                         app.show_detail = false;
                         app.show_projects = false;
@@ -483,39 +565,40 @@ fn run_loop<R: Runtime>(
                             app.restore_input();
                         // If in ExO view, restore last active project
                         } else if app.active_project_id.is_none()
-                            && let Some((name, id)) = app.last_project.take()
+                            && let Some(saved) = app.last_project.take()
                         {
                             app.save_current_input();
-                            app.active_project = Some(name);
-                            app.active_project_id = Some(id.clone());
-                            app.show_detail = false;
+                            app.active_project = Some(saved.name);
+                            app.active_project_id = Some(saved.id.clone());
                             app.show_projects = false;
-                            if let Ok(msgs) = service.pm_messages(&id) {
+                            if let Ok(msgs) = service.pm_messages(&saved.id) {
                                 app.pm_messages = msgs;
                             }
-                            if let Ok(tasks) = service.list_visible(Some(&id)) {
+                            if let Ok(tasks) = service.list_visible(Some(&saved.id)) {
                                 app.refresh_tasks(tasks);
                             }
-                            // If there are pending permissions for this project,
-                            // auto-select the first task with a perm.
-                            let perm_tasks = app.tasks_with_permissions();
-                            if let Some(perm_name) = perm_tasks
-                                .iter()
-                                .find(|name| app.tasks.iter().any(|t| &t.name == *name))
-                                && let Some(idx) =
-                                    app.tasks.iter().position(|t| &t.name == perm_name)
-                            {
-                                app.list_state.select(Some(idx));
-                                app.show_detail = true;
-                                app.detail_scroll = 0;
+                            // Restore the view state the user had when they left
+                            if saved.show_detail {
+                                if let Some(ref task_name) = saved.selected_task_name
+                                    && let Some(idx) =
+                                        app.tasks.iter().position(|t| &t.name == task_name)
+                                {
+                                    app.list_state.select(Some(idx));
+                                    app.show_detail = true;
+                                    app.detail_scroll = 0;
+                                } else {
+                                    app.show_detail = false;
+                                }
+                            } else {
+                                app.show_detail = false;
                             }
                             // Restore PM state
                             pm_cancel.store(true, Ordering::Relaxed);
                             *pm_cancel = Arc::new(AtomicBool::new(false));
                             *pm_session = None;
                             *pm = ExoState::new();
-                            pm.session_id = service.read_pm_session_id(&id);
-                            if let Ok(messages) = service.pm_messages(&id) {
+                            pm.session_id = service.read_pm_session_id(&saved.id);
+                            if let Ok(messages) = service.pm_messages(&saved.id) {
                                 let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
                                 pm.load_history(recent.into_iter().rev().collect());
                             }

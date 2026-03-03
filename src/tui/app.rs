@@ -28,6 +28,14 @@ pub struct ActivePermission {
     pub permission_suggestions: Vec<serde_json::Value>,
 }
 
+/// Saved UI state for a project, restored on Ctrl+R.
+pub struct SavedProjectState {
+    pub name: String,
+    pub id: String,
+    pub show_detail: bool,
+    pub selected_task_name: Option<String>,
+}
+
 pub struct InputState {
     chars: Vec<char>,
     pub cursor: usize,
@@ -203,8 +211,8 @@ pub struct App {
     pub active_project: Option<String>,
     /// Currently active project ID (for queries). None = default (ExO).
     pub active_project_id: Option<String>,
-    /// Last active project (name, id) — remembered when Ctrl+O leaves a project.
-    pub last_project: Option<(String, String)>,
+    /// Last active project state — remembered when Ctrl+O leaves a project.
+    pub last_project: Option<SavedProjectState>,
     /// Cached PM messages for the active project.
     pub pm_messages: Vec<TaskMessage>,
     /// Whether the right panel shows the project list instead of the task list.
