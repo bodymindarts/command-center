@@ -804,6 +804,10 @@ fn run_loop<R: Runtime>(
                 while let Some(perm) = app.take_permission(&name) {
                     let _ = write_response_to_stream(perm.stream, true, None);
                 }
+                // Agent is actively working — clear idle indicator
+                if let Some(task) = app.tasks.iter().find(|t| t.name == name) {
+                    app.fresh_tasks.remove(task.id.as_str());
+                }
             }
         }
 
