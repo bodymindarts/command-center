@@ -341,10 +341,14 @@ fn run_loop<R: Runtime>(
                         && key.code == KeyCode::Char('o')
                     {
                         app.save_current_input();
+                        // Remember last project so Ctrl+R can return to it
+                        if let (Some(name), Some(id)) =
+                            (app.active_project.take(), app.active_project_id.take())
+                        {
+                            app.last_project = Some((name, id));
+                        }
                         app.show_detail = false;
                         app.show_projects = false;
-                        app.active_project = None;
-                        app.active_project_id = None;
                         app.pm_messages.clear();
                         if let Ok(tasks) = service.list_visible(None) {
                             app.refresh_tasks(tasks);
@@ -352,6 +356,36 @@ fn run_loop<R: Runtime>(
                         app.focus = Focus::ChatInput;
                         app.chat_scroll = 0;
                         app.restore_input();
+                    // Global: Ctrl+R returns to PM (or last active project from ExO)
+                    } else if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('r')
+                    {
+                        // If in a project's task detail, go back to PM chat
+                        if app.show_detail && app.active_project_id.is_some() {
+                            app.save_current_input();
+                            app.show_detail = false;
+                            app.focus = Focus::ChatInput;
+                            app.chat_scroll = 0;
+                            app.restore_input();
+                        // If in ExO view, restore last active project
+                        } else if app.active_project_id.is_none()
+                            && let Some((name, id)) = app.last_project.take()
+                        {
+                            app.save_current_input();
+                            app.active_project = Some(name);
+                            app.active_project_id = Some(id.clone());
+                            app.show_detail = false;
+                            app.show_projects = false;
+                            if let Ok(msgs) = service.pm_messages(&id) {
+                                app.pm_messages = msgs;
+                            }
+                            if let Ok(tasks) = service.list_visible(Some(&id)) {
+                                app.refresh_tasks(tasks);
+                            }
+                            app.focus = Focus::ChatInput;
+                            app.chat_scroll = 0;
+                            app.restore_input();
+                        }
                     // Global: '/' jumps to task search
                     } else if key.code == KeyCode::Char('/')
                         && !key.modifiers.contains(KeyModifiers::CONTROL)

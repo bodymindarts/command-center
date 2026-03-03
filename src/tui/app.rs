@@ -201,6 +201,8 @@ pub struct App {
     pub active_project: Option<String>,
     /// Currently active project ID (for queries). None = default (ExO).
     pub active_project_id: Option<String>,
+    /// Last active project (name, id) — remembered when Ctrl+O leaves a project.
+    pub last_project: Option<(String, String)>,
     /// Cached PM messages for the active project.
     pub pm_messages: Vec<TaskMessage>,
     /// Whether the right panel shows the project list instead of the task list.
@@ -240,6 +242,7 @@ impl App {
             status_error: None,
             active_project: None,
             active_project_id: None,
+            last_project: None,
             pm_messages: Vec::new(),
             show_projects: false,
             projects: Vec::new(),
