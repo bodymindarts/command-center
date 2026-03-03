@@ -131,6 +131,95 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         })
     }
 
+    pub fn spawn_no_worktree(
+        &self,
+        task_name: &str,
+        skill_name: &str,
+        params: Vec<(String, String)>,
+        repo_path: Option<&Path>,
+    ) -> Result<SpawnOutput> {
+        let skill = SkillFile::load(&self.paths.skills_dir, skill_name)?;
+
+        let mut params_map: HashMap<String, String> = params.into_iter().collect();
+        params_map
+            .entry("task".to_string())
+            .or_insert_with(|| task_name.to_string());
+        skill.validate_params(&params_map)?;
+
+        let system_prompt = skill.render_system()?;
+
+        let repo = repo_path.unwrap_or(&self.paths.root);
+        let work_dir = repo.to_path_buf();
+
+        self.runtime
+            .setup_dir_config(&self.paths.root, &work_dir, &skill.agent.allowed_tools)?;
+
+        let id = TaskId::generate();
+        let task = Task::new(id, task_name, skill_name, &params_map, &work_dir);
+
+        self.store.insert_task(&task)?;
+
+        let result =
+            self.runtime
+                .spawn_interactive(task_name, system_prompt.as_deref(), &work_dir)?;
+        self.store
+            .update_tmux_pane(task.id.as_str(), &result.pane_id)?;
+        self.store
+            .update_tmux_window(task.id.as_str(), &result.window_id)?;
+
+        Ok(SpawnOutput {
+            task_id: task.id,
+            task_name: task_name.to_string(),
+            skill_name: skill_name.to_string(),
+            window_id: result.window_id,
+        })
+    }
+
+    pub fn spawn_scratch(
+        &self,
+        task_name: &str,
+        skill_name: &str,
+        params: Vec<(String, String)>,
+    ) -> Result<SpawnOutput> {
+        let skill = SkillFile::load(&self.paths.skills_dir, skill_name)?;
+
+        let mut params_map: HashMap<String, String> = params.into_iter().collect();
+        params_map
+            .entry("task".to_string())
+            .or_insert_with(|| task_name.to_string());
+        skill.validate_params(&params_map)?;
+
+        let system_prompt = skill.render_system()?;
+
+        let scratch_dir = self.paths.data_dir.join("scratch").join(task_name);
+        self.runtime.init_scratch_dir(&scratch_dir)?;
+        self.runtime.setup_dir_config(
+            &self.paths.root,
+            &scratch_dir,
+            &skill.agent.allowed_tools,
+        )?;
+
+        let id = TaskId::generate();
+        let task = Task::new(id, task_name, skill_name, &params_map, &scratch_dir);
+
+        self.store.insert_task(&task)?;
+
+        let result =
+            self.runtime
+                .spawn_interactive(task_name, system_prompt.as_deref(), &scratch_dir)?;
+        self.store
+            .update_tmux_pane(task.id.as_str(), &result.pane_id)?;
+        self.store
+            .update_tmux_window(task.id.as_str(), &result.window_id)?;
+
+        Ok(SpawnOutput {
+            task_id: task.id,
+            task_name: task_name.to_string(),
+            skill_name: skill_name.to_string(),
+            window_id: result.window_id,
+        })
+    }
+
     pub fn close(&self, id_prefix: &str) -> Result<CloseOutput> {
         let task = self.resolve_task(id_prefix)?;
 
@@ -355,7 +444,16 @@ mod tests {
         RecreateWorktree {
             work_dir: PathBuf,
         },
+        SetupDirConfig {
+            work_dir: PathBuf,
+        },
+        InitScratchDir {
+            scratch_dir: PathBuf,
+        },
         SpawnAgent {
+            task_name: String,
+        },
+        SpawnInteractive {
             task_name: String,
         },
         ResumeAgent {
@@ -424,6 +522,26 @@ mod tests {
             Ok(())
         }
 
+        fn setup_dir_config(
+            &self,
+            _hooks_source: &Path,
+            work_dir: &Path,
+            _skill_tools: &[String],
+        ) -> Result<()> {
+            self.calls.borrow_mut().push(Call::SetupDirConfig {
+                work_dir: work_dir.to_path_buf(),
+            });
+            Ok(())
+        }
+
+        fn init_scratch_dir(&self, scratch_dir: &Path) -> Result<()> {
+            self.calls.borrow_mut().push(Call::InitScratchDir {
+                scratch_dir: scratch_dir.to_path_buf(),
+            });
+            std::fs::create_dir_all(scratch_dir)?;
+            Ok(())
+        }
+
         fn spawn_agent(
             &self,
             task_name: &str,
@@ -432,6 +550,21 @@ mod tests {
             _work_dir: &Path,
         ) -> Result<SpawnResult> {
             self.calls.borrow_mut().push(Call::SpawnAgent {
+                task_name: task_name.to_string(),
+            });
+            Ok(SpawnResult {
+                window_id: self.spawn_window_id.clone(),
+                pane_id: self.spawn_pane_id.clone(),
+            })
+        }
+
+        fn spawn_interactive(
+            &self,
+            task_name: &str,
+            _system_prompt: Option<&str>,
+            _work_dir: &Path,
+        ) -> Result<SpawnResult> {
+            self.calls.borrow_mut().push(Call::SpawnInteractive {
                 task_name: task_name.to_string(),
             });
             Ok(SpawnResult {

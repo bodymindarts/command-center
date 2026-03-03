@@ -19,11 +19,24 @@ pub trait Runtime {
         hooks_source: &Path,
     ) -> Result<PathBuf>;
     fn recreate_worktree(&self, repo_root: &Path, work_dir: &Path) -> Result<()>;
+    fn setup_dir_config(
+        &self,
+        hooks_source: &Path,
+        work_dir: &Path,
+        skill_tools: &[String],
+    ) -> Result<()>;
+    fn init_scratch_dir(&self, scratch_dir: &Path) -> Result<()>;
     fn spawn_agent(
         &self,
         task_name: &str,
         system_prompt: Option<&str>,
         user_prompt: &str,
+        work_dir: &Path,
+    ) -> Result<SpawnResult>;
+    fn spawn_interactive(
+        &self,
+        task_name: &str,
+        system_prompt: Option<&str>,
         work_dir: &Path,
     ) -> Result<SpawnResult>;
     fn resume_agent(&self, task_name: &str, work_dir: &Path) -> Result<SpawnResult>;
@@ -121,6 +134,32 @@ impl TmuxRuntime {
 }
 
 impl Runtime for TmuxRuntime {
+    fn setup_dir_config(
+        &self,
+        hooks_source: &Path,
+        work_dir: &Path,
+        skill_tools: &[String],
+    ) -> Result<()> {
+        setup_worktree_config(hooks_source, work_dir, skill_tools)
+    }
+
+    fn init_scratch_dir(&self, scratch_dir: &Path) -> Result<()> {
+        std::fs::create_dir_all(scratch_dir)?;
+
+        let output = Command::new("git")
+            .args(["init"])
+            .current_dir(scratch_dir)
+            .output()
+            .context("failed to run git init")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("git init failed: {stderr}");
+        }
+
+        Ok(())
+    }
+
     fn create_worktree(
         &self,
         repo_root: &Path,
@@ -244,6 +283,34 @@ impl Runtime for TmuxRuntime {
         if let Some(sys) = system_prompt {
             std::fs::write(claude_dir.join("system-prompt.txt"), sys)?;
             script.push_str(" --system-prompt \"$(cat .claude/system-prompt.txt)\"");
+        }
+
+        let script_path = claude_dir.join("launch.sh");
+        std::fs::write(&script_path, script)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
+        }
+
+        self.launch_agent_window(task_name, work_dir, "sh .claude/launch.sh")
+    }
+
+    fn spawn_interactive(
+        &self,
+        task_name: &str,
+        system_prompt: Option<&str>,
+        work_dir: &Path,
+    ) -> Result<SpawnResult> {
+        let claude_bin = self.resolve_binary("claude")?;
+
+        let claude_dir = work_dir.join(".claude");
+        std::fs::create_dir_all(&claude_dir)?;
+
+        let mut script = format!("#!/bin/sh\nunset CLAUDECODE\nexec {claude_bin}");
+        if let Some(sys) = system_prompt {
+            std::fs::write(claude_dir.join("system-prompt.txt"), sys)?;
+            script.push_str(" --append-system-prompt \"$(cat .claude/system-prompt.txt)\"");
         }
 
         let script_path = claude_dir.join("launch.sh");

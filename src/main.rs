@@ -37,7 +37,20 @@ fn main() -> Result<()> {
             param,
             repo,
             branch,
-        } => cmd_spawn(&service, &name, &skill, param, repo, branch)?,
+            no_worktree,
+            scratch,
+        } => cmd_spawn(
+            &service,
+            SpawnOpts {
+                name,
+                skill,
+                params: param,
+                repo,
+                branch,
+                no_worktree,
+                scratch,
+            },
+        )?,
         Command::List { all } => cmd_list(&service, all)?,
         Command::History => cmd_list(&service, true)?,
         Command::Log { id } => cmd_log(&service, &id)?,
@@ -66,21 +79,30 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn cmd_spawn(
-    service: &TaskService<impl Runtime>,
-    task_name: &str,
-    skill_name: &str,
+struct SpawnOpts {
+    name: String,
+    skill: String,
     params: Vec<(String, String)>,
     repo: Option<std::path::PathBuf>,
     branch: Option<String>,
-) -> Result<()> {
-    let result = service.spawn(
-        task_name,
-        skill_name,
-        params,
-        repo.as_deref(),
-        branch.as_deref(),
-    )?;
+    no_worktree: bool,
+    scratch: bool,
+}
+
+fn cmd_spawn(service: &TaskService<impl Runtime>, opts: SpawnOpts) -> Result<()> {
+    let result = if opts.scratch {
+        service.spawn_scratch(&opts.name, &opts.skill, opts.params)?
+    } else if opts.no_worktree {
+        service.spawn_no_worktree(&opts.name, &opts.skill, opts.params, opts.repo.as_deref())?
+    } else {
+        service.spawn(
+            &opts.name,
+            &opts.skill,
+            opts.params,
+            opts.repo.as_deref(),
+            opts.branch.as_deref(),
+        )?
+    };
     println!(
         "Spawned task {} ({})",
         result.task_name,

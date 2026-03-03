@@ -31,6 +31,14 @@ pub enum Command {
         /// Existing branch to check out in the worktree (instead of creating a new one)
         #[arg(long)]
         branch: Option<String>,
+
+        /// Skip worktree creation; use repo root as working directory (interactive mode)
+        #[arg(long, conflicts_with = "scratch")]
+        no_worktree: bool,
+
+        /// Create a scratch directory under data/scratch/ (interactive mode)
+        #[arg(long, conflicts_with_all = ["no_worktree", "repo"])]
+        scratch: bool,
     },
 
     /// List tasks and their status
