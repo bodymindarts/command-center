@@ -350,10 +350,10 @@ fn setup_worktree_config(
         }
         std::fs::write(&target_settings, settings.to_string())?;
 
-        // Ignore generated launcher files so agents don't commit them.
+        // Ignore all generated files so agents don't commit them.
         std::fs::write(
             target_claude_dir.join(".gitignore"),
-            "launch.sh\nprompt.txt\nsystem-prompt.txt\n",
+            "launch.sh\nprompt.txt\nsystem-prompt.txt\nsettings.local.json\nhooks/\n.gitignore\n",
         )?;
     }
     Ok(())
