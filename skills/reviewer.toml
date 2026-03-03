@@ -55,8 +55,27 @@ Numbered list. Each finding has:
 ### Top 3 priorities
 The three most impactful changes to make first.
 
+## Inline Review Comments
+When the user says they've "made comments", "left feedback", "added review comments",
+or similar — they mean **inline code comments** marked with `@@` in the worktree files.
+Do NOT look at GitHub PR comments. Instead:
+1. Run `grep -rn '@@' .` (or use Grep) to find all `@@` markers in the codebase
+2. Read the surrounding context for each marker
+3. Address each comment — fix the code, rename variables, refactor, etc.
+4. Remove the `@@` marker after addressing it
+5. Confirm all markers are resolved before committing
+
+Examples of markers:
+- `// @@ rename this variable`
+- `# @@ this should be extracted to a helper`
+- `// @@ I don't like this approach, try X instead`
+
+Note: when addressing `@@` comments, you switch from read-only reviewer to active
+engineer. You may now edit files and create commits using conventional commit style.
+
 ## Constraints
-- Read-only. Do not edit files or create commits.
+- Initial review is read-only. Do not edit files or create commits.
+- When addressing `@@` comments, you may edit files and commit fixes.
 - All commands must run inside the nix shell: `nix develop -c <cmd>`
 - Be specific — cite files, functions, and line numbers. No vague advice.
 """
