@@ -39,6 +39,10 @@ pub enum Command {
         /// Create a scratch directory under data/scratch/ (interactive mode)
         #[arg(long, conflicts_with_all = ["no_worktree", "repo"])]
         scratch: bool,
+
+        /// Assign task to a project
+        #[arg(long)]
+        project: Option<String>,
     },
 
     /// List tasks and their status
@@ -46,6 +50,10 @@ pub enum Command {
         /// Show all tasks including closed/completed/failed
         #[arg(long)]
         all: bool,
+
+        /// Filter tasks by project name
+        #[arg(long)]
+        project: Option<String>,
     },
 
     /// List all tasks (alias for list --all)
@@ -104,6 +112,12 @@ pub enum Command {
         action: SkillAction,
     },
 
+    /// Manage projects
+    Project {
+        #[command(subcommand)]
+        action: ProjectAction,
+    },
+
     /// Commands called by spawned agents (hooks, lifecycle)
     #[command(hide = true)]
     Agent {
@@ -116,6 +130,28 @@ pub enum Command {
 pub enum SkillAction {
     /// List available skills
     List,
+}
+
+#[derive(Subcommand)]
+pub enum ProjectAction {
+    /// Create a new project
+    Create {
+        /// Project name (unique identifier)
+        name: String,
+
+        /// Optional description
+        #[arg(short, long, default_value = "")]
+        description: String,
+    },
+
+    /// List all projects
+    List,
+
+    /// Delete a project
+    Delete {
+        /// Project name
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]

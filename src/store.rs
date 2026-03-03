@@ -6,31 +6,42 @@ use rusqlite::{Connection, Row};
 use rusqlite_migration::{M, Migrations};
 
 use crate::primitives::{MessageRole, TaskId, TaskStatus};
-use crate::task::{Task, TaskMessage};
+use crate::task::{Project, Task, TaskMessage};
 
-static MIGRATION_STEPS: [M<'static>; 1] = [M::up(
-    "CREATE TABLE IF NOT EXISTS tasks (
-        id           TEXT PRIMARY KEY,
-        name         TEXT NOT NULL DEFAULT '',
-        skill_name   TEXT NOT NULL,
-        params_json  TEXT NOT NULL,
-        status       TEXT NOT NULL DEFAULT 'running',
-        tmux_pane    TEXT,
-        tmux_window  TEXT,
-        work_dir     TEXT,
-        started_at   TEXT NOT NULL,
-        completed_at TEXT,
-        exit_code    INTEGER,
-        output       TEXT
-    );
-    CREATE TABLE IF NOT EXISTS task_messages (
-        id         TEXT PRIMARY KEY,
-        task_id    TEXT NOT NULL,
-        role       TEXT NOT NULL,
-        content    TEXT NOT NULL,
-        created_at TEXT NOT NULL
-    );",
-)];
+static MIGRATION_STEPS: [M<'static>; 2] = [
+    M::up(
+        "CREATE TABLE IF NOT EXISTS tasks (
+            id           TEXT PRIMARY KEY,
+            name         TEXT NOT NULL DEFAULT '',
+            skill_name   TEXT NOT NULL,
+            params_json  TEXT NOT NULL,
+            status       TEXT NOT NULL DEFAULT 'running',
+            tmux_pane    TEXT,
+            tmux_window  TEXT,
+            work_dir     TEXT,
+            started_at   TEXT NOT NULL,
+            completed_at TEXT,
+            exit_code    INTEGER,
+            output       TEXT
+        );
+        CREATE TABLE IF NOT EXISTS task_messages (
+            id         TEXT PRIMARY KEY,
+            task_id    TEXT NOT NULL,
+            role       TEXT NOT NULL,
+            content    TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );",
+    ),
+    M::up(
+        "CREATE TABLE IF NOT EXISTS projects (
+            id          TEXT PRIMARY KEY,
+            name        TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
+            created_at  TEXT NOT NULL
+        );
+        ALTER TABLE tasks ADD COLUMN project_id TEXT;",
+    ),
+];
 static MIGRATIONS: Migrations<'static> = Migrations::from_slice(&MIGRATION_STEPS);
 
 fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
@@ -55,12 +66,13 @@ fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
         }),
         exit_code: row.get(10)?,
         output: row.get(11)?,
+        project_id: row.get(12)?,
     })
 }
 
 const TASK_COLUMNS: &str =
     "id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir,
-     started_at, completed_at, exit_code, output";
+     started_at, completed_at, exit_code, output, project_id";
 
 pub struct Store {
     conn: Connection,
@@ -90,8 +102,8 @@ impl Store {
 
     pub fn insert_task(&self, task: &Task) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO tasks (id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir, started_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO tasks (id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir, started_at, project_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             (
                 task.id.as_str(),
                 &task.name,
@@ -102,6 +114,7 @@ impl Store {
                 &task.tmux_window,
                 &task.work_dir,
                 task.started_at.to_rfc3339(),
+                &task.project_id,
             ),
         )?;
         Ok(())
@@ -160,19 +173,6 @@ impl Store {
     pub fn list_active_tasks(&self) -> Result<Vec<Task>> {
         let sql = format!(
             "SELECT {TASK_COLUMNS} FROM tasks WHERE status = 'running' ORDER BY started_at DESC"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let tasks = stmt
-            .query_map([], row_to_task)?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(tasks)
-    }
-
-    /// Returns all non-deleted tasks, with running tasks first.
-    pub fn list_visible_tasks(&self) -> Result<Vec<Task>> {
-        let sql = format!(
-            "SELECT {TASK_COLUMNS} FROM tasks \
-             ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, started_at DESC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let tasks = stmt
@@ -247,6 +247,91 @@ impl Store {
 
         Ok(messages)
     }
+
+    // -- Project CRUD --
+
+    pub fn insert_project(&self, id: &str, name: &str, description: &str) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO projects (id, name, description, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            (id, name, description, &now),
+        )?;
+        Ok(())
+    }
+
+    pub fn get_project_by_name(&self, name: &str) -> Result<Option<Project>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name, description, created_at FROM projects WHERE name = ?1")?;
+        let mut rows = stmt.query_map([name], |row| {
+            let created_at: String = row.get(3)?;
+            Ok(Project {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                created_at: DateTime::parse_from_rfc3339(&created_at)
+                    .unwrap_or_default()
+                    .with_timezone(&Utc),
+            })
+        })?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn list_projects(&self) -> Result<Vec<Project>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, description, created_at FROM projects ORDER BY created_at ASC",
+        )?;
+        let projects = stmt
+            .query_map([], |row| {
+                let created_at: String = row.get(3)?;
+                Ok(Project {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    created_at: DateTime::parse_from_rfc3339(&created_at)
+                        .unwrap_or_default()
+                        .with_timezone(&Utc),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(projects)
+    }
+
+    pub fn delete_project(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM projects WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Returns visible tasks scoped to a project.
+    /// When project_id is None, returns tasks with no project (default/ExO scope).
+    /// When Some, returns tasks belonging to that project.
+    pub fn list_visible_tasks_for_project(&self, project_id: Option<&str>) -> Result<Vec<Task>> {
+        let sql = match project_id {
+            Some(_) => format!(
+                "SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ?1 \
+                 ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, started_at DESC"
+            ),
+            None => format!(
+                "SELECT {TASK_COLUMNS} FROM tasks WHERE project_id IS NULL \
+                 ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, started_at DESC"
+            ),
+        };
+        let mut stmt = self.conn.prepare(&sql)?;
+        let tasks = match project_id {
+            Some(pid) => stmt
+                .query_map([pid], row_to_task)?
+                .collect::<Result<Vec<_>, _>>()?,
+            None => stmt
+                .query_map([], row_to_task)?
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        Ok(tasks)
+    }
 }
 
 #[cfg(test)]
@@ -271,6 +356,7 @@ mod tests {
             completed_at: None,
             exit_code: None,
             output: None,
+            project_id: None,
         };
         store.insert_task(&task).unwrap();
     }

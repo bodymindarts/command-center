@@ -34,7 +34,7 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let tasks = service.list_visible()?;
+    let tasks = service.list_visible(None)?;
     let mut app = App::new(tasks);
     let mut exo = ExoState::new();
     if let Some(sid) = resume_session {
@@ -69,7 +69,7 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
     crate::permission::write_socket_breadcrumb(service.project_root(), &socket_path);
     // Re-embed socket path in active worktrees so hooks from pre-existing
     // tasks connect to this dashboard's socket after a restart.
-    if let Ok(tasks) = service.list_visible() {
+    if let Ok(tasks) = service.list_visible(None) {
         let work_dirs: Vec<String> = tasks.iter().filter_map(|t| t.work_dir.clone()).collect();
         let sock_str = socket_path.to_string_lossy().to_string();
         crate::runtime::reembed_socket_in_worktrees(&work_dirs, &sock_str);
@@ -392,7 +392,7 @@ fn run_loop<R: Runtime>(
                                             let id = task.id.as_str().to_string();
                                             match service.reopen(&id) {
                                                 Ok(window_id) => {
-                                                    if let Ok(tasks) = service.list_visible() {
+                                                    if let Ok(tasks) = service.list_visible(None) {
                                                         app.refresh_tasks(tasks);
                                                     }
                                                     service.goto_window(&window_id);
@@ -414,7 +414,7 @@ fn run_loop<R: Runtime>(
                                             let id = task.id.as_str().to_string();
                                             match service.reopen(&id) {
                                                 Ok(window_id) => {
-                                                    if let Ok(tasks) = service.list_visible() {
+                                                    if let Ok(tasks) = service.list_visible(None) {
                                                         app.refresh_tasks(tasks);
                                                     }
                                                     service.goto_window(&window_id);
@@ -445,7 +445,7 @@ fn run_loop<R: Runtime>(
                                         let id = task.id.as_str().to_string();
                                         match service.reopen(&id) {
                                             Ok(_) => {
-                                                if let Ok(tasks) = service.list_visible() {
+                                                if let Ok(tasks) = service.list_visible(None) {
                                                     app.refresh_tasks(tasks);
                                                 }
                                             }
@@ -543,8 +543,9 @@ fn run_loop<R: Runtime>(
                                                 vec![("task".to_string(), name.clone())],
                                                 None,
                                                 None,
+                                                None,
                                             );
-                                            if let Ok(tasks) = service.list_visible() {
+                                            if let Ok(tasks) = service.list_visible(None) {
                                                 app.refresh_tasks(tasks);
                                             }
                                         }
@@ -623,7 +624,9 @@ fn run_loop<R: Runtime>(
                                                 let id = task.id.as_str().to_string();
                                                 match service.reopen(&id) {
                                                     Ok(window_id) => {
-                                                        if let Ok(tasks) = service.list_visible() {
+                                                        if let Ok(tasks) =
+                                                            service.list_visible(None)
+                                                        {
                                                             app.refresh_tasks(tasks);
                                                         }
                                                         service.goto_window(&window_id);
@@ -769,7 +772,7 @@ fn run_loop<R: Runtime>(
                                 KeyCode::Char('y') => {
                                     let id = task_id.clone();
                                     let _ = service.delete(id.as_str());
-                                    if let Ok(tasks) = service.list_visible() {
+                                    if let Ok(tasks) = service.list_visible(None) {
                                         app.refresh_tasks(tasks);
                                     }
                                     app.focus = Focus::TaskList;
@@ -783,7 +786,7 @@ fn run_loop<R: Runtime>(
                                 KeyCode::Char('y') => {
                                     let id = task_id.clone();
                                     let _ = service.close(id.as_str());
-                                    if let Ok(tasks) = service.list_visible() {
+                                    if let Ok(tasks) = service.list_visible(None) {
                                         app.refresh_tasks(tasks);
                                     }
                                     app.show_detail = false;
@@ -818,7 +821,7 @@ fn run_loop<R: Runtime>(
         }
 
         if last_tick.elapsed() >= tick_rate {
-            if let Ok(tasks) = service.list_visible() {
+            if let Ok(tasks) = service.list_visible(None) {
                 app.refresh_tasks(tasks);
             }
             app.window_numbers = crate::runtime::tmux_window_numbers();

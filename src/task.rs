@@ -20,6 +20,7 @@ pub struct Task {
     pub completed_at: Option<DateTime<Utc>>,
     pub exit_code: Option<i32>,
     pub output: Option<String>,
+    pub project_id: Option<String>,
 }
 
 impl Task {
@@ -29,6 +30,7 @@ impl Task {
         skill_name: &str,
         params: &HashMap<String, String>,
         work_dir: &Path,
+        project_id: Option<String>,
     ) -> Self {
         Self {
             id,
@@ -43,6 +45,7 @@ impl Task {
             completed_at: None,
             exit_code: None,
             output: None,
+            project_id,
         }
     }
 }
@@ -54,5 +57,14 @@ pub struct TaskMessage {
     pub task_id: String,
     pub role: MessageRole,
     pub content: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct Project {
+    pub id: String,
+    pub name: String,
+    pub description: String,
     pub created_at: DateTime<Utc>,
 }

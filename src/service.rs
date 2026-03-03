@@ -8,7 +8,7 @@ use crate::primitives::{MessageRole, TaskId};
 use crate::runtime::Runtime;
 use crate::skill::SkillFile;
 use crate::store::Store;
-use crate::task::{Task, TaskMessage};
+use crate::task::{Project, Task, TaskMessage};
 
 #[derive(Debug)]
 pub struct SkillSummary {
@@ -83,6 +83,7 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         params: Vec<(String, String)>,
         repo_path: Option<&Path>,
         branch: Option<&str>,
+        project_id: Option<String>,
     ) -> Result<SpawnOutput> {
         let skill = SkillFile::load(&self.paths.skills_dir, skill_name)?;
 
@@ -106,7 +107,14 @@ impl<'a, R: Runtime> TaskService<'a, R> {
             &self.paths.root,
         )?;
 
-        let task = Task::new(id, task_name, skill_name, &params_map, &worktree_path);
+        let task = Task::new(
+            id,
+            task_name,
+            skill_name,
+            &params_map,
+            &worktree_path,
+            project_id,
+        );
 
         self.store.insert_task(&task)?;
         self.store
@@ -155,7 +163,7 @@ impl<'a, R: Runtime> TaskService<'a, R> {
             .setup_dir_config(&self.paths.root, &work_dir, &skill.agent.allowed_tools)?;
 
         let id = TaskId::generate();
-        let task = Task::new(id, task_name, skill_name, &params_map, &work_dir);
+        let task = Task::new(id, task_name, skill_name, &params_map, &work_dir, None);
 
         self.store.insert_task(&task)?;
 
@@ -200,7 +208,7 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         )?;
 
         let id = TaskId::generate();
-        let task = Task::new(id, task_name, skill_name, &params_map, &scratch_dir);
+        let task = Task::new(id, task_name, skill_name, &params_map, &scratch_dir, None);
 
         self.store.insert_task(&task)?;
 
@@ -364,8 +372,8 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         self.store.list_tasks()
     }
 
-    pub fn list_visible(&self) -> Result<Vec<Task>> {
-        self.store.list_visible_tasks()
+    pub fn list_visible(&self, project_id: Option<&str>) -> Result<Vec<Task>> {
+        self.store.list_visible_tasks_for_project(project_id)
     }
 
     pub fn messages(&self, task_id: &str) -> Result<Vec<TaskMessage>> {
@@ -408,6 +416,53 @@ impl<'a, R: Runtime> TaskService<'a, R> {
 
     pub fn exo_messages(&self) -> Result<Vec<TaskMessage>> {
         self.store.list_messages(EXO_CHAT_ID)
+    }
+
+    // -- Project methods --
+
+    pub fn create_project(&self, name: &str, description: &str) -> Result<Project> {
+        let id = uuid::Uuid::now_v7().to_string();
+        self.store.insert_project(&id, name, description)?;
+        self.store
+            .get_project_by_name(name)?
+            .ok_or_else(|| anyhow::anyhow!("failed to retrieve project after insert"))
+    }
+
+    pub fn list_projects(&self) -> Result<Vec<Project>> {
+        self.store.list_projects()
+    }
+
+    pub fn delete_project(&self, name: &str) -> Result<()> {
+        let project = self
+            .store
+            .get_project_by_name(name)?
+            .ok_or_else(|| anyhow::anyhow!("no project found with name '{name}'"))?;
+        self.store.delete_project(&project.id)
+    }
+
+    pub fn resolve_project_id(&self, name: &str) -> Result<String> {
+        let project = self
+            .store
+            .get_project_by_name(name)?
+            .ok_or_else(|| anyhow::anyhow!("no project found with name '{name}'"))?;
+        Ok(project.id)
+    }
+
+    #[allow(dead_code)]
+    pub fn pm_messages(&self, project_id: &str) -> Result<Vec<TaskMessage>> {
+        let chat_id = format!("pm:{project_id}");
+        self.store.list_messages(&chat_id)
+    }
+
+    #[allow(dead_code)]
+    pub fn insert_pm_message(
+        &self,
+        project_id: &str,
+        role: MessageRole,
+        content: &str,
+    ) -> Result<()> {
+        let chat_id = format!("pm:{project_id}");
+        self.store.insert_message(&chat_id, role, content)
     }
 
     pub fn complete(&self, id: &str, exit_code: i32, output: Option<&str>) -> Result<()> {
@@ -667,7 +722,7 @@ prompt = "noop prompt"
 
     fn spawn_test_task(service: &TaskService<impl Runtime>) -> SpawnOutput {
         service
-            .spawn("test-task", "noop", vec![], None, None)
+            .spawn("test-task", "noop", vec![], None, None, None)
             .expect("spawn should succeed")
     }
 
@@ -844,6 +899,7 @@ prompt = "noop prompt"
             completed_at: None,
             exit_code: None,
             output: None,
+            project_id: None,
         };
         store.insert_task(&task).unwrap();
 

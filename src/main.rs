@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use tabled::{Table, Tabled};
 
-use crate::cli::{AgentCommand, Cli, Command, SkillAction};
+use crate::cli::{AgentCommand, Cli, Command, ProjectAction, SkillAction};
 use crate::config::Paths;
 use crate::primitives::MessageRole;
 use crate::runtime::{Runtime, TmuxRuntime};
@@ -39,6 +39,7 @@ fn main() -> Result<()> {
             branch,
             no_worktree,
             scratch,
+            project,
         } => cmd_spawn(
             &service,
             SpawnOpts {
@@ -49,10 +50,11 @@ fn main() -> Result<()> {
                 branch,
                 no_worktree,
                 scratch,
+                project,
             },
         )?,
-        Command::List { all } => cmd_list(&service, all)?,
-        Command::History => cmd_list(&service, true)?,
+        Command::List { all, project } => cmd_list(&service, all, project)?,
+        Command::History => cmd_list(&service, true, None)?,
         Command::Log { id } => cmd_log(&service, &id)?,
         Command::Close { id } => cmd_close(&service, &id)?,
         Command::Delete { id } => cmd_delete(&service, &id)?,
@@ -61,6 +63,7 @@ fn main() -> Result<()> {
         Command::Goto { id } => cmd_goto(&service, &id)?,
         Command::Send { id, message } => cmd_send(&service, &id, &message)?,
         Command::Skill { action } => cmd_skill(action, &service)?,
+        Command::Project { action } => cmd_project(action, &service)?,
         Command::Agent { action } => match action {
             AgentCommand::PermissionGate => permission::gate_request()?,
             AgentCommand::PermissionPrompt {
@@ -87,9 +90,15 @@ struct SpawnOpts {
     branch: Option<String>,
     no_worktree: bool,
     scratch: bool,
+    project: Option<String>,
 }
 
 fn cmd_spawn(service: &TaskService<impl Runtime>, opts: SpawnOpts) -> Result<()> {
+    let project_id = opts
+        .project
+        .as_deref()
+        .map(|name| service.resolve_project_id(name))
+        .transpose()?;
     let result = if opts.scratch {
         service.spawn_scratch(&opts.name, &opts.skill, opts.params)?
     } else if opts.no_worktree {
@@ -101,6 +110,7 @@ fn cmd_spawn(service: &TaskService<impl Runtime>, opts: SpawnOpts) -> Result<()>
             opts.params,
             opts.repo.as_deref(),
             opts.branch.as_deref(),
+            project_id,
         )?
     };
     println!(
@@ -113,9 +123,12 @@ fn cmd_spawn(service: &TaskService<impl Runtime>, opts: SpawnOpts) -> Result<()>
     Ok(())
 }
 
-fn cmd_list(service: &TaskService<impl Runtime>, all: bool) -> Result<()> {
+fn cmd_list(service: &TaskService<impl Runtime>, all: bool, project: Option<String>) -> Result<()> {
     let tasks = if all {
         service.list_all()?
+    } else if let Some(ref name) = project {
+        let project_id = service.resolve_project_id(name)?;
+        service.list_visible(Some(&project_id))?
     } else {
         service.list_active()?
     };
@@ -328,6 +341,51 @@ fn cmd_skill(action: SkillAction, service: &TaskService<impl Runtime>) -> Result
                 .collect();
 
             println!("{}", Table::new(rows));
+        }
+    }
+    Ok(())
+}
+
+fn cmd_project(action: ProjectAction, service: &TaskService<impl Runtime>) -> Result<()> {
+    match action {
+        ProjectAction::Create { name, description } => {
+            let project = service.create_project(&name, &description)?;
+            println!("Created project '{}' ({})", project.name, &project.id[..8]);
+        }
+        ProjectAction::List => {
+            let projects = service.list_projects()?;
+            if projects.is_empty() {
+                println!("No projects.");
+                return Ok(());
+            }
+
+            #[derive(Tabled)]
+            struct Row {
+                #[tabled(rename = "ID")]
+                id: String,
+                #[tabled(rename = "Name")]
+                name: String,
+                #[tabled(rename = "Description")]
+                description: String,
+                #[tabled(rename = "Created")]
+                created: String,
+            }
+
+            let rows: Vec<Row> = projects
+                .iter()
+                .map(|p| Row {
+                    id: p.id[..8].to_string(),
+                    name: p.name.clone(),
+                    description: p.description.clone(),
+                    created: p.created_at.format("%Y-%m-%d %H:%M").to_string(),
+                })
+                .collect();
+
+            println!("{}", Table::new(rows));
+        }
+        ProjectAction::Delete { name } => {
+            service.delete_project(&name)?;
+            println!("Deleted project '{name}'");
         }
     }
     Ok(())
