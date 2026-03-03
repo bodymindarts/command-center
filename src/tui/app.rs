@@ -199,12 +199,10 @@ pub struct App {
     pub status_error: Option<String>,
     /// Currently active project name. None = default (ExO).
     pub active_project: Option<String>,
-    /// Current search query when in TaskSearch focus.
+    /// Current search query for task list filtering.
     pub search_query: String,
-    /// Indices into `tasks` that match `search_query`.
+    /// Indices into `tasks` that match the current search query.
     pub filtered_indices: Vec<usize>,
-    /// Which filtered result is currently highlighted (index into `filtered_indices`).
-    pub search_selection: usize,
 }
 
 impl App {
@@ -233,7 +231,6 @@ impl App {
             active_project: None,
             search_query: String::new(),
             filtered_indices: Vec::new(),
-            search_selection: 0,
         }
     }
 
@@ -401,33 +398,57 @@ impl App {
             .tasks
             .iter()
             .enumerate()
-            .filter(|(_, task)| query.is_empty() || task.name.to_lowercase().contains(&query))
+            .filter(|(_, t)| query.is_empty() || t.name.to_lowercase().contains(&query))
             .map(|(i, _)| i)
             .collect();
-        // Clamp selection
+        // Clamp selection to filtered range
         if self.filtered_indices.is_empty() {
-            self.search_selection = 0;
-        } else if self.search_selection >= self.filtered_indices.len() {
-            self.search_selection = self.filtered_indices.len() - 1;
-        }
-    }
-
-    /// Move to the next filtered result.
-    pub fn search_next(&mut self) {
-        if !self.filtered_indices.is_empty() {
-            self.search_selection = (self.search_selection + 1) % self.filtered_indices.len();
-        }
-    }
-
-    /// Move to the previous filtered result.
-    pub fn search_prev(&mut self) {
-        if !self.filtered_indices.is_empty() {
-            if self.search_selection == 0 {
-                self.search_selection = self.filtered_indices.len() - 1;
+            self.list_state.select(None);
+        } else {
+            let sel = self.list_state.selected().unwrap_or(0);
+            if let Some(filtered_pos) = self.filtered_indices.iter().position(|&i| i == sel) {
+                self.list_state.select(Some(filtered_pos));
             } else {
-                self.search_selection -= 1;
+                self.list_state.select(Some(0));
             }
         }
+    }
+
+    /// Move to the next item in filtered search results.
+    pub fn search_next(&mut self) {
+        if self.filtered_indices.is_empty() {
+            return;
+        }
+        let i = match self.list_state.selected() {
+            Some(i) => (i + 1) % self.filtered_indices.len(),
+            None => 0,
+        };
+        self.list_state.select(Some(i));
+    }
+
+    /// Move to the previous item in filtered search results.
+    pub fn search_prev(&mut self) {
+        if self.filtered_indices.is_empty() {
+            return;
+        }
+        let i = match self.list_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.filtered_indices.len() - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.list_state.select(Some(i));
+    }
+
+    /// Resolve the currently selected filtered index back to the real task index.
+    pub fn selected_filtered_task_index(&self) -> Option<usize> {
+        self.list_state
+            .selected()
+            .and_then(|i| self.filtered_indices.get(i).copied())
     }
 }
 

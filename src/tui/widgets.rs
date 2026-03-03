@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 
 use crate::primitives::{MessageRole, TaskStatus};
 
@@ -64,7 +64,7 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState) {
     render_task_list(frame, app, outer[1], focused_task_list);
 }
 
-fn task_item(app: &App, task: &crate::task::Task) -> ListItem<'static> {
+fn task_list_item(app: &App, task: &crate::task::Task) -> ListItem<'static> {
     let is_fresh = app.fresh_tasks.contains(task.id.as_str());
     let status_char = match task.status {
         TaskStatus::Running if is_fresh => "●",
@@ -142,6 +142,30 @@ fn task_item(app: &App, task: &crate::task::Task) -> ListItem<'static> {
 fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focused: bool) {
     let searching = matches!(app.focus, Focus::TaskSearch);
 
+    // When searching, split area to reserve a line for the search input
+    let (list_area, search_area) = if searching {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .split(area);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (area, None)
+    };
+
+    let items: Vec<ListItem> = if searching {
+        app.filtered_indices
+            .iter()
+            .filter_map(|&i| app.tasks.get(i))
+            .map(|task| task_list_item(app, task))
+            .collect()
+    } else {
+        app.tasks
+            .iter()
+            .map(|task| task_list_item(app, task))
+            .collect()
+    };
+
     let border_color = if focused {
         Color::Blue
     } else {
@@ -149,7 +173,13 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
     };
 
     let total_perm = app.total_pending_permissions();
-    let title = if total_perm > 0 {
+    let title = if searching {
+        format!(
+            " Tasks ({}/{}) ",
+            app.filtered_indices.len(),
+            app.tasks.len()
+        )
+    } else if total_perm > 0 {
         format!(" Tasks ({total_perm} perm) ")
     } else {
         " Tasks ".to_string()
@@ -157,70 +187,38 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
 
     let show_highlight = app.show_detail || focused;
 
-    if searching {
-        // Split: list area on top, search input line at bottom (inside the border)
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(1)])
-            .split(area);
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color)),
+        )
+        .highlight_style(if show_highlight || searching {
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::White)
+        } else {
+            Style::default()
+        })
+        .highlight_symbol(if show_highlight || searching {
+            "> "
+        } else {
+            "  "
+        });
 
-        let items: Vec<ListItem> = app
-            .filtered_indices
-            .iter()
-            .map(|&i| task_item(app, &app.tasks[i]))
-            .collect();
+    frame.render_stateful_widget(list, list_area, &mut app.list_state);
 
-        let mut search_list_state = ListState::default();
-        if !app.filtered_indices.is_empty() {
-            search_list_state.select(Some(app.search_selection));
-        }
-
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .title(title)
-                    .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
-                    .border_style(Style::default().fg(border_color)),
-            )
-            .highlight_style(
-                Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Color::White),
-            )
-            .highlight_symbol("> ");
-
-        frame.render_stateful_widget(list, chunks[0], &mut search_list_state);
-
-        // Render search input line at bottom
+    // Render search input bar at the bottom of the task panel
+    if let Some(search_area) = search_area {
+        let query = &app.search_query;
         let search_line = Line::from(vec![
             Span::styled("/ ", Style::default().fg(Color::Yellow)),
-            Span::raw(app.search_query.clone()),
+            Span::raw(query.as_str()),
             Span::styled("_", Style::default().fg(Color::DarkGray)),
         ]);
-        let search_block = Block::default()
-            .borders(Borders::BOTTOM | Borders::LEFT | Borders::RIGHT)
-            .border_style(Style::default().fg(border_color));
-        frame.render_widget(Paragraph::new(search_line).block(search_block), chunks[1]);
-    } else {
-        let items: Vec<ListItem> = app.tasks.iter().map(|task| task_item(app, task)).collect();
-
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .title(title)
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(border_color)),
-            )
-            .highlight_style(if show_highlight {
-                Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Color::White)
-            } else {
-                Style::default()
-            })
-            .highlight_symbol(if show_highlight { "> " } else { "  " });
-
-        frame.render_stateful_widget(list, area, &mut app.list_state);
+        let search_bar = Paragraph::new(search_line);
+        frame.render_widget(search_bar, search_area);
     }
 }
 

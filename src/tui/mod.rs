@@ -461,6 +461,11 @@ fn run_loop<R: Runtime>(
                                         app.focus = Focus::ConfirmDelete(id);
                                     }
                                 }
+                                KeyCode::Char('/') => {
+                                    app.search_query.clear();
+                                    app.update_search_filter();
+                                    app.focus = Focus::TaskSearch;
+                                }
                                 KeyCode::Tab => {
                                     app.focus = Focus::ChatInput;
                                     app.restore_input();
@@ -471,12 +476,6 @@ fn run_loop<R: Runtime>(
                                     app.focus = Focus::ChatInput;
                                     app.restore_input();
                                 }
-                                KeyCode::Char('/') => {
-                                    app.search_query.clear();
-                                    app.search_selection = 0;
-                                    app.update_search_filter();
-                                    app.focus = Focus::TaskSearch;
-                                }
                                 _ => {}
                             },
                             Focus::TaskSearch => {
@@ -485,24 +484,29 @@ fn run_loop<R: Runtime>(
                                     KeyCode::Esc => {
                                         app.search_query.clear();
                                         app.filtered_indices.clear();
-                                        app.search_selection = 0;
+                                        if !app.tasks.is_empty() {
+                                            let sel = app
+                                                .list_state
+                                                .selected()
+                                                .unwrap_or(0)
+                                                .min(app.tasks.len() - 1);
+                                            app.list_state.select(Some(sel));
+                                        }
                                         app.focus = Focus::TaskList;
                                     }
                                     KeyCode::Enter => {
-                                        if let Some(&real_idx) =
-                                            app.filtered_indices.get(app.search_selection)
-                                        {
+                                        if let Some(real_idx) = app.selected_filtered_task_index() {
                                             app.list_state.select(Some(real_idx));
                                             app.show_detail = true;
                                             app.detail_scroll = 0;
                                             app.focus = Focus::ChatInput;
+                                            app.chat_scroll = 0;
                                             app.restore_input();
                                         } else {
                                             app.focus = Focus::TaskList;
                                         }
                                         app.search_query.clear();
                                         app.filtered_indices.clear();
-                                        app.search_selection = 0;
                                     }
                                     KeyCode::Down | KeyCode::Tab => {
                                         app.search_next();
