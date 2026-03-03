@@ -442,7 +442,19 @@ fn run_loop<R: Runtime>(
                         if let Ok(tasks) = service.list_visible(None) {
                             app.refresh_tasks(tasks);
                         }
-                        app.focus = Focus::ChatInput;
+                        // If there are pending permissions, jump to the first task
+                        // that has one so the perm panel stays visible.
+                        let perm_tasks = app.tasks_with_permissions();
+                        if let Some(perm_name) = perm_tasks.first() {
+                            if let Some(idx) = app.tasks.iter().position(|t| &t.name == perm_name) {
+                                app.list_state.select(Some(idx));
+                                app.show_detail = true;
+                                app.detail_scroll = 0;
+                            }
+                            app.focus = Focus::ChatInput;
+                        } else {
+                            app.focus = Focus::ChatInput;
+                        }
                         app.chat_scroll = 0;
                         app.restore_input();
                     // Global: Ctrl+R returns to PM (or last active project from ExO)
