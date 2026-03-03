@@ -342,6 +342,13 @@ fn run_loop<R: Runtime>(
                     {
                         app.save_current_input();
                         app.show_detail = false;
+                        app.show_projects = false;
+                        app.active_project = None;
+                        app.active_project_id = None;
+                        app.pm_messages.clear();
+                        if let Ok(tasks) = service.list_visible(None) {
+                            app.refresh_tasks(tasks);
+                        }
                         app.focus = Focus::ChatInput;
                         app.chat_scroll = 0;
                         app.restore_input();
