@@ -19,7 +19,9 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState) {
     let focused_perm_key = app.focused_perm_key();
     let show_perm = in_task_chat && app.peek_permission(&focused_perm_key).is_some();
     let show_delete = matches!(app.focus, Focus::ConfirmDelete(_));
-    let show_mid_panel = show_perm || show_delete;
+    let show_close_task = matches!(app.focus, Focus::ConfirmCloseTask(_));
+    let show_close_project = matches!(app.focus, Focus::ConfirmCloseProject);
+    let show_mid_panel = show_perm || show_delete || show_close_task || show_close_project;
     let left = if show_mid_panel {
         Layout::default()
             .direction(Direction::Vertical)
@@ -43,7 +45,11 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState) {
     };
 
     render_chat(frame, app, exo, left[0]);
-    if show_delete {
+    if show_close_task {
+        render_close_task_panel(frame, app, left[1]);
+    } else if show_close_project {
+        render_close_project_panel(frame, app, left[1]);
+    } else if show_delete {
         render_delete_confirm_panel(frame, app, left[1]);
     } else if show_perm {
         render_permission_panel(frame, app, left[1]);
@@ -436,6 +442,88 @@ fn render_delete_confirm_panel(frame: &mut ratatui::Frame, app: &App, area: Rect
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+fn render_close_task_panel(frame: &mut ratatui::Frame, app: &App, area: Rect) {
+    let Focus::ConfirmCloseTask(ref id) = app.focus else {
+        return;
+    };
+    let name = app
+        .tasks
+        .iter()
+        .find(|t| t.id == *id)
+        .map(|t| t.name.as_str())
+        .unwrap_or("?");
+    let lines = vec![
+        Line::from(vec![
+            Span::raw(" Close task "),
+            Span::styled(
+                name,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("?"),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "y",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" close   "),
+            Span::styled(
+                "n",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" cancel"),
+        ]),
+    ];
+    let block = Block::default()
+        .title(" Confirm Close ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn render_close_project_panel(frame: &mut ratatui::Frame, app: &App, area: Rect) {
+    let name = app.active_project.as_deref().unwrap_or("?");
+    let lines = vec![
+        Line::from(vec![
+            Span::raw(" Close project "),
+            Span::styled(
+                name,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("?"),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "y",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" close   "),
+            Span::styled(
+                "n",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" cancel"),
+        ]),
+    ];
+    let block = Block::default()
+        .title(" Confirm Close ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
 fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool) {
     let focused_has_perms =
         app.show_detail && app.peek_permission(&app.focused_perm_key()).is_some();
@@ -563,6 +651,14 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 Span::raw(" tasks  "),
                 Span::styled("Esc", Style::default().fg(Color::Yellow)),
                 Span::raw(" back"),
+            ]
+        }
+        Focus::ConfirmCloseTask(_) | Focus::ConfirmCloseProject => {
+            vec![
+                Span::styled(" y", Style::default().fg(Color::Yellow)),
+                Span::raw(" close  "),
+                Span::styled("n", Style::default().fg(Color::Yellow)),
+                Span::raw(" cancel"),
             ]
         }
         Focus::ConfirmDelete(_) | Focus::TaskList => {

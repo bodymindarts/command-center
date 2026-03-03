@@ -423,16 +423,30 @@ fn run_loop<R: Runtime>(
                                     if let Some(task) = app.selected_task()
                                         && task.status.is_running()
                                     {
-                                        let id = task.id.as_str().to_string();
-                                        let _ = service.close(&id);
-                                        if let Ok(tasks) = service.list_visible() {
-                                            app.refresh_tasks(tasks);
-                                        }
+                                        let id = task.id.clone();
+                                        app.focus = Focus::ConfirmCloseTask(id);
                                     }
                                 }
                                 KeyCode::Char('n') => {
                                     app.input.take();
                                     app.focus = Focus::SpawnInput;
+                                }
+                                KeyCode::Char('r') => {
+                                    if let Some(task) = app.selected_task()
+                                        && !task.status.is_running()
+                                    {
+                                        let id = task.id.as_str().to_string();
+                                        match service.reopen(&id) {
+                                            Ok(_) => {
+                                                if let Ok(tasks) = service.list_visible() {
+                                                    app.refresh_tasks(tasks);
+                                                }
+                                            }
+                                            Err(e) => {
+                                                app.status_error = Some(format!("reopen: {e}"));
+                                            }
+                                        }
+                                    }
                                 }
                                 KeyCode::Backspace => {
                                     if let Some(task) = app.selected_task() {
@@ -525,6 +539,14 @@ fn run_loop<R: Runtime>(
                                     }
                                     KeyCode::Char('k') if ctrl => {
                                         app.focus = Focus::ChatHistory;
+                                    }
+                                    KeyCode::Char('x') if ctrl => {
+                                        if let Some(task) = app.selected_task()
+                                            && task.status.is_running()
+                                        {
+                                            let id = task.id.clone();
+                                            app.focus = Focus::ConfirmCloseTask(id);
+                                        }
                                     }
                                     KeyCode::Char('l') if ctrl => {
                                         app.save_current_input();
@@ -693,6 +715,37 @@ fn run_loop<R: Runtime>(
                                 }
                                 KeyCode::Char('n') | KeyCode::Esc => {
                                     app.focus = Focus::TaskList;
+                                }
+                                _ => {}
+                            },
+                            Focus::ConfirmCloseTask(task_id) => match key.code {
+                                KeyCode::Char('y') => {
+                                    let id = task_id.clone();
+                                    let _ = service.close(id.as_str());
+                                    if let Ok(tasks) = service.list_visible() {
+                                        app.refresh_tasks(tasks);
+                                    }
+                                    app.show_detail = false;
+                                    app.focus = Focus::ChatInput;
+                                    app.restore_input();
+                                }
+                                KeyCode::Char('n') | KeyCode::Esc => {
+                                    app.focus = if app.show_detail {
+                                        Focus::ChatInput
+                                    } else {
+                                        Focus::TaskList
+                                    };
+                                }
+                                _ => {}
+                            },
+                            Focus::ConfirmCloseProject => match key.code {
+                                KeyCode::Char('y') => {
+                                    app.active_project = None;
+                                    app.save_current_input();
+                                    app.focus = Focus::TaskList;
+                                }
+                                KeyCode::Char('n') | KeyCode::Esc => {
+                                    app.focus = Focus::ChatInput;
                                 }
                                 _ => {}
                             },

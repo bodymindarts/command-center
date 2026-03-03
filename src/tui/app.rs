@@ -12,6 +12,9 @@ pub enum Focus {
     ChatHistory,
     SpawnInput,
     ConfirmDelete(TaskId),
+    ConfirmCloseTask(TaskId),
+    #[allow(dead_code)]
+    ConfirmCloseProject,
 }
 
 pub struct ActivePermission {
@@ -193,6 +196,8 @@ pub struct App {
     pub fresh_tasks: HashSet<String>,
     /// Transient error message shown in the prompt bar. Cleared on next keypress.
     pub status_error: Option<String>,
+    /// Currently active project name. None = default (ExO).
+    pub active_project: Option<String>,
 }
 
 impl App {
@@ -218,6 +223,7 @@ impl App {
             chat_viewport_height: 0,
             fresh_tasks: HashSet::new(),
             status_error: None,
+            active_project: None,
         }
     }
 
