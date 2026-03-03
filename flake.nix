@@ -106,6 +106,7 @@
 
             # Git
             pkgs.git
+            pkgs.gh
 
             # Nix
             pkgs.nixpkgs-fmt
