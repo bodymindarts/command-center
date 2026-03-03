@@ -35,11 +35,13 @@ pub fn read_socket_breadcrumb(project_root: &std::path::Path) -> Option<String> 
     std::fs::read_to_string(project_root.join(SOCKET_BREADCRUMB)).ok()
 }
 
-/// Generate a unique socket path for this dashboard session (includes PID).
+/// Stable socket path for the dashboard (no PID suffix).
+/// Only one dashboard runs at a time, so a fixed name is fine
+/// and survives dashboard restarts without staling worktree hooks.
 pub fn session_socket_path() -> PathBuf {
     let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
     let base = std::fs::canonicalize(&tmpdir).unwrap_or_else(|_| PathBuf::from(&tmpdir));
-    base.join(format!("cc-permissions-{}.sock", std::process::id()))
+    base.join("cc-permissions.sock")
 }
 
 pub fn make_response_json(
