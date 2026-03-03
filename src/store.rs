@@ -8,7 +8,7 @@ use rusqlite_migration::{M, Migrations};
 use crate::primitives::{MessageRole, TaskId, TaskStatus};
 use crate::task::{Project, Task, TaskMessage};
 
-static MIGRATION_STEPS: [M<'static>; 2] = [
+static MIGRATION_STEPS: [M<'static>; 3] = [
     M::up(
         "CREATE TABLE IF NOT EXISTS tasks (
             id           TEXT PRIMARY KEY,
@@ -41,6 +41,7 @@ static MIGRATION_STEPS: [M<'static>; 2] = [
         );
         ALTER TABLE tasks ADD COLUMN project_id TEXT;",
     ),
+    M::up("ALTER TABLE tasks ADD COLUMN session_id TEXT;"),
 ];
 static MIGRATIONS: Migrations<'static> = Migrations::from_slice(&MIGRATION_STEPS);
 
@@ -56,6 +57,7 @@ fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
         tmux_pane: row.get(5)?,
         tmux_window: row.get(6)?,
         work_dir: row.get(7)?,
+        session_id: row.get(13)?,
         started_at: DateTime::parse_from_rfc3339(&started_at)
             .unwrap_or_default()
             .with_timezone(&Utc),
@@ -72,7 +74,7 @@ fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
 
 const TASK_COLUMNS: &str =
     "id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir,
-     started_at, completed_at, exit_code, output, project_id";
+     started_at, completed_at, exit_code, output, project_id, session_id";
 
 pub struct Store {
     conn: Connection,
@@ -193,6 +195,14 @@ impl Store {
         self.conn.execute(
             "UPDATE tasks SET tmux_window = ?1 WHERE id = ?2",
             (window_id, id),
+        )?;
+        Ok(())
+    }
+
+    pub fn update_session_id(&self, id: &str, session_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tasks SET session_id = ?1 WHERE id = ?2",
+            (session_id, id),
         )?;
         Ok(())
     }
@@ -352,6 +362,7 @@ mod tests {
             tmux_pane: Some("%1".to_string()),
             tmux_window: Some("@1".to_string()),
             work_dir: None,
+            session_id: None,
             started_at: Utc::now(),
             completed_at: None,
             exit_code: None,

@@ -115,13 +115,17 @@ impl<'a, R: Runtime> TaskService<'a, R> {
             &worktree_path,
             project_id,
         );
+        let session_id = uuid::Uuid::now_v7().to_string();
 
         self.store.insert_task(&task)?;
+        self.store
+            .update_session_id(task.id.as_str(), &session_id)?;
         self.store
             .insert_message(task.id.as_str(), MessageRole::System, &user_prompt)?;
 
         let result = self.runtime.spawn_agent(
             task_name,
+            &session_id,
             system_prompt.as_deref(),
             &user_prompt,
             &worktree_path,
@@ -164,12 +168,18 @@ impl<'a, R: Runtime> TaskService<'a, R> {
 
         let id = TaskId::generate();
         let task = Task::new(id, task_name, skill_name, &params_map, &work_dir, None);
+        let session_id = uuid::Uuid::now_v7().to_string();
 
         self.store.insert_task(&task)?;
+        self.store
+            .update_session_id(task.id.as_str(), &session_id)?;
 
-        let result =
-            self.runtime
-                .spawn_interactive(task_name, system_prompt.as_deref(), &work_dir)?;
+        let result = self.runtime.spawn_interactive(
+            task_name,
+            &session_id,
+            system_prompt.as_deref(),
+            &work_dir,
+        )?;
         self.store
             .update_tmux_pane(task.id.as_str(), &result.pane_id)?;
         self.store
@@ -209,12 +219,18 @@ impl<'a, R: Runtime> TaskService<'a, R> {
 
         let id = TaskId::generate();
         let task = Task::new(id, task_name, skill_name, &params_map, &scratch_dir, None);
+        let session_id = uuid::Uuid::now_v7().to_string();
 
         self.store.insert_task(&task)?;
+        self.store
+            .update_session_id(task.id.as_str(), &session_id)?;
 
-        let result =
-            self.runtime
-                .spawn_interactive(task_name, system_prompt.as_deref(), &scratch_dir)?;
+        let result = self.runtime.spawn_interactive(
+            task_name,
+            &session_id,
+            system_prompt.as_deref(),
+            &scratch_dir,
+        )?;
         self.store
             .update_tmux_pane(task.id.as_str(), &result.pane_id)?;
         self.store
@@ -292,11 +308,19 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         let work_dir = std::path::Path::new(work_dir);
         if !work_dir.is_dir() {
             // Worktree was removed (e.g. after merging and cleaning up).
-            // Recreate it so the agent can resume with --continue.
+            // Recreate it so the agent can resume.
             self.runtime.recreate_worktree(&self.paths.root, work_dir)?;
         }
 
-        let result = self.runtime.resume_agent(&task.name, work_dir)?;
+        let session_id = task.session_id.as_deref().unwrap_or_default();
+        let result = if session_id.is_empty() {
+            // Legacy task without session_id — fall back to re-running launch.sh
+            // which still exists in the worktree's .claude/ directory.
+            self.runtime.relaunch_agent(&task.name, work_dir)?
+        } else {
+            self.runtime
+                .resume_agent(&task.name, session_id, work_dir)?
+        };
 
         self.store
             .reopen_task(task.id.as_str(), &result.pane_id, &result.window_id)?;
@@ -598,6 +622,7 @@ mod tests {
         fn spawn_agent(
             &self,
             task_name: &str,
+            _session_id: &str,
             _system_prompt: Option<&str>,
             _user_prompt: &str,
             _work_dir: &Path,
@@ -614,6 +639,7 @@ mod tests {
         fn spawn_interactive(
             &self,
             task_name: &str,
+            _session_id: &str,
             _system_prompt: Option<&str>,
             _work_dir: &Path,
         ) -> Result<SpawnResult> {
@@ -626,7 +652,23 @@ mod tests {
             })
         }
 
-        fn resume_agent(&self, task_name: &str, work_dir: &Path) -> Result<SpawnResult> {
+        fn resume_agent(
+            &self,
+            task_name: &str,
+            _session_id: &str,
+            work_dir: &Path,
+        ) -> Result<SpawnResult> {
+            self.calls.borrow_mut().push(Call::ResumeAgent {
+                task_name: task_name.to_string(),
+                work_dir: work_dir.to_path_buf(),
+            });
+            Ok(SpawnResult {
+                window_id: self.spawn_window_id.clone(),
+                pane_id: self.spawn_pane_id.clone(),
+            })
+        }
+
+        fn relaunch_agent(&self, task_name: &str, work_dir: &Path) -> Result<SpawnResult> {
             self.calls.borrow_mut().push(Call::ResumeAgent {
                 task_name: task_name.to_string(),
                 work_dir: work_dir.to_path_buf(),
@@ -893,6 +935,7 @@ prompt = "noop prompt"
             tmux_pane: None,
             tmux_window: None,
             work_dir: None,
+            session_id: None,
             started_at: Utc::now(),
             completed_at: None,
             exit_code: None,

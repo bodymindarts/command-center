@@ -29,6 +29,7 @@ pub trait Runtime {
     fn spawn_agent(
         &self,
         task_name: &str,
+        session_id: &str,
         system_prompt: Option<&str>,
         user_prompt: &str,
         work_dir: &Path,
@@ -36,10 +37,17 @@ pub trait Runtime {
     fn spawn_interactive(
         &self,
         task_name: &str,
+        session_id: &str,
         system_prompt: Option<&str>,
         work_dir: &Path,
     ) -> Result<SpawnResult>;
-    fn resume_agent(&self, task_name: &str, work_dir: &Path) -> Result<SpawnResult>;
+    fn resume_agent(
+        &self,
+        task_name: &str,
+        session_id: &str,
+        work_dir: &Path,
+    ) -> Result<SpawnResult>;
+    fn relaunch_agent(&self, task_name: &str, work_dir: &Path) -> Result<SpawnResult>;
     fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> Result<()>;
     fn forward_key(&self, pane_id: &str, key: &str) -> Result<()>;
     fn forward_literal(&self, pane_id: &str, text: &str) -> Result<()>;
@@ -265,6 +273,7 @@ impl Runtime for TmuxRuntime {
     fn spawn_agent(
         &self,
         task_name: &str,
+        session_id: &str,
         system_prompt: Option<&str>,
         user_prompt: &str,
         work_dir: &Path,
@@ -279,6 +288,7 @@ impl Runtime for TmuxRuntime {
         std::fs::write(claude_dir.join("prompt.txt"), user_prompt)?;
 
         let mut script = format!("#!/bin/sh\nunset CLAUDECODE\nexec {claude_bin}");
+        script.push_str(&format!(" --session-id {session_id}"));
         script.push_str(" \"$(cat .claude/prompt.txt)\"");
         if let Some(sys) = system_prompt {
             std::fs::write(claude_dir.join("system-prompt.txt"), sys)?;
@@ -299,6 +309,7 @@ impl Runtime for TmuxRuntime {
     fn spawn_interactive(
         &self,
         task_name: &str,
+        session_id: &str,
         system_prompt: Option<&str>,
         work_dir: &Path,
     ) -> Result<SpawnResult> {
@@ -308,6 +319,7 @@ impl Runtime for TmuxRuntime {
         std::fs::create_dir_all(&claude_dir)?;
 
         let mut script = format!("#!/bin/sh\nunset CLAUDECODE\nexec {claude_bin}");
+        script.push_str(&format!(" --session-id {session_id}"));
         if let Some(sys) = system_prompt {
             std::fs::write(claude_dir.join("system-prompt.txt"), sys)?;
             script.push_str(" --append-system-prompt \"$(cat .claude/system-prompt.txt)\"");
@@ -324,11 +336,20 @@ impl Runtime for TmuxRuntime {
         self.launch_agent_window(task_name, work_dir, "sh .claude/launch.sh")
     }
 
-    fn resume_agent(&self, task_name: &str, work_dir: &Path) -> Result<SpawnResult> {
+    fn resume_agent(
+        &self,
+        task_name: &str,
+        session_id: &str,
+        work_dir: &Path,
+    ) -> Result<SpawnResult> {
         let claude_bin = self.resolve_binary("claude")?;
-        let claude_cmd = format!("env -u CLAUDECODE {claude_bin} --continue");
+        let claude_cmd = format!("env -u CLAUDECODE {claude_bin} --resume {session_id}");
 
         self.launch_agent_window(task_name, work_dir, &claude_cmd)
+    }
+
+    fn relaunch_agent(&self, task_name: &str, work_dir: &Path) -> Result<SpawnResult> {
+        self.launch_agent_window(task_name, work_dir, "sh .claude/launch.sh")
     }
 
     fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> Result<()> {
