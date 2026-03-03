@@ -191,36 +191,36 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
 
     let total_perm = app.total_pending_permissions();
     let other_perms = app.other_project_perm_counts();
-    let other_perm_str = if other_perms.is_empty() {
-        String::new()
+    let mut title_spans: Vec<Span> = Vec::new();
+    if searching {
+        title_spans.push(Span::raw(format!(
+            " Tasks ({}/{}) ",
+            app.filtered_indices.len(),
+            app.tasks.len()
+        )));
+    } else if let Some(ref name) = app.active_project {
+        if total_perm > 0 {
+            title_spans.push(Span::raw(format!(" {name} ({total_perm} perm) ")));
+        } else {
+            title_spans.push(Span::raw(format!(" {name} ")));
+        }
+    } else if total_perm > 0 {
+        title_spans.push(Span::raw(format!(" Tasks ({total_perm} perm) ")));
     } else {
+        title_spans.push(Span::raw(" Tasks "));
+    }
+    if !other_perms.is_empty() {
         let parts: Vec<String> = other_perms
             .iter()
             .map(|(name, count)| format!("{name}:{count}"))
             .collect();
-        format!(" [{}]", parts.join(", "))
-    };
-    let title = if searching {
-        format!(
-            " Tasks ({}/{}) ",
-            app.filtered_indices.len(),
-            app.tasks.len()
-        )
-    } else if let Some(ref name) = app.active_project {
-        if total_perm > 0 {
-            format!(" {name} ({total_perm} perm){other_perm_str} ")
-        } else if !other_perm_str.is_empty() {
-            format!(" {name}{other_perm_str} ")
-        } else {
-            format!(" {name} ")
-        }
-    } else if total_perm > 0 {
-        format!(" Tasks ({total_perm} perm){other_perm_str} ")
-    } else if !other_perm_str.is_empty() {
-        format!(" Tasks{other_perm_str} ")
-    } else {
-        " Tasks ".to_string()
-    };
+        title_spans.push(Span::styled(
+            format!("[{}]", parts.join(", ")),
+            Style::default().fg(Color::Yellow),
+        ));
+        title_spans.push(Span::raw(" "));
+    }
+    let title = Line::from(title_spans);
 
     let show_highlight = app.show_detail || focused;
 
