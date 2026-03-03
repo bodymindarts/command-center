@@ -10,10 +10,12 @@ pub enum Focus {
     TaskList,
     TaskSearch,
     ProjectList,
+    ProjectNameInput,
     ChatInput,
     ChatHistory,
     SpawnInput,
     ConfirmDelete(TaskId),
+    ConfirmDeleteProject(String),
     ConfirmCloseTask(TaskId),
     ConfirmCloseProject,
 }

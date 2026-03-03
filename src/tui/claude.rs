@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 
-const EXO_SYSTEM_PROMPT: &str = "\
+pub const EXO_SYSTEM_PROMPT: &str = "\
 You are ExO, the executive orchestrator of a multi-agent command center. \
 You are a strategic co-pilot — you deliberate, clarify, and plan before acting.
 
@@ -34,6 +34,29 @@ If the agent needs to find or understand code, say so in the description rather 
 - Discussing architecture, trade-offs, and priorities
 - Anything the user explicitly asks you to do directly";
 
+pub const PM_SYSTEM_PROMPT: &str = "\
+You are PM, the project manager for this project. \
+You help the user organize, plan, and coordinate work within the project scope.
+
+## Role
+You discuss project goals, break down work into actionable tasks, track progress, \
+and help the user make decisions about priorities and approach.
+
+## What you do
+- Discuss project scope, goals, and priorities
+- Break down features into clear, actionable tasks
+- Suggest approaches and surface trade-offs
+- Track what's been done and what remains
+- Help estimate effort and sequence work
+
+## Spawning tasks
+When the user wants to execute work, spawn tasks using:
+```
+clat spawn \"<short-task-name>\" -p task=\"<clear description of what to do>\"
+```
+Each task runs in its own worktree with an engineer agent. \
+The task description should be self-contained — include all context the agent needs.";
+
 pub enum ExoEvent {
     TextDelta(String),
     ToolStart(String),
@@ -43,9 +66,9 @@ pub enum ExoEvent {
     Error(String),
 }
 
-/// Persistent ExO claude session. The claude process stays alive across turns
+/// Persistent claude session. The claude process stays alive across turns
 /// — messages are sent on stdin and responses streamed back on stdout without
-/// any respawn between turns.
+/// any respawn between turns. Used for both ExO and PM sessions.
 pub struct ExoSession {
     stdin: Option<ChildStdin>,
     cancel: Arc<AtomicBool>,
@@ -54,6 +77,7 @@ pub struct ExoSession {
     active: Arc<AtomicBool>,
     tx: mpsc::Sender<ExoEvent>,
     session_id: Option<String>,
+    system_prompt: String,
 }
 
 impl ExoSession {
@@ -62,6 +86,7 @@ impl ExoSession {
         session_id: Option<&str>,
         cancel: Arc<AtomicBool>,
         tx: mpsc::Sender<ExoEvent>,
+        system_prompt: &str,
     ) -> Self {
         let mut session = ExoSession {
             stdin: None,
@@ -69,6 +94,7 @@ impl ExoSession {
             active: Arc::new(AtomicBool::new(false)),
             tx,
             session_id: session_id.map(|s| s.to_string()),
+            system_prompt: system_prompt.to_string(),
         };
         session.spawn_process(session_id.is_some());
         session
@@ -86,7 +112,7 @@ impl ExoSession {
             "--allowedTools".to_string(),
             "Read,Grep,Glob,Bash,Edit,Write".to_string(),
             "--append-system-prompt".to_string(),
-            EXO_SYSTEM_PROMPT.to_string(),
+            self.system_prompt.clone(),
         ];
 
         if resume && let Some(ref sid) = self.session_id {

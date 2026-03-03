@@ -32,6 +32,10 @@ impl Paths {
     pub fn exo_session_file(&self) -> PathBuf {
         self.data_dir.join("exo-session-id")
     }
+
+    pub fn pm_session_file(&self, project_id: &str) -> PathBuf {
+        self.data_dir.join(format!("pm-session-{project_id}"))
+    }
 }
 
 fn find_project_root() -> Result<PathBuf> {

@@ -25,7 +25,7 @@ use app::{ActivePermission, App, Focus};
 
 const EXO_PERM_KEY: &str = "exo";
 use chat::ExoState;
-use claude::{ExoEvent, ExoSession};
+use claude::{EXO_SYSTEM_PROMPT, ExoEvent, ExoSession, PM_SYSTEM_PROMPT};
 
 pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -> Result<()> {
     terminal::enable_raw_mode()?;
@@ -50,8 +50,18 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
     }
     let (tx, rx) = mpsc::channel::<ExoEvent>();
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut exo_session =
-        ExoSession::start(exo.session_id.as_deref(), Arc::clone(&cancel), tx.clone());
+    let mut exo_session = ExoSession::start(
+        exo.session_id.as_deref(),
+        Arc::clone(&cancel),
+        tx.clone(),
+        EXO_SYSTEM_PROMPT,
+    );
+
+    // PM (project manager) chat state and session
+    let mut pm = ExoState::new();
+    let (pm_tx, pm_rx) = mpsc::channel::<ExoEvent>();
+    let mut pm_session: Option<ExoSession> = None;
+    let mut pm_cancel = Arc::new(AtomicBool::new(false));
 
     // Permission socket listener
     let (perm_tx, perm_rx) = mpsc::channel::<(UnixStream, PermissionRequest)>();
@@ -102,14 +112,20 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
         &mut app,
         &mut exo,
         &mut exo_session,
+        &mut pm,
+        &mut pm_session,
+        &mut pm_cancel,
+        &pm_tx,
         service,
         &rx,
+        &pm_rx,
         &perm_rx,
         &resolved_rx,
         &idle_rx,
     );
 
     cancel.store(true, Ordering::Relaxed);
+    pm_cancel.store(true, Ordering::Relaxed);
 
     // Deny all pending permissions on exit
     for (_, mut queue) in app.pending_permissions.drain() {
@@ -159,8 +175,13 @@ fn run_loop<R: Runtime>(
     app: &mut App,
     exo: &mut ExoState,
     exo_session: &mut ExoSession,
+    pm: &mut ExoState,
+    pm_session: &mut Option<ExoSession>,
+    pm_cancel: &mut Arc<AtomicBool>,
+    pm_tx: &mpsc::Sender<ExoEvent>,
     service: &TaskService<R>,
     rx: &mpsc::Receiver<ExoEvent>,
+    pm_rx: &mpsc::Receiver<ExoEvent>,
     perm_rx: &mpsc::Receiver<(UnixStream, PermissionRequest)>,
     resolved_rx: &mpsc::Receiver<String>,
     idle_rx: &mpsc::Receiver<String>,
@@ -168,13 +189,13 @@ fn run_loop<R: Runtime>(
     let mut last_tick = Instant::now();
 
     loop {
-        let tick_rate = if exo.streaming {
+        let tick_rate = if exo.streaming || pm.streaming {
             Duration::from_millis(50)
         } else {
             Duration::from_millis(500)
         };
 
-        terminal.draw(|frame| widgets::ui(frame, app, exo))?;
+        terminal.draw(|frame| widgets::ui(frame, app, exo, pm))?;
 
         // Drain channel events
         while let Ok(ev) = rx.try_recv() {
@@ -222,6 +243,69 @@ fn run_loop<R: Runtime>(
                     {
                         let _ =
                             service.insert_exo_message(MessageRole::Assistant, &msg.text_content());
+                    }
+                }
+            }
+        }
+
+        // Drain PM channel events
+        while let Ok(ev) = pm_rx.try_recv() {
+            match ev {
+                ExoEvent::TextDelta(text) => {
+                    if pm.streaming {
+                        pm.append_text(&text);
+                    }
+                }
+                ExoEvent::ToolStart(name) => {
+                    if pm.streaming {
+                        pm.add_tool_activity(name);
+                    }
+                }
+                ExoEvent::SessionId(id) => {
+                    if let Some(ref pid) = app.active_project_id {
+                        service.write_pm_session_id(pid, &id);
+                    }
+                    pm.session_id = Some(id.clone());
+                    if let Some(sess) = pm_session {
+                        sess.set_session_id(id);
+                    }
+                }
+                ExoEvent::TurnDone => {
+                    pm.finish_streaming();
+                    if let Some(msg) = pm.messages.last()
+                        && matches!(msg.role, MessageRole::Assistant)
+                        && msg.has_text()
+                        && let Some(ref pid) = app.active_project_id
+                    {
+                        let _ = service.insert_pm_message(
+                            pid,
+                            MessageRole::Assistant,
+                            &msg.text_content(),
+                        );
+                    }
+                }
+                ExoEvent::ProcessExited => {
+                    pm.had_process_error = false;
+                    if let Some(sess) = pm_session {
+                        sess.mark_exited();
+                    }
+                    if pm.streaming {
+                        pm.add_error("PM process exited unexpectedly");
+                    }
+                }
+                ExoEvent::Error(e) => {
+                    pm.had_process_error = true;
+                    pm.add_error(&e);
+                    if let Some(msg) = pm.messages.last()
+                        && matches!(msg.role, MessageRole::Assistant)
+                        && msg.has_text()
+                        && let Some(ref pid) = app.active_project_id
+                    {
+                        let _ = service.insert_pm_message(
+                            pid,
+                            MessageRole::Assistant,
+                            &msg.text_content(),
+                        );
                     }
                 }
             }
@@ -350,6 +434,11 @@ fn run_loop<R: Runtime>(
                         app.show_detail = false;
                         app.show_projects = false;
                         app.pm_messages.clear();
+                        // Clear PM session state
+                        pm_cancel.store(true, Ordering::Relaxed);
+                        *pm_cancel = Arc::new(AtomicBool::new(false));
+                        *pm_session = None;
+                        *pm = ExoState::new();
                         if let Ok(tasks) = service.list_visible(None) {
                             app.refresh_tasks(tasks);
                         }
@@ -381,6 +470,16 @@ fn run_loop<R: Runtime>(
                             }
                             if let Ok(tasks) = service.list_visible(Some(&id)) {
                                 app.refresh_tasks(tasks);
+                            }
+                            // Restore PM state
+                            pm_cancel.store(true, Ordering::Relaxed);
+                            *pm_cancel = Arc::new(AtomicBool::new(false));
+                            *pm_session = None;
+                            *pm = ExoState::new();
+                            pm.session_id = service.read_pm_session_id(&id);
+                            if let Ok(messages) = service.pm_messages(&id) {
+                                let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
+                                pm.load_history(recent.into_iter().rev().collect());
                             }
                             app.focus = Focus::ChatInput;
                             app.chat_scroll = 0;
@@ -631,7 +730,28 @@ fn run_loop<R: Runtime>(
                                         if let Ok(tasks) = service.list_visible(Some(&project_id)) {
                                             app.refresh_tasks(tasks);
                                         }
+                                        // Set up PM state for this project
+                                        pm_cancel.store(true, Ordering::Relaxed);
+                                        *pm_cancel = Arc::new(AtomicBool::new(false));
+                                        *pm_session = None;
+                                        *pm = ExoState::new();
+                                        pm.session_id = service.read_pm_session_id(&project_id);
+                                        if let Ok(messages) = service.pm_messages(&project_id) {
+                                            let recent: Vec<_> =
+                                                messages.into_iter().rev().take(20).collect();
+                                            pm.load_history(recent.into_iter().rev().collect());
+                                        }
                                         app.restore_input();
+                                    }
+                                }
+                                KeyCode::Char('n') => {
+                                    app.input.take();
+                                    app.focus = Focus::ProjectNameInput;
+                                }
+                                KeyCode::Backspace => {
+                                    if let Some(project) = app.selected_project() {
+                                        let name = project.name.clone();
+                                        app.focus = Focus::ConfirmDeleteProject(name);
                                     }
                                 }
                                 KeyCode::Char('p') | KeyCode::Esc => {
@@ -662,7 +782,7 @@ fn run_loop<R: Runtime>(
                                                 vec![("task".to_string(), name.clone())],
                                                 None,
                                                 None,
-                                                None,
+                                                app.active_project_id.clone(),
                                             );
                                             if let Ok(tasks) = service
                                                 .list_visible(app.active_project_id.as_deref())
@@ -671,6 +791,63 @@ fn run_loop<R: Runtime>(
                                             }
                                         }
                                         app.focus = Focus::TaskList;
+                                    }
+                                    KeyCode::Char('u') if ctrl => app.input.kill_before(),
+                                    KeyCode::Char('k') if ctrl => app.input.kill_line(),
+                                    KeyCode::Char('w') if ctrl => app.input.kill_word(),
+                                    KeyCode::Char('a') if ctrl => app.input.home(),
+                                    KeyCode::Char(c) => app.input.insert(c),
+                                    KeyCode::Backspace => app.input.backspace(),
+                                    KeyCode::Delete => app.input.delete(),
+                                    KeyCode::Left => app.input.left(),
+                                    KeyCode::Right => app.input.right(),
+                                    KeyCode::Home => app.input.home(),
+                                    KeyCode::End => app.input.end(),
+                                    _ => {}
+                                }
+                            }
+                            Focus::ProjectNameInput => {
+                                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                                match key.code {
+                                    KeyCode::Esc => {
+                                        app.input.take();
+                                        app.focus = Focus::ProjectList;
+                                    }
+                                    KeyCode::Enter => {
+                                        if !app.input.is_empty() {
+                                            let name = app.input.take();
+                                            match service.create_project(&name, "") {
+                                                Ok(project) => {
+                                                    // Enter the new project
+                                                    let project_id = project.id.clone();
+                                                    app.active_project = Some(project.name.clone());
+                                                    app.active_project_id =
+                                                        Some(project_id.clone());
+                                                    app.show_projects = false;
+                                                    app.show_detail = false;
+                                                    app.chat_scroll = 0;
+                                                    if let Ok(tasks) =
+                                                        service.list_visible(Some(&project_id))
+                                                    {
+                                                        app.refresh_tasks(tasks);
+                                                    }
+                                                    // Set up PM state
+                                                    pm_cancel.store(true, Ordering::Relaxed);
+                                                    *pm_cancel = Arc::new(AtomicBool::new(false));
+                                                    *pm_session = None;
+                                                    *pm = ExoState::new();
+                                                    app.focus = Focus::ChatInput;
+                                                    app.restore_input();
+                                                }
+                                                Err(e) => {
+                                                    app.status_error =
+                                                        Some(format!("create project: {e}"));
+                                                    app.focus = Focus::ProjectList;
+                                                }
+                                            }
+                                        } else {
+                                            app.focus = Focus::ProjectList;
+                                        }
                                     }
                                     KeyCode::Char('u') if ctrl => app.input.kill_before(),
                                     KeyCode::Char('k') if ctrl => app.input.kill_line(),
@@ -794,6 +971,9 @@ fn run_loop<R: Runtime>(
                                         if exo.streaming {
                                             exo.finish_streaming();
                                         }
+                                        if pm.streaming {
+                                            pm.finish_streaming();
+                                        }
                                         app.chat_scroll = 0;
                                     }
                                     KeyCode::Tab => {
@@ -834,13 +1014,51 @@ fn run_loop<R: Runtime>(
                                         app.chat_scroll = 0;
                                         if !app.input.is_empty() {
                                             if let Some(ref pid) = app.active_project_id {
-                                                // PM chat: store the message
+                                                // PM chat: finish any in-progress streaming
+                                                if pm.streaming {
+                                                    pm.finish_streaming();
+                                                    if let Some(msg) = pm.messages.last()
+                                                        && matches!(
+                                                            msg.role,
+                                                            MessageRole::Assistant
+                                                        )
+                                                        && msg.has_text()
+                                                    {
+                                                        let _ = service.insert_pm_message(
+                                                            pid,
+                                                            MessageRole::Assistant,
+                                                            &msg.text_content(),
+                                                        );
+                                                    }
+                                                }
                                                 let msg = app.input.take();
                                                 let _ = service.insert_pm_message(
                                                     pid,
                                                     MessageRole::User,
                                                     &msg,
                                                 );
+                                                pm.add_user_message(msg.clone());
+                                                // Lazily create PM session
+                                                if pm_session.is_none() {
+                                                    let sid = service
+                                                        .read_pm_session_id(pid)
+                                                        .or_else(|| pm.session_id.clone());
+                                                    *pm_session = Some(ExoSession::start(
+                                                        sid.as_deref(),
+                                                        Arc::clone(pm_cancel),
+                                                        pm_tx.clone(),
+                                                        PM_SYSTEM_PROMPT,
+                                                    ));
+                                                    if let Some(ref s) = sid {
+                                                        pm.session_id = Some(s.clone());
+                                                    }
+                                                }
+                                                if let Some(sess) = pm_session {
+                                                    sess.send_message(
+                                                        &msg,
+                                                        pm.session_id.as_deref(),
+                                                    );
+                                                }
                                             } else {
                                                 // ExO chat: stream to ExO
                                                 // Finish any in-progress streaming from a previous turn
@@ -944,11 +1162,41 @@ fn run_loop<R: Runtime>(
                                 }
                                 _ => {}
                             },
+                            Focus::ConfirmDeleteProject(project_name) => match key.code {
+                                KeyCode::Char('y') => {
+                                    let name = project_name.clone();
+                                    let _ = service.delete_project(&name);
+                                    // Refresh project list
+                                    if let Ok(projects) = service.list_projects() {
+                                        app.projects = projects;
+                                        if app.projects.is_empty() {
+                                            app.project_list_state.select(None);
+                                        } else {
+                                            let sel = app
+                                                .project_list_state
+                                                .selected()
+                                                .unwrap_or(0)
+                                                .min(app.projects.len().saturating_sub(1));
+                                            app.project_list_state.select(Some(sel));
+                                        }
+                                    }
+                                    app.focus = Focus::ProjectList;
+                                }
+                                KeyCode::Char('n') | KeyCode::Esc => {
+                                    app.focus = Focus::ProjectList;
+                                }
+                                _ => {}
+                            },
                             Focus::ConfirmCloseProject => match key.code {
                                 KeyCode::Char('y') => {
                                     app.active_project = None;
                                     app.active_project_id = None;
                                     app.save_current_input();
+                                    // Clear PM session state
+                                    pm_cancel.store(true, Ordering::Relaxed);
+                                    *pm_cancel = Arc::new(AtomicBool::new(false));
+                                    *pm_session = None;
+                                    *pm = ExoState::new();
                                     app.focus = Focus::TaskList;
                                     if let Ok(tasks) = service.list_visible(None) {
                                         app.refresh_tasks(tasks);

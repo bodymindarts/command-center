@@ -8,7 +8,7 @@ use crate::primitives::{MessageRole, TaskStatus};
 use super::app::{App, Focus};
 use super::chat::{ContentBlock, ExoState};
 
-pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState) {
+pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, pm: &ExoState) {
     let outer = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
@@ -20,9 +20,11 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState) {
     let focused_perm_key = app.focused_perm_key();
     let show_perm = in_task_chat && app.peek_permission(&focused_perm_key).is_some();
     let show_delete = matches!(app.focus, Focus::ConfirmDelete(_));
+    let show_delete_project = matches!(app.focus, Focus::ConfirmDeleteProject(_));
     let show_close_task = matches!(app.focus, Focus::ConfirmCloseTask(_));
     let show_close_project = matches!(app.focus, Focus::ConfirmCloseProject);
-    let show_mid_panel = show_perm || show_delete || show_close_task || show_close_project;
+    let show_mid_panel =
+        show_perm || show_delete || show_delete_project || show_close_task || show_close_project;
     let left = if show_mid_panel {
         Layout::default()
             .direction(Direction::Vertical)
@@ -45,18 +47,23 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState) {
             .split(outer[0])
     };
 
-    render_chat(frame, app, exo, left[0]);
+    render_chat(frame, app, exo, pm, left[0]);
     if show_close_task {
         render_close_task_panel(frame, app, left[1]);
     } else if show_close_project {
         render_close_project_panel(frame, app, left[1]);
+    } else if show_delete_project {
+        render_delete_project_panel(frame, app, left[1]);
     } else if show_delete {
         render_delete_confirm_panel(frame, app, left[1]);
     } else if show_perm {
         render_permission_panel(frame, app, left[1]);
     }
 
-    let focused_input = matches!(app.focus, Focus::ChatInput | Focus::SpawnInput);
+    let focused_input = matches!(
+        app.focus,
+        Focus::ChatInput | Focus::SpawnInput | Focus::ProjectNameInput
+    );
     render_input(frame, app, left[2], focused_input);
     render_prompt_bar(frame, app, left[3]);
 
@@ -284,7 +291,13 @@ fn render_project_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, fo
     frame.render_stateful_widget(list, area, &mut app.project_list_state);
 }
 
-fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: Rect) {
+fn render_chat(
+    frame: &mut ratatui::Frame,
+    app: &mut App,
+    exo: &ExoState,
+    pm: &ExoState,
+    area: Rect,
+) {
     let searching = matches!(app.focus, Focus::TaskSearch);
     let in_task_chat = !searching && app.show_detail && app.selected_task().is_some();
 
@@ -356,30 +369,59 @@ fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: 
             }
         }
     } else if app.active_project.is_some() {
-        // Render PM chat
-        if app.pm_messages.is_empty() {
+        // Render PM chat from PmState (streaming-aware)
+        for msg in &pm.messages {
+            let (label, label_color) = match msg.role {
+                MessageRole::User => ("You", Color::Green),
+                MessageRole::Assistant => ("PM", Color::Cyan),
+                MessageRole::System => ("System", Color::DarkGray),
+            };
+
             lines.push(Line::from(Span::styled(
-                "No PM messages yet.",
+                format!("{label}:"),
+                Style::default()
+                    .fg(label_color)
+                    .add_modifier(Modifier::BOLD),
+            )));
+
+            if msg.blocks.is_empty() && matches!(msg.role, MessageRole::Assistant) && pm.streaming {
+                lines.push(Line::from(Span::styled(
+                    "...",
+                    Style::default().fg(Color::DarkGray),
+                )));
+            } else {
+                let mut tool_spans: Vec<Span> = Vec::new();
+                for block in &msg.blocks {
+                    match block {
+                        ContentBlock::Text(text) => {
+                            if !tool_spans.is_empty() {
+                                lines.push(Line::from(std::mem::take(&mut tool_spans)));
+                            }
+                            for l in text.trim_start_matches('\n').lines() {
+                                lines.push(Line::from(l.to_string()));
+                            }
+                        }
+                        ContentBlock::ToolUse(name) => {
+                            tool_spans.push(Span::styled(
+                                format!("[{name}] "),
+                                Style::default().fg(Color::Yellow),
+                            ));
+                        }
+                    }
+                }
+                if !tool_spans.is_empty() {
+                    lines.push(Line::from(tool_spans));
+                }
+            }
+
+            lines.push(Line::from(""));
+        }
+
+        if lines.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "Chat with PM to plan and coordinate project work",
                 Style::default().fg(Color::DarkGray),
             )));
-        } else {
-            for msg in &app.pm_messages {
-                let (label, label_color) = match msg.role {
-                    MessageRole::System => ("SYSTEM", Color::DarkGray),
-                    MessageRole::User => ("YOU", Color::Green),
-                    MessageRole::Assistant => ("PM", Color::Cyan),
-                };
-                lines.push(Line::from(Span::styled(
-                    format!("{label}:"),
-                    Style::default()
-                        .fg(label_color)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                for l in msg.content.lines() {
-                    lines.push(Line::from(l.to_string()));
-                }
-                lines.push(Line::from(""));
-            }
         }
     } else {
         // Render ExO chat
@@ -660,6 +702,45 @@ fn render_close_project_panel(frame: &mut ratatui::Frame, app: &App, area: Rect)
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+fn render_delete_project_panel(frame: &mut ratatui::Frame, app: &App, area: Rect) {
+    let Focus::ConfirmDeleteProject(ref name) = app.focus else {
+        return;
+    };
+    let lines = vec![
+        Line::from(vec![
+            Span::raw(" Delete project "),
+            Span::styled(
+                name.as_str(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("?"),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "y",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" delete   "),
+            Span::styled(
+                "n",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" cancel"),
+        ]),
+    ];
+    let block = Block::default()
+        .title(" Confirm Delete ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red));
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
 fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool) {
     let focused_has_perms =
         app.show_detail && app.peek_permission(&app.focused_perm_key()).is_some();
@@ -671,7 +752,9 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool
         Color::DarkGray
     };
     let searching = matches!(app.focus, Focus::TaskSearch);
-    let prefix = if matches!(app.focus, Focus::SpawnInput) {
+    let prefix = if matches!(app.focus, Focus::ProjectNameInput) {
+        "[new project] > ".to_string()
+    } else if matches!(app.focus, Focus::SpawnInput) {
         "[spawn] > ".to_string()
     } else if !searching && app.show_detail {
         let name = app.selected_task().map(|t| t.name.as_str()).unwrap_or("?");
@@ -746,6 +829,12 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
 
     let has_perms = app.show_detail && app.peek_permission(&app.focused_perm_key()).is_some();
     let mut spans = match &app.focus {
+        Focus::ProjectNameInput => vec![
+            Span::styled(" Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(" create  "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(" cancel"),
+        ],
         Focus::SpawnInput => vec![
             Span::styled(" Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" send  "),
@@ -792,7 +881,9 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 Span::raw(" back"),
             ]
         }
-        Focus::ConfirmCloseTask(_) | Focus::ConfirmCloseProject => {
+        Focus::ConfirmCloseTask(_)
+        | Focus::ConfirmCloseProject
+        | Focus::ConfirmDeleteProject(_) => {
             vec![
                 Span::styled(" y", Style::default().fg(Color::Yellow)),
                 Span::raw(" close  "),
@@ -816,6 +907,10 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 Span::raw(" navigate  "),
                 Span::styled("Enter", Style::default().fg(Color::Yellow)),
                 Span::raw(" select  "),
+                Span::styled("n", Style::default().fg(Color::Yellow)),
+                Span::raw(" new  "),
+                Span::styled("⌫", Style::default().fg(Color::Yellow)),
+                Span::raw(" delete  "),
                 Span::styled("p/Esc", Style::default().fg(Color::Yellow)),
                 Span::raw(" back  "),
                 Span::styled("q", Style::default().fg(Color::Yellow)),

@@ -76,6 +76,17 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         let _ = std::fs::write(self.paths.exo_session_file(), session_id);
     }
 
+    pub fn read_pm_session_id(&self, project_id: &str) -> Option<String> {
+        std::fs::read_to_string(self.paths.pm_session_file(project_id))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    pub fn write_pm_session_id(&self, project_id: &str, session_id: &str) {
+        let _ = std::fs::write(self.paths.pm_session_file(project_id), session_id);
+    }
+
     pub fn spawn(
         &self,
         task_name: &str,
