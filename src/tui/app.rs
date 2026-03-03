@@ -219,6 +219,9 @@ pub struct App {
     pub filtered_indices: Vec<usize>,
     /// Indices into `projects` that match the current search query.
     pub filtered_project_indices: Vec<usize>,
+    /// Global map of task_name → project_id for all running tasks.
+    /// Updated every tick from the full (unscoped) active task list.
+    pub global_task_projects: HashMap<String, Option<String>>,
 }
 
 impl App {
@@ -254,6 +257,7 @@ impl App {
             search_input: InputState::new(),
             filtered_indices: Vec::new(),
             filtered_project_indices: Vec::new(),
+            global_task_projects: HashMap::new(),
         }
     }
 
@@ -365,16 +369,17 @@ impl App {
 
     /// Count pending permissions for tasks NOT in the current project.
     /// Returns a vec of (project_name_or_default, count) for display.
+    /// Uses `global_task_projects` (updated every tick) so lookups work
+    /// even when `self.tasks` is scoped to a single project.
     pub fn other_project_perm_counts(&self) -> Vec<(String, usize)> {
         let current_pid = self.active_project_id.as_deref();
         let mut counts: std::collections::BTreeMap<String, usize> =
             std::collections::BTreeMap::new();
         for (task_name, queue) in &self.pending_permissions {
             let task_pid = self
-                .tasks
-                .iter()
-                .find(|t| t.name == *task_name)
-                .and_then(|t| t.project_id.as_deref());
+                .global_task_projects
+                .get(task_name)
+                .and_then(|pid| pid.as_deref());
             if task_pid != current_pid {
                 let label = if let Some(pid) = task_pid {
                     self.projects
@@ -392,19 +397,17 @@ impl App {
     }
 
     /// Remove and return all permissions for task names that don't correspond
-    /// to any running task. The "exo" key is always preserved.
-    pub fn drain_stale_permissions(&mut self) -> Vec<ActivePermission> {
-        let running_names: HashSet<&str> = self
-            .tasks
-            .iter()
-            .filter(|t| t.status.is_running())
-            .map(|t| t.name.as_str())
-            .collect();
-
+    /// to any globally running task. The "exo" key is always preserved.
+    /// `all_running_names` must contain names of ALL running tasks across all
+    /// projects, not just the currently displayed ones.
+    pub fn drain_stale_permissions(
+        &mut self,
+        all_running_names: &HashSet<String>,
+    ) -> Vec<ActivePermission> {
         let stale_keys: Vec<String> = self
             .pending_permissions
             .keys()
-            .filter(|k| *k != "exo" && !running_names.contains(k.as_str()))
+            .filter(|k| *k != "exo" && !all_running_names.contains(k.as_str()))
             .cloned()
             .collect();
 

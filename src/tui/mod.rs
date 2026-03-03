@@ -1279,8 +1279,17 @@ fn run_loop<R: Runtime>(
             if let Ok(tasks) = service.list_visible(app.active_project_id.as_deref()) {
                 app.refresh_tasks(tasks);
             }
-            // Deny and remove permissions for tasks that are no longer running
-            for perm in app.drain_stale_permissions() {
+            // Update global task→project mapping and drain stale permissions.
+            // Uses the full (unscoped) active task list so permissions for tasks
+            // in other projects aren't incorrectly drained or miscounted.
+            let all_active = service.list_active().unwrap_or_default();
+            let all_running_names: std::collections::HashSet<String> =
+                all_active.iter().map(|t| t.name.clone()).collect();
+            app.global_task_projects = all_active
+                .iter()
+                .map(|t| (t.name.clone(), t.project_id.clone()))
+                .collect();
+            for perm in app.drain_stale_permissions(&all_running_names) {
                 let _ = write_response_to_stream(perm.stream, false, None);
             }
             app.window_numbers = crate::runtime::tmux_window_numbers();
