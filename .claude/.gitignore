@@ -1,3 +1,6 @@
 launch.sh
 prompt.txt
 system-prompt.txt
+settings.local.json
+hooks/
+.gitignore

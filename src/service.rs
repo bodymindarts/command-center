@@ -448,13 +448,11 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         Ok(project.id)
     }
 
-    #[allow(dead_code)]
     pub fn pm_messages(&self, project_id: &str) -> Result<Vec<TaskMessage>> {
         let chat_id = format!("pm:{project_id}");
         self.store.list_messages(&chat_id)
     }
 
-    #[allow(dead_code)]
     pub fn insert_pm_message(
         &self,
         project_id: &str,

@@ -60,8 +60,11 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState) {
     render_input(frame, app, left[2], focused_input);
     render_prompt_bar(frame, app, left[3]);
 
-    // Right side: always task list
-    let focused_task_list = matches!(app.focus, Focus::TaskList | Focus::TaskSearch);
+    // Right side: task list or project list
+    let focused_task_list = matches!(
+        app.focus,
+        Focus::TaskList | Focus::TaskSearch | Focus::ProjectList
+    );
     render_task_list(frame, app, outer[1], focused_task_list);
 }
 
@@ -141,6 +144,11 @@ fn task_list_item(app: &App, task: &crate::task::Task) -> ListItem<'static> {
 }
 
 fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focused: bool) {
+    if app.show_projects {
+        render_project_list(frame, app, area, focused);
+        return;
+    }
+
     let searching = matches!(app.focus, Focus::TaskSearch);
 
     // When searching, reserve a line above the task list for the search input
@@ -180,6 +188,12 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
             app.filtered_indices.len(),
             app.tasks.len()
         )
+    } else if let Some(ref name) = app.active_project {
+        if total_perm > 0 {
+            format!(" {name} ({total_perm} perm) ")
+        } else {
+            format!(" {name} ")
+        }
     } else if total_perm > 0 {
         format!(" Tasks ({total_perm} perm) ")
     } else {
@@ -228,6 +242,48 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
     }
 }
 
+fn render_project_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focused: bool) {
+    let border_color = if focused {
+        Color::Blue
+    } else {
+        Color::DarkGray
+    };
+
+    let items: Vec<ListItem> = app
+        .projects
+        .iter()
+        .map(|project| {
+            let main_line = Line::from(vec![
+                Span::styled(
+                    format!("{:<16} ", project.name),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    project.description.clone(),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]);
+            ListItem::new(main_line)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(" Projects ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color)),
+        )
+        .highlight_style(
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::White),
+        )
+        .highlight_symbol("> ");
+
+    frame.render_stateful_widget(list, area, &mut app.project_list_state);
+}
+
 fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: Rect) {
     let searching = matches!(app.focus, Focus::TaskSearch);
     let in_task_chat = !searching && app.show_detail && app.selected_task().is_some();
@@ -235,6 +291,8 @@ fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: 
     let title = if in_task_chat {
         let name = app.selected_task().map(|t| t.name.as_str()).unwrap_or("?");
         format!(" Chat: {name} ")
+    } else if let Some(ref name) = app.active_project {
+        format!(" PM: {name} ")
     } else {
         " ExO Chat ".to_string()
     };
@@ -295,6 +353,32 @@ fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: 
             let start = tail.len().saturating_sub(50);
             for l in &tail[start..] {
                 lines.push(Line::from(l.to_string()));
+            }
+        }
+    } else if app.active_project.is_some() {
+        // Render PM chat
+        if app.pm_messages.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No PM messages yet.",
+                Style::default().fg(Color::DarkGray),
+            )));
+        } else {
+            for msg in &app.pm_messages {
+                let (label, label_color) = match msg.role {
+                    MessageRole::System => ("SYSTEM", Color::DarkGray),
+                    MessageRole::User => ("YOU", Color::Green),
+                    MessageRole::Assistant => ("PM", Color::Cyan),
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("{label}:"),
+                    Style::default()
+                        .fg(label_color)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                for l in msg.content.lines() {
+                    lines.push(Line::from(l.to_string()));
+                }
+                lines.push(Line::from(""));
             }
         }
     } else {
@@ -592,6 +676,8 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool
     } else if !searching && app.show_detail {
         let name = app.selected_task().map(|t| t.name.as_str()).unwrap_or("?");
         format!("[{name}] > ")
+    } else if let Some(ref name) = app.active_project {
+        format!("[{name}] > ")
     } else {
         "[ExO] > ".to_string()
     };
@@ -724,6 +810,18 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 Span::raw(" navigate"),
             ]
         }
+        Focus::ProjectList => {
+            vec![
+                Span::styled(" j/k", Style::default().fg(Color::Yellow)),
+                Span::raw(" navigate  "),
+                Span::styled("Enter", Style::default().fg(Color::Yellow)),
+                Span::raw(" select  "),
+                Span::styled("p/Esc", Style::default().fg(Color::Yellow)),
+                Span::raw(" back  "),
+                Span::styled("q", Style::default().fg(Color::Yellow)),
+                Span::raw(" quit"),
+            ]
+        }
         Focus::ConfirmDelete(_) | Focus::TaskList => {
             vec![
                 Span::styled(" j/k", Style::default().fg(Color::Yellow)),
@@ -732,6 +830,8 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 Span::raw(" goto  "),
                 Span::styled("/", Style::default().fg(Color::Yellow)),
                 Span::raw(" search  "),
+                Span::styled("p", Style::default().fg(Color::Yellow)),
+                Span::raw(" projects  "),
                 Span::styled("n", Style::default().fg(Color::Yellow)),
                 Span::raw(" new  "),
                 Span::styled("x", Style::default().fg(Color::Yellow)),

@@ -69,7 +69,7 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
     crate::permission::write_socket_breadcrumb(service.project_root(), &socket_path);
     // Re-embed socket path in active worktrees so hooks from pre-existing
     // tasks connect to this dashboard's socket after a restart.
-    if let Ok(tasks) = service.list_visible(None) {
+    if let Ok(tasks) = service.list_visible(app.active_project_id.as_deref()) {
         let work_dirs: Vec<String> = tasks.iter().filter_map(|t| t.work_dir.clone()).collect();
         let sock_str = socket_path.to_string_lossy().to_string();
         crate::runtime::reembed_socket_in_worktrees(&work_dirs, &sock_str);
@@ -404,7 +404,9 @@ fn run_loop<R: Runtime>(
                                             let id = task.id.as_str().to_string();
                                             match service.reopen(&id) {
                                                 Ok(window_id) => {
-                                                    if let Ok(tasks) = service.list_visible(None) {
+                                                    if let Ok(tasks) = service.list_visible(
+                                                        app.active_project_id.as_deref(),
+                                                    ) {
                                                         app.refresh_tasks(tasks);
                                                     }
                                                     service.goto_window(&window_id);
@@ -426,7 +428,9 @@ fn run_loop<R: Runtime>(
                                             let id = task.id.as_str().to_string();
                                             match service.reopen(&id) {
                                                 Ok(window_id) => {
-                                                    if let Ok(tasks) = service.list_visible(None) {
+                                                    if let Ok(tasks) = service.list_visible(
+                                                        app.active_project_id.as_deref(),
+                                                    ) {
                                                         app.refresh_tasks(tasks);
                                                     }
                                                     service.goto_window(&window_id);
@@ -457,7 +461,9 @@ fn run_loop<R: Runtime>(
                                         let id = task.id.as_str().to_string();
                                         match service.reopen(&id) {
                                             Ok(_) => {
-                                                if let Ok(tasks) = service.list_visible(None) {
+                                                if let Ok(tasks) = service
+                                                    .list_visible(app.active_project_id.as_deref())
+                                                {
                                                     app.refresh_tasks(tasks);
                                                 }
                                             }
@@ -487,6 +493,16 @@ fn run_loop<R: Runtime>(
                                 {
                                     app.focus = Focus::ChatInput;
                                     app.restore_input();
+                                }
+                                KeyCode::Char('p') => {
+                                    if let Ok(projects) = service.list_projects() {
+                                        app.projects = projects;
+                                        if !app.projects.is_empty() {
+                                            app.project_list_state.select(Some(0));
+                                        }
+                                    }
+                                    app.show_projects = true;
+                                    app.focus = Focus::ProjectList;
                                 }
                                 _ => {}
                             },
@@ -564,6 +580,43 @@ fn run_loop<R: Runtime>(
                                     _ => {}
                                 }
                             }
+                            Focus::ProjectList => match key.code {
+                                KeyCode::Char('q') => app.should_quit = true,
+                                KeyCode::Char('j') | KeyCode::Down => {
+                                    app.next_project();
+                                }
+                                KeyCode::Char('k') | KeyCode::Up => {
+                                    app.previous_project();
+                                }
+                                KeyCode::Enter => {
+                                    if let Some(project) = app.selected_project() {
+                                        let project_id = project.id.clone();
+                                        let project_name = project.name.clone();
+                                        app.active_project = Some(project_name);
+                                        app.active_project_id = Some(project_id.clone());
+                                        app.show_projects = false;
+                                        app.show_detail = false;
+                                        app.focus = Focus::ChatInput;
+                                        app.chat_scroll = 0;
+                                        // Load tasks for this project
+                                        if let Ok(tasks) = service.list_visible(Some(&project_id)) {
+                                            app.refresh_tasks(tasks);
+                                        }
+                                        app.restore_input();
+                                    }
+                                }
+                                KeyCode::Char('p') | KeyCode::Esc => {
+                                    // Go back to default task view
+                                    app.show_projects = false;
+                                    app.active_project = None;
+                                    app.active_project_id = None;
+                                    app.focus = Focus::TaskList;
+                                    if let Ok(tasks) = service.list_visible(None) {
+                                        app.refresh_tasks(tasks);
+                                    }
+                                }
+                                _ => {}
+                            },
                             Focus::SpawnInput => {
                                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                                 match key.code {
@@ -582,7 +635,9 @@ fn run_loop<R: Runtime>(
                                                 None,
                                                 None,
                                             );
-                                            if let Ok(tasks) = service.list_visible(None) {
+                                            if let Ok(tasks) = service
+                                                .list_visible(app.active_project_id.as_deref())
+                                            {
                                                 app.refresh_tasks(tasks);
                                             }
                                         }
@@ -661,9 +716,9 @@ fn run_loop<R: Runtime>(
                                                 let id = task.id.as_str().to_string();
                                                 match service.reopen(&id) {
                                                     Ok(window_id) => {
-                                                        if let Ok(tasks) =
-                                                            service.list_visible(None)
-                                                        {
+                                                        if let Ok(tasks) = service.list_visible(
+                                                            app.active_project_id.as_deref(),
+                                                        ) {
                                                             app.refresh_tasks(tasks);
                                                         }
                                                         service.goto_window(&window_id);
@@ -703,7 +758,7 @@ fn run_loop<R: Runtime>(
                                 }
                             }
                             Focus::ChatInput => {
-                                // ExO chat mode
+                                // ExO / PM chat mode
                                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                                 match key.code {
                                     KeyCode::Esc => {
@@ -735,6 +790,9 @@ fn run_loop<R: Runtime>(
                                     KeyCode::Char('k') if ctrl => {
                                         app.focus = Focus::ChatHistory;
                                     }
+                                    KeyCode::Char('x') if ctrl && app.active_project.is_some() => {
+                                        app.focus = Focus::ConfirmCloseProject;
+                                    }
                                     KeyCode::Char('l') if ctrl => {
                                         app.save_current_input();
                                         app.focus = Focus::TaskList;
@@ -746,26 +804,40 @@ fn run_loop<R: Runtime>(
                                     KeyCode::Enter => {
                                         app.chat_scroll = 0;
                                         if !app.input.is_empty() {
-                                            // Finish any in-progress streaming from a previous turn
-                                            if exo.streaming {
-                                                exo.finish_streaming();
-                                                // Persist the previous assistant response
-                                                if let Some(msg) = exo.messages.last()
-                                                    && matches!(msg.role, MessageRole::Assistant)
-                                                    && msg.has_text()
-                                                {
-                                                    let _ = service.insert_exo_message(
-                                                        MessageRole::Assistant,
-                                                        &msg.text_content(),
-                                                    );
+                                            if let Some(ref pid) = app.active_project_id {
+                                                // PM chat: store the message
+                                                let msg = app.input.take();
+                                                let _ = service.insert_pm_message(
+                                                    pid,
+                                                    MessageRole::User,
+                                                    &msg,
+                                                );
+                                            } else {
+                                                // ExO chat: stream to ExO
+                                                // Finish any in-progress streaming from a previous turn
+                                                if exo.streaming {
+                                                    exo.finish_streaming();
+                                                    // Persist the previous assistant response
+                                                    if let Some(msg) = exo.messages.last()
+                                                        && matches!(
+                                                            msg.role,
+                                                            MessageRole::Assistant
+                                                        )
+                                                        && msg.has_text()
+                                                    {
+                                                        let _ = service.insert_exo_message(
+                                                            MessageRole::Assistant,
+                                                            &msg.text_content(),
+                                                        );
+                                                    }
                                                 }
+                                                let msg = app.input.take();
+                                                let _ = service
+                                                    .insert_exo_message(MessageRole::User, &msg);
+                                                exo.add_user_message(msg.clone());
+                                                exo_session
+                                                    .send_message(&msg, exo.session_id.as_deref());
                                             }
-                                            let msg = app.input.take();
-                                            let _ =
-                                                service.insert_exo_message(MessageRole::User, &msg);
-                                            exo.add_user_message(msg.clone());
-                                            exo_session
-                                                .send_message(&msg, exo.session_id.as_deref());
                                         }
                                     }
                                     KeyCode::Char('u') if ctrl => app.input.kill_before(),
@@ -809,7 +881,9 @@ fn run_loop<R: Runtime>(
                                 KeyCode::Char('y') => {
                                     let id = task_id.clone();
                                     let _ = service.delete(id.as_str());
-                                    if let Ok(tasks) = service.list_visible(None) {
+                                    if let Ok(tasks) =
+                                        service.list_visible(app.active_project_id.as_deref())
+                                    {
                                         app.refresh_tasks(tasks);
                                     }
                                     app.focus = Focus::TaskList;
@@ -823,7 +897,9 @@ fn run_loop<R: Runtime>(
                                 KeyCode::Char('y') => {
                                     let id = task_id.clone();
                                     let _ = service.close(id.as_str());
-                                    if let Ok(tasks) = service.list_visible(None) {
+                                    if let Ok(tasks) =
+                                        service.list_visible(app.active_project_id.as_deref())
+                                    {
                                         app.refresh_tasks(tasks);
                                     }
                                     app.show_detail = false;
@@ -842,8 +918,12 @@ fn run_loop<R: Runtime>(
                             Focus::ConfirmCloseProject => match key.code {
                                 KeyCode::Char('y') => {
                                     app.active_project = None;
+                                    app.active_project_id = None;
                                     app.save_current_input();
                                     app.focus = Focus::TaskList;
+                                    if let Ok(tasks) = service.list_visible(None) {
+                                        app.refresh_tasks(tasks);
+                                    }
                                 }
                                 KeyCode::Char('n') | KeyCode::Esc => {
                                     app.focus = Focus::ChatInput;
@@ -858,7 +938,7 @@ fn run_loop<R: Runtime>(
         }
 
         if last_tick.elapsed() >= tick_rate {
-            if let Ok(tasks) = service.list_visible(None) {
+            if let Ok(tasks) = service.list_visible(app.active_project_id.as_deref()) {
                 app.refresh_tasks(tasks);
             }
             app.window_numbers = crate::runtime::tmux_window_numbers();
@@ -878,6 +958,14 @@ fn run_loop<R: Runtime>(
             } else {
                 app.selected_messages.clear();
                 app.detail_live_output = None;
+            }
+            // Refresh PM messages for active project
+            if let Some(ref pid) = app.active_project_id {
+                if let Ok(messages) = service.pm_messages(pid) {
+                    app.pm_messages = messages;
+                }
+            } else {
+                app.pm_messages.clear();
             }
             last_tick = Instant::now();
         }

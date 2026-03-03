@@ -4,17 +4,17 @@ use std::os::unix::net::UnixStream;
 use ratatui::widgets::ListState;
 
 use crate::primitives::{TaskId, TaskStatus};
-use crate::task::{Task, TaskMessage};
+use crate::task::{Project, Task, TaskMessage};
 
 pub enum Focus {
     TaskList,
     TaskSearch,
+    ProjectList,
     ChatInput,
     ChatHistory,
     SpawnInput,
     ConfirmDelete(TaskId),
     ConfirmCloseTask(TaskId),
-    #[allow(dead_code)]
     ConfirmCloseProject,
 }
 
@@ -197,8 +197,18 @@ pub struct App {
     pub fresh_tasks: HashSet<String>,
     /// Transient error message shown in the prompt bar. Cleared on next keypress.
     pub status_error: Option<String>,
-    /// Currently active project name. None = default (ExO).
+    /// Currently active project name (for display). None = default (ExO).
     pub active_project: Option<String>,
+    /// Currently active project ID (for queries). None = default (ExO).
+    pub active_project_id: Option<String>,
+    /// Cached PM messages for the active project.
+    pub pm_messages: Vec<TaskMessage>,
+    /// Whether the right panel shows the project list instead of the task list.
+    pub show_projects: bool,
+    /// Cached list of projects for rendering.
+    pub projects: Vec<Project>,
+    /// Selection state for the project list.
+    pub project_list_state: ListState,
     /// Input state for the task search filter.
     pub search_input: InputState,
     /// Indices into `tasks` that match the current search query.
@@ -229,6 +239,11 @@ impl App {
             fresh_tasks: HashSet::new(),
             status_error: None,
             active_project: None,
+            active_project_id: None,
+            pm_messages: Vec::new(),
+            show_projects: false,
+            projects: Vec::new(),
+            project_list_state: ListState::default(),
             search_input: InputState::new(),
             filtered_indices: Vec::new(),
         }
@@ -345,6 +360,8 @@ impl App {
             self.selected_task()
                 .map(|t| t.id.as_str().to_string())
                 .unwrap_or_else(|| "exo".to_string())
+        } else if let Some(ref pid) = self.active_project_id {
+            format!("pm:{pid}")
         } else {
             "exo".to_string()
         }
@@ -388,6 +405,40 @@ impl App {
             return Some(focused);
         }
         self.tasks_with_permissions().into_iter().next()
+    }
+
+    pub fn next_project(&mut self) {
+        if self.projects.is_empty() {
+            return;
+        }
+        let i = match self.project_list_state.selected() {
+            Some(i) => (i + 1) % self.projects.len(),
+            None => 0,
+        };
+        self.project_list_state.select(Some(i));
+    }
+
+    pub fn previous_project(&mut self) {
+        if self.projects.is_empty() {
+            return;
+        }
+        let i = match self.project_list_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.projects.len() - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.project_list_state.select(Some(i));
+    }
+
+    pub fn selected_project(&self) -> Option<&Project> {
+        self.project_list_state
+            .selected()
+            .and_then(|i| self.projects.get(i))
     }
 
     /// Recompute `filtered_indices` based on `search_query`.
