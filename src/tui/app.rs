@@ -391,6 +391,32 @@ impl App {
         counts.into_iter().collect()
     }
 
+    /// Remove and return all permissions for task names that don't correspond
+    /// to any running task. The "exo" key is always preserved.
+    pub fn drain_stale_permissions(&mut self) -> Vec<ActivePermission> {
+        let running_names: HashSet<&str> = self
+            .tasks
+            .iter()
+            .filter(|t| t.status.is_running())
+            .map(|t| t.name.as_str())
+            .collect();
+
+        let stale_keys: Vec<String> = self
+            .pending_permissions
+            .keys()
+            .filter(|k| *k != "exo" && !running_names.contains(k.as_str()))
+            .cloned()
+            .collect();
+
+        let mut stale = Vec::new();
+        for key in stale_keys {
+            if let Some(queue) = self.pending_permissions.remove(&key) {
+                stale.extend(queue);
+            }
+        }
+        stale
+    }
+
     fn current_chat_key(&self) -> String {
         if self.show_detail {
             self.selected_task()

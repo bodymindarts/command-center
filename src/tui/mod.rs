@@ -1282,6 +1282,10 @@ fn run_loop<R: Runtime>(
             if let Ok(tasks) = service.list_visible(app.active_project_id.as_deref()) {
                 app.refresh_tasks(tasks);
             }
+            // Deny and remove permissions for tasks that are no longer running
+            for perm in app.drain_stale_permissions() {
+                let _ = write_response_to_stream(perm.stream, false, None);
+            }
             app.window_numbers = crate::runtime::tmux_window_numbers();
             // Update selected messages and live output for detail view
             if let Some(task) = app.selected_task() {
