@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::primitives::{MessageRole, TaskStatus};
 
@@ -60,89 +60,87 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState) {
     render_prompt_bar(frame, app, left[3]);
 
     // Right side: always task list
-    let focused_task_list = matches!(app.focus, Focus::TaskList);
+    let focused_task_list = matches!(app.focus, Focus::TaskList | Focus::TaskSearch);
     render_task_list(frame, app, outer[1], focused_task_list);
 }
 
+fn task_item(app: &App, task: &crate::task::Task) -> ListItem<'static> {
+    let is_fresh = app.fresh_tasks.contains(task.id.as_str());
+    let status_char = match task.status {
+        TaskStatus::Running if is_fresh => "●",
+        TaskStatus::Running => "r",
+        TaskStatus::Completed if is_fresh => "●",
+        TaskStatus::Failed if is_fresh => "●",
+        TaskStatus::Completed => "c",
+        TaskStatus::Failed => "f",
+        TaskStatus::Closed => "x",
+    };
+    let is_running = task.status.is_running();
+    let color = status_color(&task.status);
+    let dim = if is_running || is_fresh {
+        Modifier::empty()
+    } else {
+        Modifier::DIM
+    };
+    let fresh_mod = if is_fresh {
+        Modifier::BOLD
+    } else {
+        Modifier::empty()
+    };
+    let time = task.started_at.format("%H:%M");
+    let win_num = task
+        .tmux_window
+        .as_deref()
+        .and_then(|w| app.window_numbers.get(w))
+        .map(|s| s.as_str())
+        .unwrap_or("-");
+    let main_line = Line::from(vec![
+        Span::styled(
+            format!("{:<2} ", win_num),
+            Style::default().fg(Color::DarkGray).add_modifier(dim),
+        ),
+        Span::styled(
+            format!("{status_char} "),
+            Style::default()
+                .fg(color)
+                .add_modifier(dim)
+                .add_modifier(fresh_mod),
+        ),
+        Span::styled(
+            format!("{:<10} ", task.name),
+            Style::default().add_modifier(dim).add_modifier(fresh_mod),
+        ),
+        Span::styled(
+            format!("{time}"),
+            Style::default().fg(Color::DarkGray).add_modifier(dim),
+        ),
+    ]);
+
+    // Permission sub-line if this task has pending permissions
+    if let Some(queue) = app.pending_permissions.get(&task.name)
+        && let Some(front) = queue.front()
+    {
+        let extra = queue.len().saturating_sub(1);
+        let more = if extra > 0 {
+            format!(" (+{extra} more)")
+        } else {
+            String::new()
+        };
+        let sub_line = Line::from(Span::styled(
+            format!(
+                "    ! {}: {}{more}",
+                front.tool_name, front.tool_input_summary
+            ),
+            Style::default().fg(Color::Yellow),
+        ));
+        return ListItem::new(vec![main_line, sub_line]);
+    }
+
+    ListItem::new(main_line)
+}
+
 fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focused: bool) {
-    let items: Vec<ListItem> = app
-        .tasks
-        .iter()
-        .map(|task| {
-            let is_fresh = app.fresh_tasks.contains(task.id.as_str());
-            let status_char = match task.status {
-                TaskStatus::Running if is_fresh => "●",
-                TaskStatus::Running => "r",
-                TaskStatus::Completed if is_fresh => "●",
-                TaskStatus::Failed if is_fresh => "●",
-                TaskStatus::Completed => "c",
-                TaskStatus::Failed => "f",
-                TaskStatus::Closed => "x",
-            };
-            let is_running = task.status.is_running();
-            let color = status_color(&task.status);
-            let dim = if is_running || is_fresh {
-                Modifier::empty()
-            } else {
-                Modifier::DIM
-            };
-            let fresh_mod = if is_fresh {
-                Modifier::BOLD
-            } else {
-                Modifier::empty()
-            };
-            let time = task.started_at.format("%H:%M");
-            let win_num = task
-                .tmux_window
-                .as_deref()
-                .and_then(|w| app.window_numbers.get(w))
-                .map(|s| s.as_str())
-                .unwrap_or("-");
-            let main_line = Line::from(vec![
-                Span::styled(
-                    format!("{:<2} ", win_num),
-                    Style::default().fg(Color::DarkGray).add_modifier(dim),
-                ),
-                Span::styled(
-                    format!("{status_char} "),
-                    Style::default()
-                        .fg(color)
-                        .add_modifier(dim)
-                        .add_modifier(fresh_mod),
-                ),
-                Span::styled(
-                    format!("{:<10} ", task.name),
-                    Style::default().add_modifier(dim).add_modifier(fresh_mod),
-                ),
-                Span::styled(
-                    format!("{time}"),
-                    Style::default().fg(Color::DarkGray).add_modifier(dim),
-                ),
-            ]);
-
-            // Permission sub-line if this task has pending permissions
-            if let Some(queue) = app.pending_permissions.get(&task.name)
-                && let Some(front) = queue.front()
-            {
-                let extra = queue.len().saturating_sub(1);
-                let more = if extra > 0 {
-                    format!(" (+{extra} more)")
-                } else {
-                    String::new()
-                };
-                let sub_line = Line::from(Span::styled(
-                    format!(
-                        "    ! {}: {}{more}",
-                        front.tool_name, front.tool_input_summary
-                    ),
-                    Style::default().fg(Color::Yellow),
-                ));
-                return ListItem::new(vec![main_line, sub_line]);
-            }
-
-            ListItem::new(main_line)
-        })
-        .collect();
+    let searching = matches!(app.focus, Focus::TaskSearch);
 
     let border_color = if focused {
         Color::Blue
@@ -158,23 +156,72 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
     };
 
     let show_highlight = app.show_detail || focused;
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .title(title)
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(border_color)),
-        )
-        .highlight_style(if show_highlight {
-            Style::default()
-                .add_modifier(Modifier::BOLD)
-                .fg(Color::White)
-        } else {
-            Style::default()
-        })
-        .highlight_symbol(if show_highlight { "> " } else { "  " });
 
-    frame.render_stateful_widget(list, area, &mut app.list_state);
+    if searching {
+        // Split: list area on top, search input line at bottom (inside the border)
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .split(area);
+
+        let items: Vec<ListItem> = app
+            .filtered_indices
+            .iter()
+            .map(|&i| task_item(app, &app.tasks[i]))
+            .collect();
+
+        let mut search_list_state = ListState::default();
+        if !app.filtered_indices.is_empty() {
+            search_list_state.select(Some(app.search_selection));
+        }
+
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .title(title)
+                    .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
+                    .border_style(Style::default().fg(border_color)),
+            )
+            .highlight_style(
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .fg(Color::White),
+            )
+            .highlight_symbol("> ");
+
+        frame.render_stateful_widget(list, chunks[0], &mut search_list_state);
+
+        // Render search input line at bottom
+        let search_line = Line::from(vec![
+            Span::styled("/ ", Style::default().fg(Color::Yellow)),
+            Span::raw(app.search_query.clone()),
+            Span::styled("_", Style::default().fg(Color::DarkGray)),
+        ]);
+        let search_block = Block::default()
+            .borders(Borders::BOTTOM | Borders::LEFT | Borders::RIGHT)
+            .border_style(Style::default().fg(border_color));
+        frame.render_widget(Paragraph::new(search_line).block(search_block), chunks[1]);
+    } else {
+        let items: Vec<ListItem> = app.tasks.iter().map(|task| task_item(app, task)).collect();
+
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .title(title)
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(border_color)),
+            )
+            .highlight_style(if show_highlight {
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .fg(Color::White)
+            } else {
+                Style::default()
+            })
+            .highlight_symbol(if show_highlight { "> " } else { "  " });
+
+        frame.render_stateful_widget(list, area, &mut app.list_state);
+    }
 }
 
 fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: Rect) {
@@ -619,7 +666,7 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 Span::raw(" goto  "),
                 Span::styled("^K", Style::default().fg(Color::Yellow)),
                 Span::raw(" scroll  "),
-                Span::styled("Tab", Style::default().fg(Color::Yellow)),
+                Span::styled("^N/^P", Style::default().fg(Color::Yellow)),
                 Span::raw(" next  "),
                 Span::styled("^L", Style::default().fg(Color::Yellow)),
                 Span::raw(" tasks  "),
@@ -661,12 +708,24 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 Span::raw(" cancel"),
             ]
         }
+        Focus::TaskSearch => {
+            vec![
+                Span::styled(" Enter", Style::default().fg(Color::Yellow)),
+                Span::raw(" select  "),
+                Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                Span::raw(" cancel  "),
+                Span::styled("Tab/S-Tab", Style::default().fg(Color::Yellow)),
+                Span::raw(" navigate"),
+            ]
+        }
         Focus::ConfirmDelete(_) | Focus::TaskList => {
             vec![
                 Span::styled(" j/k", Style::default().fg(Color::Yellow)),
                 Span::raw(" navigate  "),
                 Span::styled("Enter", Style::default().fg(Color::Yellow)),
                 Span::raw(" goto  "),
+                Span::styled("/", Style::default().fg(Color::Yellow)),
+                Span::raw(" search  "),
                 Span::styled("n", Style::default().fg(Color::Yellow)),
                 Span::raw(" new  "),
                 Span::styled("x", Style::default().fg(Color::Yellow)),

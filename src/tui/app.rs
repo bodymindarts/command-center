@@ -8,6 +8,7 @@ use crate::task::{Task, TaskMessage};
 
 pub enum Focus {
     TaskList,
+    TaskSearch,
     ChatInput,
     ChatHistory,
     SpawnInput,
@@ -198,6 +199,12 @@ pub struct App {
     pub status_error: Option<String>,
     /// Currently active project name. None = default (ExO).
     pub active_project: Option<String>,
+    /// Current search query when in TaskSearch focus.
+    pub search_query: String,
+    /// Indices into `tasks` that match `search_query`.
+    pub filtered_indices: Vec<usize>,
+    /// Which filtered result is currently highlighted (index into `filtered_indices`).
+    pub search_selection: usize,
 }
 
 impl App {
@@ -224,6 +231,9 @@ impl App {
             fresh_tasks: HashSet::new(),
             status_error: None,
             active_project: None,
+            search_query: String::new(),
+            filtered_indices: Vec::new(),
+            search_selection: 0,
         }
     }
 
@@ -381,6 +391,43 @@ impl App {
             return Some(focused);
         }
         self.tasks_with_permissions().into_iter().next()
+    }
+
+    /// Recompute `filtered_indices` based on `search_query`.
+    /// Case-insensitive substring match on task name.
+    pub fn update_search_filter(&mut self) {
+        let query = self.search_query.to_lowercase();
+        self.filtered_indices = self
+            .tasks
+            .iter()
+            .enumerate()
+            .filter(|(_, task)| query.is_empty() || task.name.to_lowercase().contains(&query))
+            .map(|(i, _)| i)
+            .collect();
+        // Clamp selection
+        if self.filtered_indices.is_empty() {
+            self.search_selection = 0;
+        } else if self.search_selection >= self.filtered_indices.len() {
+            self.search_selection = self.filtered_indices.len() - 1;
+        }
+    }
+
+    /// Move to the next filtered result.
+    pub fn search_next(&mut self) {
+        if !self.filtered_indices.is_empty() {
+            self.search_selection = (self.search_selection + 1) % self.filtered_indices.len();
+        }
+    }
+
+    /// Move to the previous filtered result.
+    pub fn search_prev(&mut self) {
+        if !self.filtered_indices.is_empty() {
+            if self.search_selection == 0 {
+                self.search_selection = self.filtered_indices.len() - 1;
+            } else {
+                self.search_selection -= 1;
+            }
+        }
     }
 }
 

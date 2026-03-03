@@ -471,8 +471,62 @@ fn run_loop<R: Runtime>(
                                     app.focus = Focus::ChatInput;
                                     app.restore_input();
                                 }
+                                KeyCode::Char('/') => {
+                                    app.search_query.clear();
+                                    app.search_selection = 0;
+                                    app.update_search_filter();
+                                    app.focus = Focus::TaskSearch;
+                                }
                                 _ => {}
                             },
+                            Focus::TaskSearch => {
+                                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                                match key.code {
+                                    KeyCode::Esc => {
+                                        app.search_query.clear();
+                                        app.filtered_indices.clear();
+                                        app.search_selection = 0;
+                                        app.focus = Focus::TaskList;
+                                    }
+                                    KeyCode::Enter => {
+                                        if let Some(&real_idx) =
+                                            app.filtered_indices.get(app.search_selection)
+                                        {
+                                            app.list_state.select(Some(real_idx));
+                                            app.show_detail = true;
+                                            app.detail_scroll = 0;
+                                            app.focus = Focus::ChatInput;
+                                            app.restore_input();
+                                        } else {
+                                            app.focus = Focus::TaskList;
+                                        }
+                                        app.search_query.clear();
+                                        app.filtered_indices.clear();
+                                        app.search_selection = 0;
+                                    }
+                                    KeyCode::Down | KeyCode::Tab => {
+                                        app.search_next();
+                                    }
+                                    KeyCode::Up | KeyCode::BackTab => {
+                                        app.search_prev();
+                                    }
+                                    KeyCode::Char('j') if ctrl => {
+                                        app.search_next();
+                                    }
+                                    KeyCode::Char('k') if ctrl => {
+                                        app.search_prev();
+                                    }
+                                    KeyCode::Backspace => {
+                                        app.search_query.pop();
+                                        app.update_search_filter();
+                                    }
+                                    KeyCode::Char(c) if !ctrl => {
+                                        app.search_query.push(c);
+                                        app.update_search_filter();
+                                    }
+                                    _ => {}
+                                }
+                            }
                             Focus::SpawnInput => {
                                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                                 match key.code {
