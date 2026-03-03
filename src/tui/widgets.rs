@@ -981,6 +981,8 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 Span::styled(" j/k", Style::default().fg(Color::Yellow)),
                 Span::raw(" navigate  "),
                 Span::styled("Enter", Style::default().fg(Color::Yellow)),
+                Span::raw(" chat  "),
+                Span::styled("^G", Style::default().fg(Color::Yellow)),
                 Span::raw(" goto  "),
                 Span::styled("/", Style::default().fg(Color::Yellow)),
                 Span::raw(" search  "),
@@ -990,8 +992,6 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 Span::raw(" new  "),
                 Span::styled("x", Style::default().fg(Color::Yellow)),
                 Span::raw(" close  "),
-                Span::styled("^H", Style::default().fg(Color::Yellow)),
-                Span::raw(" chat  "),
                 Span::styled("q", Style::default().fg(Color::Yellow)),
                 Span::raw(" quit"),
             ]

@@ -559,27 +559,12 @@ fn run_loop<R: Runtime>(
                                     }
                                 }
                                 KeyCode::Enter => {
-                                    if let Some(task) = app.selected_task() {
-                                        if task.status.is_running() {
-                                            if let Some(window_id) = &task.tmux_window {
-                                                service.goto_window(window_id);
-                                            }
-                                        } else {
-                                            let id = task.id.as_str().to_string();
-                                            match service.reopen(&id) {
-                                                Ok(window_id) => {
-                                                    if let Ok(tasks) = service.list_visible(
-                                                        app.active_project_id.as_deref(),
-                                                    ) {
-                                                        app.refresh_tasks(tasks);
-                                                    }
-                                                    service.goto_window(&window_id);
-                                                }
-                                                Err(e) => {
-                                                    app.status_error = Some(format!("reopen: {e}"));
-                                                }
-                                            }
-                                        }
+                                    if app.selected_task().is_some() {
+                                        app.show_detail = true;
+                                        app.detail_scroll = 0;
+                                        app.focus = Focus::ChatInput;
+                                        app.chat_scroll = 0;
+                                        app.restore_input();
                                     }
                                 }
                                 KeyCode::Char('x') => {
