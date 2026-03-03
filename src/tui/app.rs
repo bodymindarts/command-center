@@ -222,6 +222,10 @@ pub struct App {
     /// Global map of task_name → project_id for all running tasks.
     /// Updated every tick from the full (unscoped) active task list.
     pub global_task_projects: HashMap<String, Option<String>>,
+    /// Global list of (task_name, work_dir) for all running tasks.
+    /// Used for CWD→task matching in permission/resolved/idle handlers
+    /// so lookups work regardless of which project is currently displayed.
+    pub global_task_work_dirs: Vec<(String, String)>,
 }
 
 impl App {
@@ -258,6 +262,7 @@ impl App {
             filtered_indices: Vec::new(),
             filtered_project_indices: Vec::new(),
             global_task_projects: HashMap::new(),
+            global_task_work_dirs: Vec::new(),
         }
     }
 
@@ -363,8 +368,25 @@ impl App {
         names
     }
 
-    pub fn total_pending_permissions(&self) -> usize {
-        self.pending_permissions.values().map(|q| q.len()).sum()
+    /// Count pending permissions only for tasks in the current project.
+    /// "exo" key belongs to the default (no-project) scope.
+    pub fn current_project_perm_count(&self) -> usize {
+        let current_pid = self.active_project_id.as_deref();
+        self.pending_permissions
+            .iter()
+            .filter(|(task_name, _)| {
+                if task_name.as_str() == "exo" {
+                    current_pid.is_none()
+                } else {
+                    let task_pid = self
+                        .global_task_projects
+                        .get(task_name.as_str())
+                        .and_then(|pid| pid.as_deref());
+                    task_pid == current_pid
+                }
+            })
+            .map(|(_, queue)| queue.len())
+            .sum()
     }
 
     /// Count pending permissions for tasks NOT in the current project.

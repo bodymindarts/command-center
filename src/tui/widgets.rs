@@ -189,7 +189,7 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
         Color::DarkGray
     };
 
-    let total_perm = app.total_pending_permissions();
+    let total_perm = app.current_project_perm_count();
     let other_perms = app.other_project_perm_counts();
     let mut title_spans: Vec<Span> = Vec::new();
     if searching {

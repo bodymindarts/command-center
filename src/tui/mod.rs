@@ -24,6 +24,19 @@ use crate::service::TaskService;
 use app::{ActivePermission, App, Focus};
 
 const EXO_PERM_KEY: &str = "exo";
+
+/// Find the task name whose work_dir is a prefix of the given CWD.
+/// Uses the global (project-independent) work_dir list so lookups
+/// work regardless of which project is currently displayed.
+fn find_task_name_by_cwd(work_dirs: &[(String, String)], cwd: &std::path::Path) -> Option<String> {
+    work_dirs
+        .iter()
+        .find(|(_, wd)| {
+            let canon = std::fs::canonicalize(wd).unwrap_or_else(|_| std::path::PathBuf::from(wd));
+            cwd.starts_with(&canon)
+        })
+        .map(|(name, _)| name.clone())
+}
 use chat::ExoState;
 use claude::{EXO_SYSTEM_PROMPT, ExoEvent, ExoSession, pm_system_prompt};
 
@@ -482,6 +495,19 @@ fn run_loop<R: Runtime>(
                             }
                             if let Ok(tasks) = service.list_visible(Some(&id)) {
                                 app.refresh_tasks(tasks);
+                            }
+                            // If there are pending permissions for this project,
+                            // auto-select the first task with a perm.
+                            let perm_tasks = app.tasks_with_permissions();
+                            if let Some(perm_name) = perm_tasks
+                                .iter()
+                                .find(|name| app.tasks.iter().any(|t| &t.name == *name))
+                                && let Some(idx) =
+                                    app.tasks.iter().position(|t| &t.name == perm_name)
+                            {
+                                app.list_state.select(Some(idx));
+                                app.show_detail = true;
+                                app.detail_scroll = 0;
                             }
                             // Restore PM state
                             pm_cancel.store(true, Ordering::Relaxed);
@@ -1289,6 +1315,10 @@ fn run_loop<R: Runtime>(
                 .iter()
                 .map(|t| (t.name.clone(), t.project_id.clone()))
                 .collect();
+            app.global_task_work_dirs = all_active
+                .iter()
+                .filter_map(|t| t.work_dir.as_ref().map(|wd| (t.name.clone(), wd.clone())))
+                .collect();
             for perm in app.drain_stale_permissions(&all_running_names) {
                 let _ = write_response_to_stream(perm.stream, false, None);
             }
@@ -1327,17 +1357,7 @@ fn run_loop<R: Runtime>(
         while let Ok(cwd) = resolved_rx.try_recv() {
             let resolved_cwd =
                 std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
-            let task_name = app
-                .tasks
-                .iter()
-                .find(|t| {
-                    t.work_dir.as_deref().is_some_and(|wd| {
-                        let canon = std::fs::canonicalize(wd)
-                            .unwrap_or_else(|_| std::path::PathBuf::from(wd));
-                        resolved_cwd.starts_with(&canon)
-                    })
-                })
-                .map(|t| t.name.clone());
+            let task_name = find_task_name_by_cwd(&app.global_task_work_dirs, &resolved_cwd);
             if let Some(name) = task_name {
                 // Drain ALL pending permissions for this task — respond with allow
                 // so the PermissionRequest hook processes can exit cleanly.
@@ -1356,19 +1376,13 @@ fn run_loop<R: Runtime>(
         while let Ok(cwd) = idle_rx.try_recv() {
             let idle_cwd =
                 std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
-            let task_id = app
-                .tasks
-                .iter()
-                .find(|t| {
-                    t.work_dir.as_deref().is_some_and(|wd| {
-                        let canon = std::fs::canonicalize(wd)
-                            .unwrap_or_else(|_| std::path::PathBuf::from(wd));
-                        idle_cwd.starts_with(&canon)
-                    })
-                })
-                .map(|t| t.id.as_str().to_string());
-            if let Some(id) = task_id {
-                app.fresh_tasks.insert(id);
+            if let Some(name) = find_task_name_by_cwd(&app.global_task_work_dirs, &idle_cwd) {
+                // Look up the task ID from the global map's matching name.
+                // Check project-scoped tasks first, then fall back to all_active
+                // data stored in global_task_projects.
+                if let Some(task) = app.tasks.iter().find(|t| t.name == name) {
+                    app.fresh_tasks.insert(task.id.as_str().to_string());
+                }
             }
         }
 
@@ -1376,19 +1390,8 @@ fn run_loop<R: Runtime>(
         while let Ok((stream, req)) = perm_rx.try_recv() {
             let req_cwd = std::fs::canonicalize(&req.cwd)
                 .unwrap_or_else(|_| std::path::PathBuf::from(&req.cwd));
-            let task_name = app
-                .tasks
-                .iter()
-                .find(|t| {
-                    t.work_dir.as_deref().is_some_and(|wd| {
-                        let canon = std::fs::canonicalize(wd)
-                            .unwrap_or_else(|_| std::path::PathBuf::from(wd));
-                        req_cwd.starts_with(&canon)
-                    })
-                })
-                .map(|t| t.name.clone());
-
-            let task_name = task_name.unwrap_or_else(|| EXO_PERM_KEY.to_string());
+            let task_name = find_task_name_by_cwd(&app.global_task_work_dirs, &req_cwd)
+                .unwrap_or_else(|| EXO_PERM_KEY.to_string());
             let perm = ActivePermission {
                 stream,
                 task_name: task_name.clone(),
