@@ -15,7 +15,8 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState) {
         .split(frame.area());
 
     // Left side: chat + (optional mid-panel) + input + prompt bar
-    let in_task_chat = app.show_detail && app.selected_task().is_some();
+    let searching = matches!(app.focus, Focus::TaskSearch);
+    let in_task_chat = !searching && app.show_detail && app.selected_task().is_some();
     let focused_perm_key = app.focused_perm_key();
     let show_perm = in_task_chat && app.peek_permission(&focused_perm_key).is_some();
     let show_delete = matches!(app.focus, Focus::ConfirmDelete(_));
@@ -142,13 +143,13 @@ fn task_list_item(app: &App, task: &crate::task::Task) -> ListItem<'static> {
 fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focused: bool) {
     let searching = matches!(app.focus, Focus::TaskSearch);
 
-    // When searching, split area to reserve a line for the search input
+    // When searching, reserve a line above the task list for the search input
     let (list_area, search_area) = if searching {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
             .split(area);
-        (chunks[0], Some(chunks[1]))
+        (chunks[1], Some(chunks[0]))
     } else {
         (area, None)
     };
@@ -209,21 +210,27 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
 
     frame.render_stateful_widget(list, list_area, &mut app.list_state);
 
-    // Render search input bar at the bottom of the task panel
+    // Render search input bar above the task list
     if let Some(search_area) = search_area {
         let query = &app.search_query;
         let search_line = Line::from(vec![
-            Span::styled("/ ", Style::default().fg(Color::Yellow)),
-            Span::raw(query.as_str()),
+            Span::styled(" / ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::styled(
+                format!(" {query}"),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("_", Style::default().fg(Color::DarkGray)),
         ]);
-        let search_bar = Paragraph::new(search_line);
+        let search_bar = Paragraph::new(search_line).style(Style::default().bg(Color::DarkGray));
         frame.render_widget(search_bar, search_area);
     }
 }
 
 fn render_chat(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, area: Rect) {
-    let in_task_chat = app.show_detail && app.selected_task().is_some();
+    let searching = matches!(app.focus, Focus::TaskSearch);
+    let in_task_chat = !searching && app.show_detail && app.selected_task().is_some();
 
     let title = if in_task_chat {
         let name = app.selected_task().map(|t| t.name.as_str()).unwrap_or("?");
@@ -579,9 +586,10 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool
     } else {
         Color::DarkGray
     };
+    let searching = matches!(app.focus, Focus::TaskSearch);
     let prefix = if matches!(app.focus, Focus::SpawnInput) {
         "[spawn] > ".to_string()
-    } else if app.show_detail {
+    } else if !searching && app.show_detail {
         let name = app.selected_task().map(|t| t.name.as_str()).unwrap_or("?");
         format!("[{name}] > ")
     } else {

@@ -391,14 +391,29 @@ impl App {
     }
 
     /// Recompute `filtered_indices` based on `search_query`.
-    /// Case-insensitive substring match on task name.
+    /// Fuzzy match: each query char must appear in order (e.g. "res" matches "r.*e.*s.*").
     pub fn update_search_filter(&mut self) {
-        let query = self.search_query.to_lowercase();
+        let query: Vec<char> = self.search_query.to_lowercase().chars().collect();
         self.filtered_indices = self
             .tasks
             .iter()
             .enumerate()
-            .filter(|(_, t)| query.is_empty() || t.name.to_lowercase().contains(&query))
+            .filter(|(_, t)| {
+                if query.is_empty() {
+                    return true;
+                }
+                let name = t.name.to_lowercase();
+                let mut qi = 0;
+                for c in name.chars() {
+                    if c == query[qi] {
+                        qi += 1;
+                        if qi == query.len() {
+                            return true;
+                        }
+                    }
+                }
+                false
+            })
             .map(|(i, _)| i)
             .collect();
         // Clamp selection to filtered range
