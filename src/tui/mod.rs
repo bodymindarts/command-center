@@ -112,18 +112,18 @@ fn spawn_caffeinate() -> Option<std::process::Child> {
     }
 }
 
-/// Append a JSON log line for a hook message to the hooks log file.
-fn log_hook_message(
-    log_file: &mut Option<std::fs::File>,
+/// Build a JSON log line for a hook message and broadcast it to all observers.
+fn broadcast_to_observers(
+    observers: &mut Vec<UnixStream>,
     msg_type: &str,
     cwd: &str,
     work_dirs: &[(String, String)],
     raw_json: &str,
 ) {
     use io::Write;
-    let Some(file) = log_file.as_mut() else {
+    if observers.is_empty() {
         return;
-    };
+    }
     let now = chrono::Local::now().format("%H:%M:%S").to_string();
     let task = work_dirs
         .iter()
@@ -143,7 +143,9 @@ fn log_hook_message(
         "task": task,
         "raw": raw,
     });
-    let _ = writeln!(file, "{line}");
+    let msg = format!("{line}\n");
+    let bytes = msg.as_bytes();
+    observers.retain_mut(|stream| stream.write_all(bytes).is_ok());
 }
 
 pub fn run<R: Runtime>(
@@ -197,10 +199,6 @@ pub fn run<R: Runtime>(
     }
     crate::permission::write_socket_breadcrumb(service.project_root(), &socket_path);
 
-    // Truncate hooks log on dashboard startup
-    let hooks_log_path = service.hooks_log_path();
-    let _ = std::fs::File::create(&hooks_log_path);
-
     {
         let work_dirs: Vec<String> = app
             .tasks
@@ -213,26 +211,25 @@ pub fn run<R: Runtime>(
         });
     }
     {
-        let hooks_log = hooks_log_path.clone();
         let initial_work_dirs: Vec<(String, String)> = app
             .tasks
             .iter()
             .filter_map(|t| Some((t.name.as_str().to_string(), t.work_dir.clone()?)))
             .collect();
         std::thread::spawn(move || {
-            let mut log_file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&hooks_log)
-                .ok();
+            let mut observers: Vec<UnixStream> = Vec::new();
             while !perm_cancel.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         let mut buf = String::new();
                         if std::io::Read::read_to_string(&mut stream, &mut buf).is_ok() {
-                            if let Some(cwd) = crate::permission::parse_resolved_json(&buf) {
-                                log_hook_message(
-                                    &mut log_file,
+                            if crate::permission::parse_observe_json(&buf) {
+                                // Observer registration — keep the stream for broadcasting.
+                                let _ = stream.set_nonblocking(true);
+                                observers.push(stream);
+                            } else if let Some(cwd) = crate::permission::parse_resolved_json(&buf) {
+                                broadcast_to_observers(
+                                    &mut observers,
                                     "_resolved",
                                     &cwd,
                                     &initial_work_dirs,
@@ -240,8 +237,8 @@ pub fn run<R: Runtime>(
                                 );
                                 let _ = resolved_tx.send(cwd);
                             } else if let Some(cwd) = crate::permission::parse_idle_json(&buf) {
-                                log_hook_message(
-                                    &mut log_file,
+                                broadcast_to_observers(
+                                    &mut observers,
                                     "_idle",
                                     &cwd,
                                     &initial_work_dirs,
@@ -249,8 +246,8 @@ pub fn run<R: Runtime>(
                                 );
                                 let _ = idle_tx.send(cwd);
                             } else if let Some(cwd) = crate::permission::parse_active_json(&buf) {
-                                log_hook_message(
-                                    &mut log_file,
+                                broadcast_to_observers(
+                                    &mut observers,
                                     "_active",
                                     &cwd,
                                     &initial_work_dirs,
@@ -258,8 +255,8 @@ pub fn run<R: Runtime>(
                                 );
                                 let _ = active_tx.send(cwd);
                             } else if let Some(req) = crate::permission::parse_request_json(&buf) {
-                                log_hook_message(
-                                    &mut log_file,
+                                broadcast_to_observers(
+                                    &mut observers,
                                     "permission",
                                     &req.cwd,
                                     &initial_work_dirs,

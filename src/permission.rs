@@ -70,6 +70,18 @@ pub fn make_response_json(
     .to_string()
 }
 
+/// Check if a message is an observer registration: `{"_observe": true}`.
+pub fn parse_observe_json(json: &str) -> bool {
+    let parsed: Value = match serde_json::from_str(json) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    parsed
+        .get("_observe")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
 /// Check if a message is a "resolved" notification from a PostToolUse hook.
 /// Returns the CWD if so.
 pub fn parse_resolved_json(json: &str) -> Option<String> {
@@ -524,6 +536,30 @@ mod tests {
     #[test]
     fn parse_request_json_invalid() {
         assert!(parse_request_json("not json {{{").is_none());
+    }
+
+    // -- parse_resolved_json tests --
+
+    // -- parse_observe_json tests --
+
+    #[test]
+    fn parse_observe_json_returns_true() {
+        assert!(parse_observe_json(r#"{"_observe": true}"#));
+    }
+
+    #[test]
+    fn parse_observe_json_returns_false_when_false() {
+        assert!(!parse_observe_json(r#"{"_observe": false}"#));
+    }
+
+    #[test]
+    fn parse_observe_json_returns_false_for_invalid_json() {
+        assert!(!parse_observe_json("not json"));
+    }
+
+    #[test]
+    fn parse_observe_json_returns_false_without_key() {
+        assert!(!parse_observe_json(r#"{"cwd": "/tmp"}"#));
     }
 
     // -- parse_resolved_json tests --

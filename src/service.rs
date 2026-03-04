@@ -89,10 +89,6 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         &self.paths.root
     }
 
-    pub fn hooks_log_path(&self) -> std::path::PathBuf {
-        self.paths.hooks_log_path()
-    }
-
     pub fn read_exo_session_id(&self) -> Option<String> {
         std::fs::read_to_string(self.paths.exo_session_file())
             .ok()
