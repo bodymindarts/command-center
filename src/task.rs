@@ -3,39 +3,41 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 
-use crate::primitives::{MessageRole, TaskId, TaskStatus};
+use crate::primitives::{
+    MessageRole, PaneId, ProjectId, ProjectName, TaskId, TaskName, TaskStatus, WindowId,
+};
 
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct Task {
     pub id: TaskId,
-    pub name: String,
+    pub name: TaskName,
     pub skill_name: String,
     pub params_json: String,
     pub status: TaskStatus,
-    pub tmux_pane: Option<String>,
-    pub tmux_window: Option<String>,
+    pub tmux_pane: Option<PaneId>,
+    pub tmux_window: Option<WindowId>,
     pub work_dir: Option<String>,
     pub session_id: Option<String>,
     pub started_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
     pub exit_code: Option<i32>,
     pub output: Option<String>,
-    pub project_id: Option<String>,
+    pub project_id: Option<ProjectId>,
 }
 
 impl Task {
     pub fn new(
         id: TaskId,
-        name: &str,
+        name: TaskName,
         skill_name: &str,
         params: &HashMap<String, String>,
         work_dir: &Path,
-        project_id: Option<String>,
+        project_id: Option<ProjectId>,
     ) -> Self {
         Self {
             id,
-            name: name.to_string(),
+            name,
             skill_name: skill_name.to_string(),
             params_json: serde_json::to_string(params).unwrap_or_else(|_| "{}".to_string()),
             status: TaskStatus::Running,
@@ -56,7 +58,7 @@ impl Task {
 #[allow(dead_code)]
 pub struct TaskMessage {
     pub id: String,
-    pub task_id: String,
+    pub task_id: TaskId,
     pub role: MessageRole,
     pub content: String,
     pub created_at: DateTime<Utc>,
@@ -65,8 +67,8 @@ pub struct TaskMessage {
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct Project {
-    pub id: String,
-    pub name: String,
+    pub id: ProjectId,
+    pub name: ProjectName,
     pub description: String,
     pub created_at: DateTime<Utc>,
 }

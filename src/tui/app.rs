@@ -3,7 +3,7 @@ use std::os::unix::net::UnixStream;
 
 use ratatui::widgets::ListState;
 
-use crate::primitives::TaskId;
+use crate::primitives::{PaneId, ProjectId, ProjectName, TaskId, TaskName, WindowId};
 use crate::task::{Project, Task, TaskMessage};
 
 pub enum Focus {
@@ -15,7 +15,7 @@ pub enum Focus {
     ChatHistory,
     SpawnInput,
     ConfirmDelete(TaskId),
-    ConfirmDeleteProject(String),
+    ConfirmDeleteProject(ProjectName),
     ConfirmCloseTask(TaskId),
     ConfirmCloseProject,
 }
@@ -23,7 +23,7 @@ pub enum Focus {
 pub struct ActivePermission {
     pub perm_id: u64,
     pub stream: UnixStream,
-    pub task_name: String,
+    pub task_name: TaskName,
     pub tool_name: String,
     pub tool_input_summary: String,
     pub permission_suggestions: Vec<serde_json::Value>,
@@ -41,10 +41,10 @@ impl ActivePermission {
 
 /// Saved UI state for a project, restored on Ctrl+R.
 pub struct SavedProjectState {
-    pub name: String,
-    pub id: String,
+    pub name: ProjectName,
+    pub id: ProjectId,
     pub show_detail: bool,
-    pub selected_task_name: Option<String>,
+    pub selected_task_name: Option<TaskName>,
 }
 
 enum Segment {
@@ -314,22 +314,22 @@ pub struct App {
     pub focus: Focus,
     pub input: InputState,
     pub show_detail: bool,
-    pub pending_permissions: HashMap<String, VecDeque<ActivePermission>>,
+    pub pending_permissions: HashMap<TaskName, VecDeque<ActivePermission>>,
     pub selected_messages: Vec<TaskMessage>,
     pub detail_scroll: u16,
     pub detail_live_output: Option<String>,
-    pub window_numbers: HashMap<String, String>,
+    pub window_numbers: HashMap<WindowId, String>,
     pub chat_buffers: HashMap<String, String>,
     pub chat_scroll: u16,
     pub chat_viewport_height: u16,
     /// Pane IDs that appear idle (shell prompt visible), refreshed periodically.
-    pub idle_panes: HashSet<String>,
+    pub idle_panes: HashSet<PaneId>,
     /// Transient error message shown in the prompt bar. Cleared on next keypress.
     pub status_error: Option<String>,
     /// Currently active project name (for display). None = default (ExO).
-    pub active_project: Option<String>,
+    pub active_project: Option<ProjectName>,
     /// Currently active project ID (for queries). None = default (ExO).
-    pub active_project_id: Option<String>,
+    pub active_project_id: Option<ProjectId>,
     /// Last active project state — remembered when Ctrl+O leaves a project.
     pub last_project: Option<SavedProjectState>,
     /// Cached PM messages for the active project.
@@ -348,11 +348,11 @@ pub struct App {
     pub filtered_project_indices: Vec<usize>,
     /// Global map of task_name → project_id for all running tasks.
     /// Updated every tick from the full (unscoped) active task list.
-    pub global_task_projects: HashMap<String, Option<String>>,
+    pub global_task_projects: HashMap<TaskName, Option<ProjectId>>,
     /// Global list of (task_name, work_dir) for all running tasks.
     /// Used for CWD→task matching in permission/resolved/idle handlers
     /// so lookups work regardless of which project is currently displayed.
-    pub global_task_work_dirs: Vec<(String, String)>,
+    pub global_task_work_dirs: Vec<(TaskName, String)>,
 }
 
 impl App {
@@ -451,7 +451,7 @@ impl App {
     }
 
     /// Returns true if the task's tmux pane is NOT idle (prompt not visible).
-    pub fn is_task_active(&self, pane_id: Option<&str>) -> bool {
+    pub fn is_task_active(&self, pane_id: Option<&PaneId>) -> bool {
         let Some(pane_id) = pane_id else {
             return false;
         };
@@ -465,7 +465,7 @@ impl App {
             .push_back(perm);
     }
 
-    pub fn take_permission(&mut self, name: &str) -> Option<ActivePermission> {
+    pub fn take_permission(&mut self, name: &TaskName) -> Option<ActivePermission> {
         let queue = self.pending_permissions.get_mut(name)?;
         let perm = queue.pop_front();
         if queue.is_empty() {
@@ -474,20 +474,20 @@ impl App {
         perm
     }
 
-    pub fn peek_permission(&self, name: &str) -> Option<&ActivePermission> {
+    pub fn peek_permission(&self, name: &TaskName) -> Option<&ActivePermission> {
         self.pending_permissions.get(name)?.front()
     }
 
-    pub fn tasks_with_permissions(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.pending_permissions.keys().cloned().collect();
-        names.sort();
+    pub fn tasks_with_permissions(&self) -> Vec<TaskName> {
+        let mut names: Vec<TaskName> = self.pending_permissions.keys().cloned().collect();
+        names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         names
     }
 
     /// Count pending permissions only for tasks in the current project.
     /// "exo" key belongs to the default (no-project) scope.
     pub fn current_project_perm_count(&self) -> usize {
-        let current_pid = self.active_project_id.as_deref();
+        let current_pid = self.active_project_id.as_ref();
         self.pending_permissions
             .iter()
             .filter(|(task_name, _)| {
@@ -496,8 +496,8 @@ impl App {
                 } else {
                     let task_pid = self
                         .global_task_projects
-                        .get(task_name.as_str())
-                        .and_then(|pid| pid.as_deref());
+                        .get(*task_name)
+                        .and_then(|pid| pid.as_ref());
                     task_pid == current_pid
                 }
             })
@@ -510,20 +510,20 @@ impl App {
     /// Uses `global_task_projects` (updated every tick) so lookups work
     /// even when `self.tasks` is scoped to a single project.
     pub fn other_project_perm_counts(&self) -> Vec<(String, usize)> {
-        let current_pid = self.active_project_id.as_deref();
+        let current_pid = self.active_project_id.as_ref();
         let mut counts: std::collections::BTreeMap<String, usize> =
             std::collections::BTreeMap::new();
         for (task_name, queue) in &self.pending_permissions {
             let task_pid = self
                 .global_task_projects
                 .get(task_name)
-                .and_then(|pid| pid.as_deref());
+                .and_then(|pid| pid.as_ref());
             if task_pid != current_pid {
                 let label = if let Some(pid) = task_pid {
                     self.projects
                         .iter()
-                        .find(|p| p.id == pid)
-                        .map(|p| p.name.clone())
+                        .find(|p| p.id == *pid)
+                        .map(|p| p.name.as_str().to_string())
                         .unwrap_or_else(|| "?".to_string())
                 } else {
                     "default".to_string()
@@ -540,12 +540,12 @@ impl App {
     /// projects, not just the currently displayed ones.
     pub fn drain_stale_permissions(
         &mut self,
-        all_running_names: &HashSet<String>,
+        all_running_names: &HashSet<TaskName>,
     ) -> Vec<ActivePermission> {
-        let stale_keys: Vec<String> = self
+        let stale_keys: Vec<TaskName> = self
             .pending_permissions
             .keys()
-            .filter(|k| *k != "exo" && !all_running_names.contains(k.as_str()))
+            .filter(|k| k.as_str() != "exo" && !all_running_names.contains(*k))
             .cloned()
             .collect();
 
@@ -560,7 +560,7 @@ impl App {
 
     /// Count pending AskUser permissions in the current project.
     pub fn current_project_askuser_count(&self) -> usize {
-        let current_pid = self.active_project_id.as_deref();
+        let current_pid = self.active_project_id.as_ref();
         self.pending_permissions
             .iter()
             .filter(|(task_name, _)| {
@@ -569,8 +569,8 @@ impl App {
                 } else {
                     let task_pid = self
                         .global_task_projects
-                        .get(task_name.as_str())
-                        .and_then(|pid| pid.as_deref());
+                        .get(*task_name)
+                        .and_then(|pid| pid.as_ref());
                     task_pid == current_pid
                 }
             })
@@ -624,20 +624,20 @@ impl App {
 
     /// Returns the permission key for the currently visible pane.
     /// Task name if viewing a task's detail, "exo" otherwise.
-    pub fn focused_perm_key(&self) -> String {
+    pub fn focused_perm_key(&self) -> TaskName {
         if self.show_detail {
             self.selected_task()
                 .map(|t| t.name.clone())
-                .unwrap_or_else(|| "exo".to_string())
+                .unwrap_or_else(|| TaskName::from("exo".to_string()))
         } else {
-            "exo".to_string()
+            TaskName::from("exo".to_string())
         }
     }
 
     /// Returns the permission key to display in the overlay and act on
     /// with global keybindings. Prefers the focused task's key; falls
     /// back to any task with pending permissions.
-    pub fn active_permission_key(&self) -> Option<String> {
+    pub fn active_permission_key(&self) -> Option<TaskName> {
         let focused = self.focused_perm_key();
         if self.peek_permission(&focused).is_some() {
             return Some(focused);
@@ -691,7 +691,7 @@ impl App {
                 if query.is_empty() {
                     return true;
                 }
-                let name = t.name.to_lowercase();
+                let name = t.name.as_str().to_lowercase();
                 let mut qi = 0;
                 for c in name.chars() {
                     if c == query[qi] {
@@ -758,7 +758,7 @@ impl App {
                 if query.is_empty() {
                     return true;
                 }
-                let name = p.name.to_lowercase();
+                let name = p.name.as_str().to_lowercase();
                 let mut qi = 0;
                 for c in name.chars() {
                     if c == query[qi] {

@@ -1,7 +1,57 @@
 use std::fmt;
 
-#[derive(Debug, Clone, Eq)]
-pub struct TaskId(String);
+/// Generates a newtype wrapper around `String` with common trait impls:
+/// `Debug`, `Clone`, `PartialEq`, `Eq`, `Hash`, `Display`, `From<String>`,
+/// `PartialEq<str>`, `PartialEq<String>`, and an `as_str()` accessor.
+macro_rules! string_newtype {
+    ($name:ident) => {
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        pub struct $name(String);
+
+        impl $name {
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.fmt(f)
+            }
+        }
+
+        impl From<String> for $name {
+            fn from(s: String) -> Self {
+                Self(s)
+            }
+        }
+
+        impl PartialEq<str> for $name {
+            fn eq(&self, other: &str) -> bool {
+                self.0 == other
+            }
+        }
+
+        impl PartialEq<&str> for $name {
+            fn eq(&self, other: &&str) -> bool {
+                self.0 == *other
+            }
+        }
+
+        impl PartialEq<String> for $name {
+            fn eq(&self, other: &String) -> bool {
+                self.0 == *other
+            }
+        }
+    };
+}
+
+string_newtype!(TaskId);
+string_newtype!(TaskName);
+string_newtype!(ProjectId);
+string_newtype!(ProjectName);
+string_newtype!(PaneId);
+string_newtype!(WindowId);
 
 impl TaskId {
     pub fn generate() -> Self {
@@ -11,39 +61,15 @@ impl TaskId {
     pub fn short(&self) -> &str {
         &self.0[..8.min(self.0.len())]
     }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
 }
 
-impl fmt::Display for TaskId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+impl ProjectId {
+    pub fn generate() -> Self {
+        Self(uuid::Uuid::now_v7().to_string())
     }
-}
 
-impl From<String> for TaskId {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-impl PartialEq for TaskId {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
-}
-
-impl PartialEq<str> for TaskId {
-    fn eq(&self, other: &str) -> bool {
-        self.0 == other
-    }
-}
-
-impl PartialEq<String> for TaskId {
-    fn eq(&self, other: &String) -> bool {
-        self.0 == *other
+    pub fn short(&self) -> &str {
+        &self.0[..8.min(self.0.len())]
     }
 }
 

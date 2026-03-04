@@ -102,7 +102,8 @@ struct SpawnOpts {
 }
 
 fn cmd_spawn(service: &TaskService<impl Runtime>, opts: SpawnOpts) -> Result<()> {
-    let project_id = opts
+    use crate::primitives::ProjectId;
+    let project_id: Option<ProjectId> = opts
         .project
         .as_deref()
         .map(|name| service.resolve_project_id(name))
@@ -154,15 +155,15 @@ fn cmd_list(
     let mut tasks = if all {
         service.list_all()?
     } else if let Some(ref name) = project {
-        let project_id = service.resolve_project_id(name)?;
-        service.list_visible(Some(&project_id))?
+        let pid = service.resolve_project_id(name)?;
+        service.list_visible(Some(&pid))?
     } else {
         service.list_active()?
     };
 
     if let Some(ref pattern) = filter {
         let pattern_lower = pattern.to_lowercase();
-        tasks.retain(|t| t.name.to_lowercase().contains(&pattern_lower));
+        tasks.retain(|t| t.name.as_str().to_lowercase().contains(&pattern_lower));
     }
 
     if tasks.is_empty() {
@@ -195,12 +196,12 @@ fn cmd_list(
     }
 
     let win_numbers = crate::runtime::tmux_window_numbers();
-    let running_pane_ids: Vec<String> = tasks
+    let running_pane_ids: Vec<crate::primitives::PaneId> = tasks
         .iter()
         .filter(|t| t.status.is_running())
         .filter_map(|t| t.tmux_pane.clone())
         .collect();
-    let pane_refs: Vec<&str> = running_pane_ids.iter().map(|s| s.as_str()).collect();
+    let pane_refs: Vec<&crate::primitives::PaneId> = running_pane_ids.iter().collect();
     let idle = crate::runtime::idle_panes(&pane_refs);
     let rows: Vec<Row> = tasks
         .iter()
@@ -208,7 +209,7 @@ fn cmd_list(
             let activity = if !t.status.is_running() {
                 "-".to_string()
             } else if let Some(ref pane) = t.tmux_pane {
-                if idle.contains(pane.as_str()) {
+                if idle.contains(pane) {
                     "idle".to_string()
                 } else {
                     "active".to_string()
@@ -219,17 +220,25 @@ fn cmd_list(
             Row {
                 win_num: t
                     .tmux_window
-                    .as_deref()
+                    .as_ref()
                     .and_then(|w| win_numbers.get(w))
                     .cloned()
                     .unwrap_or_else(|| "-".to_string()),
                 id: t.id.short().to_string(),
-                name: t.name.clone(),
+                name: t.name.as_str().to_string(),
                 skill: t.skill_name.clone(),
                 status: t.status.to_string(),
                 activity,
-                pane: t.tmux_pane.clone().unwrap_or_else(|| "-".to_string()),
-                window: t.tmux_window.clone().unwrap_or_default(),
+                pane: t
+                    .tmux_pane
+                    .as_ref()
+                    .map(|p| p.as_str().to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                window: t
+                    .tmux_window
+                    .as_ref()
+                    .map(|w| w.to_string())
+                    .unwrap_or_default(),
                 started: t.started_at.format("%H:%M:%S").to_string(),
                 exit_code: t
                     .exit_code
@@ -414,7 +423,11 @@ fn cmd_project(action: ProjectAction, service: &TaskService<impl Runtime>) -> Re
     match action {
         ProjectAction::Create { name, description } => {
             let project = service.create_project(&name, &description)?;
-            println!("Created project '{}' ({})", project.name, &project.id[..8]);
+            println!(
+                "Created project '{}' ({})",
+                project.name,
+                project.id.short()
+            );
         }
         ProjectAction::List => {
             let projects = service.list_projects()?;
@@ -438,8 +451,8 @@ fn cmd_project(action: ProjectAction, service: &TaskService<impl Runtime>) -> Re
             let rows: Vec<Row> = projects
                 .iter()
                 .map(|p| Row {
-                    id: p.id[..8].to_string(),
-                    name: p.name.clone(),
+                    id: p.id.short().to_string(),
+                    name: p.name.as_str().to_string(),
                     description: p.description.clone(),
                     created: p.created_at.format("%Y-%m-%d %H:%M").to_string(),
                 })

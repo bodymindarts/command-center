@@ -92,7 +92,7 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, pm: Option<
 }
 
 fn task_list_item(app: &App, task: &crate::task::Task) -> ListItem<'static> {
-    let is_active = task.status.is_running() && app.is_task_active(task.tmux_pane.as_deref());
+    let is_active = task.status.is_running() && app.is_task_active(task.tmux_pane.as_ref());
     let status_char = match task.status {
         TaskStatus::Running if is_active => "●",
         TaskStatus::Running => "r",
@@ -115,7 +115,7 @@ fn task_list_item(app: &App, task: &crate::task::Task) -> ListItem<'static> {
     let time = task.started_at.format("%H:%M");
     let win_num = task
         .tmux_window
-        .as_deref()
+        .as_ref()
         .and_then(|w| app.window_numbers.get(w))
         .map(|s| s.as_str())
         .unwrap_or("-");
@@ -233,6 +233,7 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
             app.tasks.len()
         )));
     } else if let Some(ref name) = app.active_project {
+        let name = name.as_str();
         let mut badges = Vec::new();
         if total_perm > 0 {
             badges.push(format!("{total_perm} perm"));
@@ -336,7 +337,7 @@ fn render_project_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, fo
     let project_item = |project: &Project| {
         let main_line = Line::from(vec![
             Span::styled(
-                format!("{:<16} ", project.name),
+                format!("{:<16} ", project.name.as_str()),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -414,7 +415,7 @@ fn render_chat(
         let name = app.selected_task().map(|t| t.name.as_str()).unwrap_or("?");
         format!(" Chat: {name} ")
     } else if let Some(ref name) = app.active_project {
-        format!(" PM: {name} ")
+        format!(" PM: {} ", name.as_str())
     } else {
         " ExO Chat ".to_string()
     };
@@ -792,7 +793,11 @@ fn render_close_task_panel(frame: &mut ratatui::Frame, app: &App, area: Rect) {
 }
 
 fn render_close_project_panel(frame: &mut ratatui::Frame, app: &App, area: Rect) {
-    let name = app.active_project.as_deref().unwrap_or("?");
+    let name = app
+        .active_project
+        .as_ref()
+        .map(|n| n.as_str())
+        .unwrap_or("?");
     let lines = vec![
         Line::from(vec![
             Span::raw(" Close project "),
@@ -889,7 +894,7 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool
         let name = app.selected_task().map(|t| t.name.as_str()).unwrap_or("?");
         format!("[{name}] > ")
     } else if let Some(ref name) = app.active_project {
-        format!("[{name}] > ")
+        format!("[{}] > ", name.as_str())
     } else {
         "[ExO] > ".to_string()
     };

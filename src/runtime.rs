@@ -4,9 +4,11 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
+use crate::primitives::{PaneId, WindowId};
+
 pub struct SpawnResult {
-    pub window_id: String,
-    pub pane_id: String,
+    pub window_id: WindowId,
+    pub pane_id: PaneId,
 }
 
 pub struct LaunchConfig<'a> {
@@ -130,8 +132,8 @@ impl TmuxRuntime {
         self.tmux_cmd(&["send-keys", "-t", &top_pane, "Enter"])?;
 
         Ok(SpawnResult {
-            window_id,
-            pane_id: claude_pane,
+            window_id: WindowId::from(window_id),
+            pane_id: PaneId::from(claude_pane),
         })
     }
 }
@@ -565,12 +567,12 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 }
 
 /// Returns a mapping from tmux window ID (e.g. "@24") to window index (e.g. "2").
-pub fn tmux_window_numbers() -> HashMap<String, String> {
+pub fn tmux_window_numbers() -> HashMap<WindowId, String> {
     let mut map = HashMap::new();
     if let Ok(output) = tmux_cmd(&["list-windows", "-F", "#{window_id} #{window_index}"]) {
         for line in output.lines() {
             if let Some((id, index)) = line.split_once(' ') {
-                map.insert(id.to_string(), index.to_string());
+                map.insert(WindowId::from(id.to_string()), index.to_string());
             }
         }
     }
@@ -580,17 +582,17 @@ pub fn tmux_window_numbers() -> HashMap<String, String> {
 /// Returns the set of pane IDs that appear idle by inspecting the Claude Code UI.
 /// A pane is idle when its last non-empty line does NOT contain "esc" (case-insensitive),
 /// since Claude Code shows "esc to interrupt" / "Esc to cancel" while actively working.
-pub fn idle_panes(pane_ids: &[&str]) -> HashSet<String> {
+pub fn idle_panes(pane_ids: &[&PaneId]) -> HashSet<PaneId> {
     let mut set = HashSet::new();
-    for &pane_id in pane_ids {
-        if let Ok(output) = tmux_cmd(&["capture-pane", "-p", "-t", pane_id]) {
+    for pane_id in pane_ids {
+        if let Ok(output) = tmux_cmd(&["capture-pane", "-p", "-t", pane_id.as_str()]) {
             let last_line = output
                 .lines()
                 .rev()
                 .find(|l| !l.trim().is_empty())
                 .unwrap_or("");
             if !last_line.to_ascii_lowercase().contains("esc") {
-                set.insert(pane_id.to_string());
+                set.insert((*pane_id).clone());
             }
         }
     }

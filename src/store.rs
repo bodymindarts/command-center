@@ -5,7 +5,9 @@ use chrono::{DateTime, Utc};
 use rusqlite::{Connection, Row};
 use rusqlite_migration::{M, Migrations};
 
-use crate::primitives::{MessageRole, TaskId, TaskStatus};
+use crate::primitives::{
+    MessageRole, PaneId, ProjectId, ProjectName, TaskId, TaskName, TaskStatus, WindowId,
+};
 use crate::task::{Project, Task, TaskMessage};
 
 static MIGRATION_STEPS: [M<'static>; 3] = [
@@ -50,12 +52,12 @@ fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
     let completed_at: Option<String> = row.get(9)?;
     Ok(Task {
         id: TaskId::from(row.get::<_, String>(0)?),
-        name: row.get(1)?,
+        name: TaskName::from(row.get::<_, String>(1)?),
         skill_name: row.get(2)?,
         params_json: row.get(3)?,
         status: TaskStatus::from(row.get::<_, String>(4)?),
-        tmux_pane: row.get(5)?,
-        tmux_window: row.get(6)?,
+        tmux_pane: row.get::<_, Option<String>>(5)?.map(PaneId::from),
+        tmux_window: row.get::<_, Option<String>>(6)?.map(WindowId::from),
         work_dir: row.get(7)?,
         session_id: row.get(13)?,
         started_at: DateTime::parse_from_rfc3339(&started_at)
@@ -68,7 +70,7 @@ fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
         }),
         exit_code: row.get(10)?,
         output: row.get(11)?,
-        project_id: row.get(12)?,
+        project_id: row.get::<_, Option<String>>(12)?.map(ProjectId::from),
     })
 }
 
@@ -108,15 +110,15 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             (
                 task.id.as_str(),
-                &task.name,
+                task.name.as_str(),
                 &task.skill_name,
                 &task.params_json,
                 task.status.as_str(),
-                &task.tmux_pane,
-                &task.tmux_window,
+                task.tmux_pane.as_ref().map(|p| p.as_str()),
+                task.tmux_window.as_ref().map(|w| w.as_str()),
                 &task.work_dir,
                 task.started_at.to_rfc3339(),
-                &task.project_id,
+                task.project_id.as_ref().map(|p| p.as_str()),
             ),
         )?;
         Ok(())
@@ -245,7 +247,7 @@ impl Store {
                 let created_at: String = row.get(4)?;
                 Ok(TaskMessage {
                     id: row.get(0)?,
-                    task_id: row.get(1)?,
+                    task_id: TaskId::from(row.get::<_, String>(1)?),
                     role: MessageRole::from(row.get::<_, String>(2)?),
                     content: row.get(3)?,
                     created_at: DateTime::parse_from_rfc3339(&created_at)
@@ -277,8 +279,8 @@ impl Store {
         let mut rows = stmt.query_map([name], |row| {
             let created_at: String = row.get(3)?;
             Ok(Project {
-                id: row.get(0)?,
-                name: row.get(1)?,
+                id: ProjectId::from(row.get::<_, String>(0)?),
+                name: ProjectName::from(row.get::<_, String>(1)?),
                 description: row.get(2)?,
                 created_at: DateTime::parse_from_rfc3339(&created_at)
                     .unwrap_or_default()
@@ -299,8 +301,8 @@ impl Store {
             .query_map([], |row| {
                 let created_at: String = row.get(3)?;
                 Ok(Project {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
+                    id: ProjectId::from(row.get::<_, String>(0)?),
+                    name: ProjectName::from(row.get::<_, String>(1)?),
                     description: row.get(2)?,
                     created_at: DateTime::parse_from_rfc3339(&created_at)
                         .unwrap_or_default()
@@ -355,12 +357,12 @@ mod tests {
     fn insert_running_task(store: &Store, id: &str, name: &str) {
         let task = Task {
             id: TaskId::from(id.to_string()),
-            name: name.to_string(),
+            name: TaskName::from(name.to_string()),
             skill_name: "noop".to_string(),
             params_json: "{}".to_string(),
             status: TaskStatus::Running,
-            tmux_pane: Some("%1".to_string()),
-            tmux_window: Some("@1".to_string()),
+            tmux_pane: Some(PaneId::from("%1".to_string())),
+            tmux_window: Some(WindowId::from("@1".to_string())),
             work_dir: None,
             session_id: None,
             started_at: Utc::now(),
@@ -533,19 +535,19 @@ mod tests {
     fn insert_task_with_project(store: &Store, id: &str, name: &str, project_id: Option<&str>) {
         let task = Task {
             id: TaskId::from(id.to_string()),
-            name: name.to_string(),
+            name: TaskName::from(name.to_string()),
             skill_name: "noop".to_string(),
             params_json: "{}".to_string(),
             status: TaskStatus::Running,
-            tmux_pane: Some("%1".to_string()),
-            tmux_window: Some("@1".to_string()),
+            tmux_pane: Some(PaneId::from("%1".to_string())),
+            tmux_window: Some(WindowId::from("@1".to_string())),
             work_dir: None,
             session_id: None,
             started_at: Utc::now(),
             completed_at: None,
             exit_code: None,
             output: None,
-            project_id: project_id.map(String::from),
+            project_id: project_id.map(|s| ProjectId::from(s.to_string())),
         };
         store.insert_task(&task).unwrap();
     }

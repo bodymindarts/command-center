@@ -20,7 +20,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use crate::permission::PermissionRequest;
-use crate::primitives::MessageRole;
+use crate::primitives::{MessageRole, TaskName};
 use crate::runtime::Runtime;
 use crate::service::{PromptMode, SpawnRequest, TaskService, WorkDirMode};
 use app::{ActivePermission, App, Focus};
@@ -30,7 +30,10 @@ const EXO_PERM_KEY: &str = "exo";
 /// Find the task name whose work_dir is a prefix of the given CWD.
 /// Uses the global (project-independent) work_dir list so lookups
 /// work regardless of which project is currently displayed.
-fn find_task_name_by_cwd(work_dirs: &[(String, String)], cwd: &std::path::Path) -> Option<String> {
+fn find_task_name_by_cwd(
+    work_dirs: &[(TaskName, String)],
+    cwd: &std::path::Path,
+) -> Option<TaskName> {
     work_dirs
         .iter()
         .find(|(_, wd)| {
@@ -408,8 +411,8 @@ fn run_loop<R: Runtime>(
 
         let active_pm_state = app
             .active_project_id
-            .as_deref()
-            .and_then(|pid| pm_contexts.get(pid))
+            .as_ref()
+            .and_then(|pid| pm_contexts.get(pid.as_str()))
             .map(|ctx| &ctx.state);
         terminal.draw(|frame| widgets::ui(frame, app, exo, active_pm_state))?;
 
@@ -478,7 +481,8 @@ fn run_loop<R: Runtime>(
             let Some(ctx) = pm_contexts.get_mut(&project_id) else {
                 continue;
             };
-            let is_active_pm = app.active_project_id.as_deref() == Some(project_id.as_str());
+            let is_active_pm =
+                app.active_project_id.as_ref().map(|p| p.as_str()) == Some(project_id.as_str());
             match pm_ev.inner {
                 ExoEvent::TextDelta(text) => {
                     if ctx.state.streaming {
@@ -634,7 +638,11 @@ fn run_loop<R: Runtime>(
                                         .iter()
                                         .find(|p| p.id == pid)
                                         .map(|p| p.name.clone())
-                                        .unwrap_or_else(|| pid.clone());
+                                        .unwrap_or_else(|| {
+                                            crate::primitives::ProjectName::from(
+                                                pid.as_str().to_string(),
+                                            )
+                                        });
                                     app.active_project = Some(proj_name);
                                     app.active_project_id = Some(pid.clone());
                                     app.show_projects = false;
@@ -648,7 +656,13 @@ fn run_loop<R: Runtime>(
                                         app.detail_scroll = 0;
                                     }
                                     // Set up PM context for the target project
-                                    ensure_pm_context(pm_contexts, app, service, &pid, pm_tx);
+                                    ensure_pm_context(
+                                        pm_contexts,
+                                        app,
+                                        service,
+                                        pid.as_str(),
+                                        pm_tx,
+                                    );
                                 } else {
                                     // Target is the default (ExO) view
                                     app.active_project = None;
@@ -808,7 +822,7 @@ fn run_loop<R: Runtime>(
                                     app.show_detail = false;
                                 }
                                 // Restore PM state
-                                ensure_pm_context(pm_contexts, app, service, &id, pm_tx);
+                                ensure_pm_context(pm_contexts, app, service, id.as_str(), pm_tx);
                                 app.focus = Focus::ChatInput;
                                 app.chat_scroll = 0;
                                 app.restore_input();
@@ -822,8 +836,8 @@ fn run_loop<R: Runtime>(
                             }
                             let cur_idx = app
                                 .active_project_id
-                                .as_deref()
-                                .and_then(|pid| app.projects.iter().position(|p| p.id == pid));
+                                .as_ref()
+                                .and_then(|pid| app.projects.iter().position(|p| p.id == *pid));
                             if let Some(ci) = cur_idx {
                                 let next_idx = (ci + 1) % app.projects.len();
                                 let next = &app.projects[next_idx];
@@ -836,7 +850,13 @@ fn run_loop<R: Runtime>(
                                 if let Ok(tasks) = service.list_visible(Some(&next_id)) {
                                     app.refresh_tasks(tasks);
                                 }
-                                ensure_pm_context(pm_contexts, app, service, &next_id, pm_tx);
+                                ensure_pm_context(
+                                    pm_contexts,
+                                    app,
+                                    service,
+                                    next_id.as_str(),
+                                    pm_tx,
+                                );
                                 app.focus = Focus::ChatInput;
                                 app.chat_scroll = 0;
                                 app.restore_input();
@@ -890,7 +910,7 @@ fn run_loop<R: Runtime>(
                                             match service.reopen(&id) {
                                                 Ok(window_id) => {
                                                     if let Ok(tasks) = service.list_visible(
-                                                        app.active_project_id.as_deref(),
+                                                        app.active_project_id.as_ref(),
                                                     ) {
                                                         app.refresh_tasks(tasks);
                                                     }
@@ -932,7 +952,7 @@ fn run_loop<R: Runtime>(
                                         match service.reopen(&id) {
                                             Ok(_) => {
                                                 if let Ok(tasks) = service
-                                                    .list_visible(app.active_project_id.as_deref())
+                                                    .list_visible(app.active_project_id.as_ref())
                                                 {
                                                     app.refresh_tasks(tasks);
                                                 }
@@ -1136,7 +1156,7 @@ fn run_loop<R: Runtime>(
                                             pm_contexts,
                                             app,
                                             service,
-                                            &project_id,
+                                            project_id.as_str(),
                                             pm_tx,
                                         );
                                         app.restore_input();
@@ -1186,8 +1206,8 @@ fn run_loop<R: Runtime>(
                                                 prompt_mode: PromptMode::Full,
                                                 project_id: app.active_project_id.clone(),
                                             });
-                                            if let Ok(tasks) = service
-                                                .list_visible(app.active_project_id.as_deref())
+                                            if let Ok(tasks) =
+                                                service.list_visible(app.active_project_id.as_ref())
                                             {
                                                 app.refresh_tasks(tasks);
                                             }
@@ -1323,7 +1343,7 @@ fn run_loop<R: Runtime>(
                                                 match service.reopen(&id) {
                                                     Ok(window_id) => {
                                                         if let Ok(tasks) = service.list_visible(
-                                                            app.active_project_id.as_deref(),
+                                                            app.active_project_id.as_ref(),
                                                         ) {
                                                             app.refresh_tasks(tasks);
                                                         }
@@ -1343,9 +1363,9 @@ fn run_loop<R: Runtime>(
                                             let pane_id = app
                                                 .selected_task()
                                                 .and_then(|t| t.tmux_pane.clone());
-                                            if let Some(pane) = pane_id.as_deref() {
-                                                service.forward_literal(pane, &msg);
-                                                service.forward_key(pane, "Enter");
+                                            if let Some(ref pane) = pane_id {
+                                                service.forward_literal(pane.as_str(), &msg);
+                                                service.forward_key(pane.as_str(), "Enter");
                                                 // Message sent → agent will start working.
                                                 app.idle_panes.remove(pane);
                                             }
@@ -1419,15 +1439,15 @@ fn run_loop<R: Runtime>(
                                         app.chat_scroll = 0;
                                         if !app.input.is_empty() {
                                             if let Some(ref pid) = app.active_project_id {
-                                                let pid = pid.clone();
+                                                let pid_str = pid.as_str().to_string();
                                                 // Ensure PM context exists
-                                                if !pm_contexts.contains_key(&pid) {
+                                                if !pm_contexts.contains_key(&pid_str) {
                                                     pm_contexts.insert(
-                                                        pid.clone(),
-                                                        PmContext::new(&pid, pm_tx),
+                                                        pid_str.clone(),
+                                                        PmContext::new(&pid_str, pm_tx),
                                                     );
                                                 }
-                                                let ctx = pm_contexts.get_mut(&pid).unwrap();
+                                                let ctx = pm_contexts.get_mut(&pid_str).unwrap();
                                                 // PM chat: finish any in-progress streaming
                                                 if ctx.state.streaming {
                                                     ctx.state.finish_streaming();
@@ -1439,7 +1459,7 @@ fn run_loop<R: Runtime>(
                                                         && msg.has_text()
                                                     {
                                                         let _ = service.insert_pm_message(
-                                                            &pid,
+                                                            &pid_str,
                                                             MessageRole::Assistant,
                                                             &msg.text_content(),
                                                         );
@@ -1447,7 +1467,7 @@ fn run_loop<R: Runtime>(
                                                 }
                                                 let msg = app.input.take();
                                                 let _ = service.insert_pm_message(
-                                                    &pid,
+                                                    &pid_str,
                                                     MessageRole::User,
                                                     &msg,
                                                 );
@@ -1455,11 +1475,12 @@ fn run_loop<R: Runtime>(
                                                 // Lazily create PM session
                                                 if ctx.session.is_none() {
                                                     let sid = service
-                                                        .read_pm_session_id(&pid)
+                                                        .read_pm_session_id(&pid_str)
                                                         .or_else(|| ctx.state.session_id.clone());
                                                     let proj_name = app
                                                         .active_project
-                                                        .as_deref()
+                                                        .as_ref()
+                                                        .map(|p| p.as_str())
                                                         .unwrap_or("unknown");
                                                     let prompt = pm_system_prompt(proj_name);
                                                     ctx.session = Some(ExoSession::new(
@@ -1551,7 +1572,7 @@ fn run_loop<R: Runtime>(
                                     let id = task_id.clone();
                                     let _ = service.delete(id.as_str());
                                     if let Ok(tasks) =
-                                        service.list_visible(app.active_project_id.as_deref())
+                                        service.list_visible(app.active_project_id.as_ref())
                                     {
                                         app.refresh_tasks(tasks);
                                     }
@@ -1567,7 +1588,7 @@ fn run_loop<R: Runtime>(
                                     let id = task_id.clone();
                                     let _ = service.close(id.as_str());
                                     if let Ok(tasks) =
-                                        service.list_visible(app.active_project_id.as_deref())
+                                        service.list_visible(app.active_project_id.as_ref())
                                     {
                                         app.refresh_tasks(tasks);
                                     }
@@ -1587,7 +1608,7 @@ fn run_loop<R: Runtime>(
                             Focus::ConfirmDeleteProject(project_name) => match key.code {
                                 KeyCode::Char('y') => {
                                     let name = project_name.clone();
-                                    let _ = service.delete_project(&name);
+                                    let _ = service.delete_project(name.as_str());
                                     // Refresh project list
                                     if let Ok(projects) = service.list_projects() {
                                         app.projects = projects;
@@ -1615,7 +1636,7 @@ fn run_loop<R: Runtime>(
                                     app.active_project = None;
                                     app.save_current_input();
                                     if let Some(pid) = closed_pid {
-                                        cancel_pm_context(pm_contexts, &pid);
+                                        cancel_pm_context(pm_contexts, pid.as_str());
                                     }
                                     app.focus = Focus::TaskList;
                                     if let Ok(tasks) = service.list_visible(None) {
@@ -1635,7 +1656,7 @@ fn run_loop<R: Runtime>(
         }
 
         if last_tick.elapsed() >= tick_rate {
-            if let Ok(tasks) = service.list_visible(app.active_project_id.as_deref()) {
+            if let Ok(tasks) = service.list_visible(app.active_project_id.as_ref()) {
                 app.refresh_tasks(tasks);
             }
             // Refresh idle pane detection every 2 seconds (single list-panes call).
@@ -1654,7 +1675,7 @@ fn run_loop<R: Runtime>(
             // Uses the full (unscoped) active task list so permissions for tasks
             // in other projects aren't incorrectly drained or miscounted.
             let all_active = service.list_active().unwrap_or_default();
-            let all_running_names: std::collections::HashSet<String> =
+            let all_running_names: std::collections::HashSet<TaskName> =
                 all_active.iter().map(|t| t.name.clone()).collect();
             app.global_task_projects = all_active
                 .iter()
@@ -1678,7 +1699,10 @@ fn run_loop<R: Runtime>(
                     app.selected_messages = messages;
                 }
                 if is_running {
-                    app.detail_live_output = pane.as_deref().and_then(|p| service.capture_pane(p));
+                    app.detail_live_output = pane
+                        .as_ref()
+                        .map(|p| p.as_str())
+                        .and_then(|p| service.capture_pane(p));
                 } else {
                     app.detail_live_output = None;
                 }
@@ -1688,7 +1712,7 @@ fn run_loop<R: Runtime>(
             }
             // Refresh PM messages for active project
             if let Some(ref pid) = app.active_project_id {
-                if let Ok(messages) = service.pm_messages(pid) {
+                if let Ok(messages) = service.pm_messages(pid.as_str()) {
                     app.pm_messages = messages;
                 }
             } else {
@@ -1707,15 +1731,24 @@ fn run_loop<R: Runtime>(
             let resolved_cwd =
                 std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
             let task_name = find_task_name_by_cwd(&app.global_task_work_dirs, &resolved_cwd);
-            if let Some(name) = task_name {
+            if let Some(ref name) = task_name {
                 // Tool executed in-pane → task is active.
                 if let Some(pane_id) = app
                     .tasks
                     .iter()
-                    .find(|t| t.name == name)
-                    .and_then(|t| t.tmux_pane.as_deref())
+                    .find(|t| t.name == *name)
+                    .and_then(|t| t.tmux_pane.as_ref())
                 {
                     app.idle_panes.remove(pane_id);
+                }
+                // If the front pending permission for this task was approved
+                // in-pane (i.e. the agent resolved it without dashboard
+                // intervention), clear it and notify Telegram.
+                if let Some(perm) = app.take_permission(name) {
+                    let _ = write_response_to_stream(perm.stream, false, None);
+                    if tg_perm_ids.remove(&perm.perm_id) {
+                        notify_tg_resolved(tg_tx, perm.perm_id, "✅ Resolved in pane");
+                    }
                 }
             }
         }
@@ -1729,9 +1762,9 @@ fn run_loop<R: Runtime>(
                     .tasks
                     .iter()
                     .find(|t| t.name == task_name)
-                    .and_then(|t| t.tmux_pane.as_deref())
+                    .and_then(|t| t.tmux_pane.as_ref())
             {
-                app.idle_panes.insert(pane_id.to_string());
+                app.idle_panes.insert(pane_id.clone());
             }
         }
 
@@ -1740,13 +1773,13 @@ fn run_loop<R: Runtime>(
             let req_cwd = std::fs::canonicalize(&req.cwd)
                 .unwrap_or_else(|_| std::path::PathBuf::from(&req.cwd));
             let task_name = find_task_name_by_cwd(&app.global_task_work_dirs, &req_cwd)
-                .unwrap_or_else(|| EXO_PERM_KEY.to_string());
+                .unwrap_or_else(|| TaskName::from(EXO_PERM_KEY.to_string()));
             // Permission request → task is actively working.
             if let Some(pane_id) = app
                 .tasks
                 .iter()
                 .find(|t| t.name == task_name)
-                .and_then(|t| t.tmux_pane.as_deref())
+                .and_then(|t| t.tmux_pane.as_ref())
             {
                 app.idle_panes.remove(pane_id);
             }
@@ -1760,14 +1793,14 @@ fn run_loop<R: Runtime>(
                 {
                     let _ = tx.send(telegram::TgOutbound::NewQuestion {
                         perm_id,
-                        task_name: task_name.clone(),
+                        task_name: task_name.to_string(),
                         question,
                         options,
                     });
                 } else {
                     let _ = tx.send(telegram::TgOutbound::NewPermission {
                         perm_id,
-                        task_name: task_name.clone(),
+                        task_name: task_name.to_string(),
                         tool_name: req.tool_name.clone(),
                         tool_input_summary: req.tool_input_summary.clone(),
                     });

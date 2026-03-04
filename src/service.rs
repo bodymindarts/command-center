@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::config::Paths;
-use crate::primitives::{MessageRole, TaskId};
+use crate::primitives::{MessageRole, ProjectId, TaskId, TaskName, WindowId};
 use crate::runtime::{LaunchConfig, Runtime};
 use crate::skill::SkillFile;
 use crate::store::Store;
@@ -31,7 +31,7 @@ pub struct SpawnRequest<'a> {
     pub params: Vec<(String, String)>,
     pub work_dir_mode: WorkDirMode<'a>,
     pub prompt_mode: PromptMode,
-    pub project_id: Option<String>,
+    pub project_id: Option<ProjectId>,
 }
 
 #[derive(Debug)]
@@ -44,21 +44,21 @@ pub struct SkillSummary {
 #[derive(Debug)]
 pub struct SpawnOutput {
     pub task_id: TaskId,
-    pub task_name: String,
+    pub task_name: TaskName,
     pub skill_name: String,
-    pub window_id: String,
+    pub window_id: WindowId,
 }
 
 #[derive(Debug)]
 pub struct CloseOutput {
     pub task_id: TaskId,
-    pub task_name: String,
+    pub task_name: TaskName,
 }
 
 #[derive(Debug)]
 pub struct SendOutput {
     pub task_id: TaskId,
-    pub task_name: String,
+    pub task_name: TaskName,
 }
 
 #[derive(Debug)]
@@ -162,7 +162,7 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         // 4. Insert task + session into DB
         let task = Task::new(
             id,
-            req.task_name,
+            TaskName::from(req.task_name.to_string()),
             req.skill_name,
             &params_map,
             &work_dir,
@@ -189,13 +189,13 @@ impl<'a, R: Runtime> TaskService<'a, R> {
             user_prompt: user_prompt.as_deref(),
         })?;
         self.store
-            .update_tmux_pane(task.id.as_str(), &result.pane_id)?;
+            .update_tmux_pane(task.id.as_str(), result.pane_id.as_str())?;
         self.store
-            .update_tmux_window(task.id.as_str(), &result.window_id)?;
+            .update_tmux_window(task.id.as_str(), result.window_id.as_str())?;
 
         Ok(SpawnOutput {
             task_id: task.id,
-            task_name: req.task_name.to_string(),
+            task_name: TaskName::from(req.task_name.to_string()),
             skill_name: req.skill_name.to_string(),
             window_id: result.window_id,
         })
@@ -215,11 +215,11 @@ impl<'a, R: Runtime> TaskService<'a, R> {
 
         let output = task
             .tmux_pane
-            .as_deref()
-            .and_then(|pane| self.runtime.capture_pane_output(pane).ok());
+            .as_ref()
+            .and_then(|pane| self.runtime.capture_pane_output(pane.as_str()).ok());
 
-        if let Some(window_id) = &task.tmux_window {
-            let _ = self.runtime.kill_tmux_window(window_id);
+        if let Some(ref window_id) = task.tmux_window {
+            let _ = self.runtime.kill_tmux_window(window_id.as_str());
         }
 
         let closed = self.store.close_task(task.id.as_str(), output.as_deref())?;
@@ -237,8 +237,8 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         let task = self.resolve_task(task_id)?;
 
         if task.status.is_running() {
-            if let Some(window_id) = &task.tmux_window {
-                let _ = self.runtime.kill_tmux_window(window_id);
+            if let Some(ref window_id) = task.tmux_window {
+                let _ = self.runtime.kill_tmux_window(window_id.as_str());
             }
             let _ = self.store.close_task(task.id.as_str(), None);
         }
@@ -246,7 +246,7 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         self.store.delete_task(task.id.as_str())
     }
 
-    pub fn reopen(&self, task_id: &str) -> Result<String> {
+    pub fn reopen(&self, task_id: &str) -> Result<WindowId> {
         let task = self.resolve_task(task_id)?;
 
         if task.status.is_running() {
@@ -273,14 +273,17 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         let result = if session_id.is_empty() {
             // Legacy task without session_id — fall back to re-running launch.sh
             // which still exists in the worktree's .claude/ directory.
-            self.runtime.relaunch_agent(&task.name, work_dir)?
+            self.runtime.relaunch_agent(task.name.as_str(), work_dir)?
         } else {
             self.runtime
-                .resume_agent(&task.name, session_id, work_dir)?
+                .resume_agent(task.name.as_str(), session_id, work_dir)?
         };
 
-        self.store
-            .reopen_task(task.id.as_str(), &result.pane_id, &result.window_id)?;
+        self.store.reopen_task(
+            task.id.as_str(),
+            result.pane_id.as_str(),
+            result.window_id.as_str(),
+        )?;
 
         Ok(result.window_id)
     }
@@ -290,10 +293,10 @@ impl<'a, R: Runtime> TaskService<'a, R> {
 
         let pane_id = task
             .tmux_pane
-            .as_deref()
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("task {} has no tmux pane", task.id.short()))?;
 
-        self.runtime.send_keys_to_pane(pane_id, message)?;
+        self.runtime.send_keys_to_pane(pane_id.as_str(), message)?;
         self.store
             .insert_message(task.id.as_str(), MessageRole::User, message)?;
 
@@ -316,14 +319,14 @@ impl<'a, R: Runtime> TaskService<'a, R> {
 
         let window_id = task
             .tmux_window
-            .as_deref()
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("task {} has no tmux window", task.id.short()))?;
 
-        self.runtime.select_window(window_id)
+        self.runtime.select_window(window_id.as_str())
     }
 
-    pub fn goto_window(&self, window_id: &str) {
-        let _ = self.runtime.select_window(window_id);
+    pub fn goto_window(&self, window_id: &WindowId) {
+        let _ = self.runtime.select_window(window_id.as_str());
     }
 
     pub fn log(&self, id_prefix: &str) -> Result<LogOutput> {
@@ -332,8 +335,8 @@ impl<'a, R: Runtime> TaskService<'a, R> {
 
         let live_output = if task.status.is_running() {
             task.tmux_pane
-                .as_deref()
-                .and_then(|pane| self.runtime.capture_pane_output(pane).ok())
+                .as_ref()
+                .and_then(|pane| self.runtime.capture_pane_output(pane.as_str()).ok())
         } else {
             None
         };
@@ -353,8 +356,9 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         self.store.list_tasks()
     }
 
-    pub fn list_visible(&self, project_id: Option<&str>) -> Result<Vec<Task>> {
-        self.store.list_visible_tasks_for_project(project_id)
+    pub fn list_visible(&self, project_id: Option<&ProjectId>) -> Result<Vec<Task>> {
+        self.store
+            .list_visible_tasks_for_project(project_id.map(|p| p.as_str()))
     }
 
     pub fn messages(&self, task_id: &str) -> Result<Vec<TaskMessage>> {
@@ -402,8 +406,8 @@ impl<'a, R: Runtime> TaskService<'a, R> {
     // -- Project methods --
 
     pub fn create_project(&self, name: &str, description: &str) -> Result<Project> {
-        let id = uuid::Uuid::now_v7().to_string();
-        self.store.insert_project(&id, name, description)?;
+        let id = crate::primitives::ProjectId::generate();
+        self.store.insert_project(id.as_str(), name, description)?;
         self.store
             .get_project_by_name(name)?
             .ok_or_else(|| anyhow::anyhow!("failed to retrieve project after insert"))
@@ -418,10 +422,10 @@ impl<'a, R: Runtime> TaskService<'a, R> {
             .store
             .get_project_by_name(name)?
             .ok_or_else(|| anyhow::anyhow!("no project found with name '{name}'"))?;
-        self.store.delete_project(&project.id)
+        self.store.delete_project(project.id.as_str())
     }
 
-    pub fn resolve_project_id(&self, name: &str) -> Result<String> {
+    pub fn resolve_project_id(&self, name: &str) -> Result<ProjectId> {
         let project = self
             .store
             .get_project_by_name(name)?
@@ -464,7 +468,7 @@ mod tests {
 
     use chrono::Utc;
 
-    use crate::primitives::{TaskId, TaskStatus};
+    use crate::primitives::{PaneId, TaskId, TaskName, TaskStatus, WindowId};
     use crate::runtime::{LaunchConfig, Runtime, SpawnResult};
     use crate::store::Store;
 
@@ -510,8 +514,8 @@ mod tests {
     struct FakeRuntime {
         calls: RefCell<Vec<Call>>,
         worktree_dir: PathBuf,
-        spawn_window_id: String,
-        spawn_pane_id: String,
+        spawn_window_id: WindowId,
+        spawn_pane_id: PaneId,
         capture_result: RefCell<Option<String>>,
         kill_should_fail: RefCell<bool>,
     }
@@ -521,8 +525,8 @@ mod tests {
             Self {
                 calls: RefCell::new(Vec::new()),
                 worktree_dir: worktree_dir.to_path_buf(),
-                spawn_window_id: "@fake-win".to_string(),
-                spawn_pane_id: "%fake-pane".to_string(),
+                spawn_window_id: WindowId::from("@fake-win".to_string()),
+                spawn_pane_id: PaneId::from("%fake-pane".to_string()),
                 capture_result: RefCell::new(Some("captured output".to_string())),
                 kill_should_fail: RefCell::new(false),
             }
@@ -727,7 +731,10 @@ prompt = "noop prompt"
         let tasks = store.list_active_tasks().unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].name, "test-task");
-        assert_eq!(tasks[0].tmux_pane.as_deref(), Some("%fake-pane"));
+        assert_eq!(
+            tasks[0].tmux_pane.as_ref().map(|p| p.as_str()),
+            Some("%fake-pane")
+        );
 
         // Verify system message recorded
         let messages = store.list_messages(tasks[0].id.as_str()).unwrap();
@@ -877,7 +884,7 @@ prompt = "noop prompt"
         // Insert a task with no tmux_window directly
         let task = Task {
             id: TaskId::from("aaaa-bbbb".to_string()),
-            name: "no-window".to_string(),
+            name: TaskName::from("no-window".to_string()),
             skill_name: "noop".to_string(),
             params_json: "{}".to_string(),
             status: TaskStatus::Running,
@@ -1014,8 +1021,14 @@ prompt = "deploy to {{ env }}"
             .unwrap()
             .unwrap();
         assert_eq!(task.status, TaskStatus::Running);
-        assert_eq!(task.tmux_pane.as_deref(), Some("%fake-pane"));
-        assert_eq!(task.tmux_window.as_deref(), Some("@fake-win"));
+        assert_eq!(
+            task.tmux_pane.as_ref().map(|p| p.as_str()),
+            Some("%fake-pane")
+        );
+        assert_eq!(
+            task.tmux_window.as_ref().map(|w| w.as_str()),
+            Some("@fake-win")
+        );
     }
 
     #[test]
@@ -1104,7 +1117,10 @@ prompt = "deploy to {{ env }}"
         let tasks = store.list_active_tasks().unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].name, "nw-task");
-        assert_eq!(tasks[0].tmux_pane.as_deref(), Some("%fake-pane"));
+        assert_eq!(
+            tasks[0].tmux_pane.as_ref().map(|p| p.as_str()),
+            Some("%fake-pane")
+        );
 
         // Verify call order: SetupDirConfig then LaunchAgent (no CreateWorktree)
         let calls = runtime.calls.borrow();
@@ -1239,7 +1255,7 @@ prompt = "deploy to {{ env }}"
             .unwrap();
         assert_eq!(project.name, "web-app");
         assert_eq!(project.description, "frontend project");
-        assert!(!project.id.is_empty());
+        assert!(!project.id.as_str().is_empty());
 
         let projects = service.list_projects().unwrap();
         assert_eq!(projects.len(), 1);
@@ -1293,7 +1309,7 @@ prompt = "deploy to {{ env }}"
                     branch: None,
                 },
                 prompt_mode: PromptMode::Full,
-                project_id: Some("proj-1".to_string()),
+                project_id: Some(ProjectId::from("proj-1".to_string())),
             })
             .unwrap();
         let out2 = spawn_test_task(&service); // no project
@@ -1304,7 +1320,8 @@ prompt = "deploy to {{ env }}"
         assert_eq!(unscoped[0].id, out2.task_id);
 
         // list_visible(Some("proj-1")) should only return the project task
-        let scoped = service.list_visible(Some("proj-1")).unwrap();
+        let proj_id = crate::primitives::ProjectId::from("proj-1".to_string());
+        let scoped = service.list_visible(Some(&proj_id)).unwrap();
         assert_eq!(scoped.len(), 1);
         assert_eq!(scoped[0].id, out1.task_id);
     }
