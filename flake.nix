@@ -101,6 +101,7 @@
 
             # Voice transcription (local, for Telegram voice messages)
             pkgs.whisper-cpp
+            pkgs.ffmpeg-headless
 
             # Search & filtering
             pkgs.fzf

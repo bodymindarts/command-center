@@ -428,21 +428,48 @@ fn ensure_whisper_model(ctx: &BotCtx) -> bool {
 
 /// Transcribe audio using the local `whisper-cli` binary.
 ///
-/// Writes the audio to a temp file, runs whisper-cli, and captures stdout.
+/// Telegram sends OGG/Opus which whisper-cli can't decode directly,
+/// so we convert to WAV via ffmpeg first.
 fn transcribe_audio(model_path: &str, audio_data: &[u8]) -> Option<String> {
     use std::process::Command;
 
-    // Write audio to a temp file.
-    let tmp = std::env::temp_dir().join(format!("voice-{}.ogg", std::process::id()));
-    if std::fs::write(&tmp, audio_data).is_err() {
+    let pid = std::process::id();
+    let ogg_tmp = std::env::temp_dir().join(format!("voice-{pid}.ogg"));
+    let wav_tmp = std::env::temp_dir().join(format!("voice-{pid}.wav"));
+
+    if std::fs::write(&ogg_tmp, audio_data).is_err() {
         tg_log("Failed to write temp audio file");
         return None;
     }
 
+    // Convert OGG/Opus → WAV (16kHz mono, whisper's expected format).
     tg_log(&format!(
-        ">>> whisper-cli transcription ({} bytes audio)",
+        ">>> ffmpeg converting OGG→WAV ({} bytes)",
         audio_data.len()
     ));
+    let ffmpeg = Command::new("ffmpeg")
+        .args(["-y", "-i"])
+        .arg(&ogg_tmp)
+        .args(["-ar", "16000", "-ac", "1", "-f", "wav"])
+        .arg(&wav_tmp)
+        .output();
+
+    let _ = std::fs::remove_file(&ogg_tmp);
+
+    match &ffmpeg {
+        Ok(out) if !out.status.success() => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            tg_log(&format!("<<< ffmpeg failed: {stderr}"));
+            return None;
+        }
+        Err(e) => {
+            tg_log(&format!("<<< ffmpeg spawn error: {e}"));
+            return None;
+        }
+        _ => {}
+    }
+
+    tg_log(">>> whisper-cli transcription");
 
     let result = Command::new("whisper-cli")
         .args([
@@ -450,10 +477,10 @@ fn transcribe_audio(model_path: &str, audio_data: &[u8]) -> Option<String> {
             "-np", // no extra prints
             "-l", "auto", // auto-detect language
         ])
-        .arg(&tmp)
+        .arg(&wav_tmp)
         .output();
 
-    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(&wav_tmp);
 
     match result {
         Ok(output) if output.status.success() => {
