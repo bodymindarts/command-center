@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -259,26 +258,6 @@ impl Store {
         Ok(messages)
     }
 
-    /// Returns the timestamp of the most recent message for each task that has messages.
-    pub fn last_message_times(&self) -> Result<HashMap<String, DateTime<Utc>>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT task_id, MAX(created_at) FROM task_messages GROUP BY task_id")?;
-        let rows = stmt.query_map([], |row| {
-            let task_id: String = row.get(0)?;
-            let created_at: String = row.get(1)?;
-            Ok((task_id, created_at))
-        })?;
-        let mut map = HashMap::new();
-        for row in rows {
-            let (task_id, created_at) = row?;
-            if let Ok(dt) = DateTime::parse_from_rfc3339(&created_at) {
-                map.insert(task_id, dt.with_timezone(&Utc));
-            }
-        }
-        Ok(map)
-    }
-
     // -- Project CRUD --
 
     pub fn insert_project(&self, id: &str, name: &str, description: &str) -> Result<()> {
@@ -483,38 +462,6 @@ mod tests {
         assert_eq!(messages.len(), 3);
         assert!(messages[0].created_at <= messages[1].created_at);
         assert!(messages[1].created_at <= messages[2].created_at);
-    }
-
-    #[test]
-    fn last_message_times_returns_latest_per_task() {
-        let store = test_store();
-        insert_running_task(&store, "task-a", "a");
-        insert_running_task(&store, "task-b", "b");
-
-        store
-            .insert_message("task-a", MessageRole::User, "first")
-            .unwrap();
-        store
-            .insert_message("task-a", MessageRole::User, "second")
-            .unwrap();
-        store
-            .insert_message("task-b", MessageRole::User, "only")
-            .unwrap();
-
-        let times = store.last_message_times().unwrap();
-        assert_eq!(times.len(), 2);
-        assert!(times.contains_key("task-a"));
-        assert!(times.contains_key("task-b"));
-        // task-a's time should be the latest message (second)
-        let msgs_a = store.list_messages("task-a").unwrap();
-        assert_eq!(times["task-a"], msgs_a.last().unwrap().created_at);
-    }
-
-    #[test]
-    fn last_message_times_empty_when_no_messages() {
-        let store = test_store();
-        let times = store.last_message_times().unwrap();
-        assert!(times.is_empty());
     }
 
     // -- Project CRUD tests --

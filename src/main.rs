@@ -207,15 +207,20 @@ fn cmd_list(
     }
 
     let win_numbers = crate::runtime::tmux_window_numbers();
-    let msg_times = service.last_message_times().unwrap_or_default();
-    let now = chrono::Utc::now();
+    let pane_acts = crate::runtime::pane_activities();
     let rows: Vec<Row> = tasks
         .iter()
         .map(|t| {
-            let activity = msg_times
-                .get(t.id.as_str())
-                .map(|ts| {
-                    let ago = (now - *ts).num_seconds();
+            let activity = t
+                .tmux_pane
+                .as_deref()
+                .and_then(|pane| pane_acts.get(pane))
+                .map(|&ts| {
+                    let now_unix = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64;
+                    let ago = now_unix - ts;
                     let label = if ago < 60 { "active" } else { "idle" };
                     format!("{label} ({})", format_time_ago(ago))
                 })

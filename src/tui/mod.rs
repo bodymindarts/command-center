@@ -340,10 +340,8 @@ fn run_loop<R: Runtime>(
     // pending_permissions without an explicit dashboard resolution).
     let mut tg_perm_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
 
-    // Seed last_message_times from the DB before first render.
-    if let Ok(times) = service.last_message_times() {
-        app.last_message_times = times;
-    }
+    // Seed pane activity timestamps before first render.
+    app.pane_activities = crate::runtime::pane_activities();
 
     loop {
         let any_pm_streaming = pm_contexts.values().any(|ctx| ctx.state.streaming);
@@ -1553,10 +1551,8 @@ fn run_loop<R: Runtime>(
             if let Ok(tasks) = service.list_visible(app.active_project_id.as_deref()) {
                 app.refresh_tasks(tasks);
             }
-            // Refresh activity status from DB message timestamps.
-            if let Ok(times) = service.last_message_times() {
-                app.last_message_times = times;
-            }
+            // Refresh activity status from tmux pane timestamps.
+            app.pane_activities = crate::runtime::pane_activities();
             // Update global task→project mapping and drain stale permissions.
             // Uses the full (unscoped) active task list so permissions for tasks
             // in other projects aren't incorrectly drained or miscounted.

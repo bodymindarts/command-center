@@ -543,6 +543,21 @@ pub fn tmux_window_numbers() -> HashMap<String, String> {
     map
 }
 
+/// Returns a mapping from tmux pane ID (e.g. "%5") to its last activity unix timestamp.
+pub fn pane_activities() -> HashMap<String, i64> {
+    let mut map = HashMap::new();
+    if let Ok(output) = tmux_cmd(&["list-panes", "-s", "-F", "#{pane_id} #{pane_activity}"]) {
+        for line in output.lines() {
+            if let Some((id, ts_str)) = line.split_once(' ')
+                && let Ok(ts) = ts_str.parse::<i64>()
+            {
+                map.insert(id.to_string(), ts);
+            }
+        }
+    }
+    map
+}
+
 /// Free function for workspace bootstrapping (cmd_start), not a task operation.
 pub fn tmux_cmd(args: &[&str]) -> Result<String> {
     let output = Command::new("tmux")

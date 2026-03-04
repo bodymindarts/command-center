@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::os::unix::net::UnixStream;
 
-use chrono::{DateTime, Utc};
 use ratatui::widgets::ListState;
 
 use crate::primitives::TaskId;
@@ -313,9 +312,9 @@ pub struct App {
     pub chat_buffers: HashMap<String, String>,
     pub chat_scroll: u16,
     pub chat_viewport_height: u16,
-    /// Timestamp of the most recent message per task, from the DB.
-    /// Refreshed every tick. Used to determine active/idle status.
-    pub last_message_times: HashMap<String, DateTime<Utc>>,
+    /// Tmux pane activity timestamps (unix epoch), refreshed every tick.
+    /// Used to determine active/idle status.
+    pub pane_activities: HashMap<String, i64>,
     /// Transient error message shown in the prompt bar. Cleared on next keypress.
     pub status_error: Option<String>,
     /// Currently active project name (for display). None = default (ExO).
@@ -368,7 +367,7 @@ impl App {
             chat_buffers: HashMap::new(),
             chat_scroll: 0,
             chat_viewport_height: 0,
-            last_message_times: HashMap::new(),
+            pane_activities: HashMap::new(),
             status_error: None,
             active_project: None,
             active_project_id: None,
@@ -442,11 +441,18 @@ impl App {
         }
     }
 
-    /// Returns true if the task's most recent message is within the last 60 seconds.
-    pub fn is_task_active(&self, task_id: &str) -> bool {
-        self.last_message_times
-            .get(task_id)
-            .is_some_and(|ts| (Utc::now() - *ts).num_seconds() < 60)
+    /// Returns true if the task's tmux pane had activity within the last 60 seconds.
+    pub fn is_task_active(&self, pane_id: Option<&str>) -> bool {
+        let Some(pane_id) = pane_id else {
+            return false;
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        self.pane_activities
+            .get(pane_id)
+            .is_some_and(|&ts| (now - ts) < 60)
     }
 
     pub fn add_permission(&mut self, perm: ActivePermission) {
