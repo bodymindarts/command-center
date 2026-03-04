@@ -17,7 +17,7 @@ use crate::cli::{AgentCommand, Cli, Command, ProjectAction, SkillAction};
 use crate::config::Paths;
 use crate::primitives::MessageRole;
 use crate::runtime::{Runtime, TmuxRuntime};
-use crate::service::TaskService;
+use crate::service::{PromptMode, SpawnRequest, TaskService, WorkDirMode};
 use crate::store::Store;
 
 fn main() -> Result<()> {
@@ -104,20 +104,34 @@ fn cmd_spawn(service: &TaskService<impl Runtime>, opts: SpawnOpts) -> Result<()>
         .as_deref()
         .map(|name| service.resolve_project_id(name))
         .transpose()?;
-    let result = if opts.scratch {
-        service.spawn_scratch(&opts.name, &opts.skill, opts.params)?
+
+    let repo_path = opts.repo.as_deref();
+    let default_repo = service.project_root().to_path_buf();
+
+    let (work_dir_mode, prompt_mode) = if opts.scratch {
+        (WorkDirMode::Scratch, PromptMode::Full)
     } else if opts.no_worktree {
-        service.spawn_no_worktree(&opts.name, &opts.skill, opts.params, opts.repo.as_deref())?
+        let dir = repo_path.unwrap_or(&default_repo);
+        (WorkDirMode::Existing { dir }, PromptMode::Interactive)
     } else {
-        service.spawn(
-            &opts.name,
-            &opts.skill,
-            opts.params,
-            opts.repo.as_deref(),
-            opts.branch.as_deref(),
-            project_id,
-        )?
+        let repo = repo_path.unwrap_or(&default_repo);
+        (
+            WorkDirMode::Worktree {
+                repo,
+                branch: opts.branch.as_deref(),
+            },
+            PromptMode::Full,
+        )
     };
+
+    let result = service.spawn(SpawnRequest {
+        task_name: &opts.name,
+        skill_name: &opts.skill,
+        params: opts.params,
+        work_dir_mode,
+        prompt_mode,
+        project_id,
+    })?;
     println!(
         "Spawned task {} ({})",
         result.task_name,

@@ -5,10 +5,35 @@ use anyhow::{Result, bail};
 
 use crate::config::Paths;
 use crate::primitives::{MessageRole, TaskId};
-use crate::runtime::Runtime;
+use crate::runtime::{LaunchConfig, Runtime};
 use crate::skill::SkillFile;
 use crate::store::Store;
 use crate::task::{Project, Task, TaskMessage};
+
+pub enum WorkDirMode<'a> {
+    Worktree {
+        repo: &'a Path,
+        branch: Option<&'a str>,
+    },
+    Scratch,
+    Existing {
+        dir: &'a Path,
+    },
+}
+
+pub enum PromptMode {
+    Full,
+    Interactive,
+}
+
+pub struct SpawnRequest<'a> {
+    pub task_name: &'a str,
+    pub skill_name: &'a str,
+    pub params: Vec<(String, String)>,
+    pub work_dir_mode: WorkDirMode<'a>,
+    pub prompt_mode: PromptMode,
+    pub project_id: Option<String>,
+}
 
 #[derive(Debug)]
 pub struct SkillSummary {
@@ -87,110 +112,83 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         let _ = std::fs::write(self.paths.pm_session_file(project_id), session_id);
     }
 
-    pub fn spawn(
-        &self,
-        task_name: &str,
-        skill_name: &str,
-        params: Vec<(String, String)>,
-        repo_path: Option<&Path>,
-        branch: Option<&str>,
-        project_id: Option<String>,
-    ) -> Result<SpawnOutput> {
-        let skill = SkillFile::load(&self.paths.skills_dir, skill_name)?;
+    pub fn spawn(&self, req: SpawnRequest) -> Result<SpawnOutput> {
+        // 1. Load skill, validate params
+        let skill = SkillFile::load(&self.paths.skills_dir, req.skill_name)?;
 
-        let mut params_map: HashMap<String, String> = params.into_iter().collect();
+        let mut params_map: HashMap<String, String> = req.params.into_iter().collect();
         params_map
             .entry("task".to_string())
-            .or_insert_with(|| task_name.to_string());
+            .or_insert_with(|| req.task_name.to_string());
         skill.validate_params(&params_map)?;
 
+        // 2. Render prompts
         let system_prompt = skill.render_system()?;
-        let user_prompt = skill.render_prompt(&params_map)?;
+        let user_prompt = match req.prompt_mode {
+            PromptMode::Full => Some(skill.render_prompt(&params_map)?),
+            PromptMode::Interactive => None,
+        };
 
-        let repo = repo_path.unwrap_or(&self.paths.root);
+        // 3. Set up working directory
+        // For Worktree mode, generate TaskId first since worktree name includes id.short()
         let id = TaskId::generate();
-        let worktree_name = format!("{task_name}-{}", id.short());
-        let worktree_path = self.runtime.create_worktree(
-            repo,
-            &worktree_name,
-            &skill.agent.allowed_tools,
-            branch,
-            &self.paths.root,
-        )?;
+        let work_dir = match req.work_dir_mode {
+            WorkDirMode::Worktree { repo, branch } => {
+                let worktree_name = format!("{}-{}", req.task_name, id.short());
+                self.runtime.create_worktree(
+                    repo,
+                    &worktree_name,
+                    &skill.agent.allowed_tools,
+                    branch,
+                    &self.paths.root,
+                )?
+            }
+            WorkDirMode::Scratch => {
+                let scratch_dir = self.paths.data_dir.join("scratch").join(req.task_name);
+                self.runtime.init_scratch_dir(&scratch_dir)?;
+                self.runtime.setup_dir_config(
+                    &self.paths.root,
+                    &scratch_dir,
+                    &skill.agent.allowed_tools,
+                )?;
+                scratch_dir
+            }
+            WorkDirMode::Existing { dir } => {
+                self.runtime
+                    .setup_dir_config(&self.paths.root, dir, &skill.agent.allowed_tools)?;
+                dir.to_path_buf()
+            }
+        };
 
+        // 4. Insert task + session into DB
         let task = Task::new(
             id,
-            task_name,
-            skill_name,
+            req.task_name,
+            req.skill_name,
             &params_map,
-            &worktree_path,
-            project_id,
+            &work_dir,
+            req.project_id,
         );
         let session_id = uuid::Uuid::now_v7().to_string();
 
         self.store.insert_task(&task)?;
         self.store
             .update_session_id(task.id.as_str(), &session_id)?;
-        self.store
-            .insert_message(task.id.as_str(), MessageRole::System, &user_prompt)?;
 
-        let result = self.runtime.spawn_agent(
-            task_name,
-            &session_id,
-            system_prompt.as_deref(),
-            &user_prompt,
-            &worktree_path,
-        )?;
-        self.store
-            .update_tmux_pane(task.id.as_str(), &result.pane_id)?;
-        self.store
-            .update_tmux_window(task.id.as_str(), &result.window_id)?;
+        // Store user prompt message only if Full mode
+        if let Some(ref prompt) = user_prompt {
+            self.store
+                .insert_message(task.id.as_str(), MessageRole::System, prompt)?;
+        }
 
-        Ok(SpawnOutput {
-            task_id: task.id,
-            task_name: task_name.to_string(),
-            skill_name: skill_name.to_string(),
-            window_id: result.window_id,
-        })
-    }
-
-    pub fn spawn_no_worktree(
-        &self,
-        task_name: &str,
-        skill_name: &str,
-        params: Vec<(String, String)>,
-        repo_path: Option<&Path>,
-    ) -> Result<SpawnOutput> {
-        let skill = SkillFile::load(&self.paths.skills_dir, skill_name)?;
-
-        let mut params_map: HashMap<String, String> = params.into_iter().collect();
-        params_map
-            .entry("task".to_string())
-            .or_insert_with(|| task_name.to_string());
-        skill.validate_params(&params_map)?;
-
-        let system_prompt = skill.render_system()?;
-
-        let repo = repo_path.unwrap_or(&self.paths.root);
-        let work_dir = repo.to_path_buf();
-
-        self.runtime
-            .setup_dir_config(&self.paths.root, &work_dir, &skill.agent.allowed_tools)?;
-
-        let id = TaskId::generate();
-        let task = Task::new(id, task_name, skill_name, &params_map, &work_dir, None);
-        let session_id = uuid::Uuid::now_v7().to_string();
-
-        self.store.insert_task(&task)?;
-        self.store
-            .update_session_id(task.id.as_str(), &session_id)?;
-
-        let result = self.runtime.spawn_interactive(
-            task_name,
-            &session_id,
-            system_prompt.as_deref(),
-            &work_dir,
-        )?;
+        // 5. Launch agent
+        let result = self.runtime.launch_agent(LaunchConfig {
+            task_name: req.task_name,
+            session_id: &session_id,
+            system_prompt: system_prompt.as_deref(),
+            work_dir: &work_dir,
+            user_prompt: user_prompt.as_deref(),
+        })?;
         self.store
             .update_tmux_pane(task.id.as_str(), &result.pane_id)?;
         self.store
@@ -198,63 +196,8 @@ impl<'a, R: Runtime> TaskService<'a, R> {
 
         Ok(SpawnOutput {
             task_id: task.id,
-            task_name: task_name.to_string(),
-            skill_name: skill_name.to_string(),
-            window_id: result.window_id,
-        })
-    }
-
-    pub fn spawn_scratch(
-        &self,
-        task_name: &str,
-        skill_name: &str,
-        params: Vec<(String, String)>,
-    ) -> Result<SpawnOutput> {
-        let skill = SkillFile::load(&self.paths.skills_dir, skill_name)?;
-
-        let mut params_map: HashMap<String, String> = params.into_iter().collect();
-        params_map
-            .entry("task".to_string())
-            .or_insert_with(|| task_name.to_string());
-        skill.validate_params(&params_map)?;
-
-        let system_prompt = skill.render_system()?;
-        let user_prompt = skill.render_prompt(&params_map)?;
-
-        let scratch_dir = self.paths.data_dir.join("scratch").join(task_name);
-        self.runtime.init_scratch_dir(&scratch_dir)?;
-        self.runtime.setup_dir_config(
-            &self.paths.root,
-            &scratch_dir,
-            &skill.agent.allowed_tools,
-        )?;
-
-        let id = TaskId::generate();
-        let task = Task::new(id, task_name, skill_name, &params_map, &scratch_dir, None);
-        let session_id = uuid::Uuid::now_v7().to_string();
-
-        self.store.insert_task(&task)?;
-        self.store
-            .update_session_id(task.id.as_str(), &session_id)?;
-        self.store
-            .insert_message(task.id.as_str(), MessageRole::System, &user_prompt)?;
-
-        let result = self.runtime.spawn_agent(
-            task_name,
-            &session_id,
-            system_prompt.as_deref(),
-            &user_prompt,
-            &scratch_dir,
-        )?;
-        self.store
-            .update_tmux_pane(task.id.as_str(), &result.pane_id)?;
-        self.store
-            .update_tmux_window(task.id.as_str(), &result.window_id)?;
-
-        Ok(SpawnOutput {
-            task_id: task.id,
-            task_name: task_name.to_string(),
-            skill_name: skill_name.to_string(),
+            task_name: req.task_name.to_string(),
+            skill_name: req.skill_name.to_string(),
             window_id: result.window_id,
         })
     }
@@ -523,7 +466,7 @@ mod tests {
     use chrono::Utc;
 
     use crate::primitives::{TaskId, TaskStatus};
-    use crate::runtime::{Runtime, SpawnResult};
+    use crate::runtime::{LaunchConfig, Runtime, SpawnResult};
     use crate::store::Store;
 
     use super::*;
@@ -542,11 +485,9 @@ mod tests {
         InitScratchDir {
             scratch_dir: PathBuf,
         },
-        SpawnAgent {
+        LaunchAgent {
             task_name: String,
-        },
-        SpawnInteractive {
-            task_name: String,
+            has_user_prompt: bool,
         },
         ResumeAgent {
             task_name: String,
@@ -634,32 +575,10 @@ mod tests {
             Ok(())
         }
 
-        fn spawn_agent(
-            &self,
-            task_name: &str,
-            _session_id: &str,
-            _system_prompt: Option<&str>,
-            _user_prompt: &str,
-            _work_dir: &Path,
-        ) -> Result<SpawnResult> {
-            self.calls.borrow_mut().push(Call::SpawnAgent {
-                task_name: task_name.to_string(),
-            });
-            Ok(SpawnResult {
-                window_id: self.spawn_window_id.clone(),
-                pane_id: self.spawn_pane_id.clone(),
-            })
-        }
-
-        fn spawn_interactive(
-            &self,
-            task_name: &str,
-            _session_id: &str,
-            _system_prompt: Option<&str>,
-            _work_dir: &Path,
-        ) -> Result<SpawnResult> {
-            self.calls.borrow_mut().push(Call::SpawnInteractive {
-                task_name: task_name.to_string(),
+        fn launch_agent(&self, config: LaunchConfig) -> Result<SpawnResult> {
+            self.calls.borrow_mut().push(Call::LaunchAgent {
+                task_name: config.task_name.to_string(),
+                has_user_prompt: config.user_prompt.is_some(),
             });
             Ok(SpawnResult {
                 window_id: self.spawn_window_id.clone(),
@@ -777,7 +696,17 @@ prompt = "noop prompt"
 
     fn spawn_test_task(service: &TaskService<impl Runtime>) -> SpawnOutput {
         service
-            .spawn("test-task", "noop", vec![], None, None, None)
+            .spawn(SpawnRequest {
+                task_name: "test-task",
+                skill_name: "noop",
+                params: vec![],
+                work_dir_mode: WorkDirMode::Worktree {
+                    repo: service.project_root(),
+                    branch: None,
+                },
+                prompt_mode: PromptMode::Full,
+                project_id: None,
+            })
             .expect("spawn should succeed")
     }
 
@@ -809,7 +738,13 @@ prompt = "noop prompt"
         // Verify call order
         let calls = runtime.calls.borrow();
         assert!(matches!(calls[0], Call::CreateWorktree { .. }));
-        assert!(matches!(calls[1], Call::SpawnAgent { .. }));
+        assert!(matches!(
+            calls[1],
+            Call::LaunchAgent {
+                has_user_prompt: true,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1142,7 +1077,7 @@ prompt = "deploy to {{ env }}"
     // -- spawn_no_worktree tests --
 
     #[test]
-    fn spawn_no_worktree_uses_setup_dir_config_and_interactive() {
+    fn spawn_existing_uses_setup_dir_config_and_interactive() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
@@ -1150,7 +1085,16 @@ prompt = "deploy to {{ env }}"
         let service = TaskService::new(&store, &runtime, &paths);
 
         let output = service
-            .spawn_no_worktree("nw-task", "noop", vec![], None)
+            .spawn(SpawnRequest {
+                task_name: "nw-task",
+                skill_name: "noop",
+                params: vec![],
+                work_dir_mode: WorkDirMode::Existing {
+                    dir: service.project_root(),
+                },
+                prompt_mode: PromptMode::Interactive,
+                project_id: None,
+            })
             .unwrap();
 
         assert_eq!(output.task_name, "nw-task");
@@ -1163,20 +1107,26 @@ prompt = "deploy to {{ env }}"
         assert_eq!(tasks[0].name, "nw-task");
         assert_eq!(tasks[0].tmux_pane.as_deref(), Some("%fake-pane"));
 
-        // Verify call order: SetupDirConfig then SpawnInteractive (no CreateWorktree)
+        // Verify call order: SetupDirConfig then LaunchAgent (no CreateWorktree)
         let calls = runtime.calls.borrow();
         assert!(
             !calls
                 .iter()
                 .any(|c| matches!(c, Call::CreateWorktree { .. })),
-            "spawn_no_worktree must not create a worktree"
+            "Existing mode must not create a worktree"
         );
         assert!(matches!(calls[0], Call::SetupDirConfig { .. }));
-        assert!(matches!(calls[1], Call::SpawnInteractive { .. }));
+        assert!(matches!(
+            calls[1],
+            Call::LaunchAgent {
+                has_user_prompt: false,
+                ..
+            }
+        ));
     }
 
     #[test]
-    fn spawn_no_worktree_uses_custom_repo_path() {
+    fn spawn_existing_uses_custom_dir_path() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
@@ -1187,11 +1137,18 @@ prompt = "deploy to {{ env }}"
         std::fs::create_dir_all(&custom_repo).unwrap();
 
         let output = service
-            .spawn_no_worktree("nw-task", "noop", vec![], Some(&custom_repo))
+            .spawn(SpawnRequest {
+                task_name: "nw-task",
+                skill_name: "noop",
+                params: vec![],
+                work_dir_mode: WorkDirMode::Existing { dir: &custom_repo },
+                prompt_mode: PromptMode::Interactive,
+                project_id: None,
+            })
             .unwrap();
         assert_eq!(output.task_name, "nw-task");
 
-        // Task work_dir should be the custom repo path
+        // Task work_dir should be the custom path
         let task = store
             .get_task_by_prefix(output.task_id.as_str())
             .unwrap()
@@ -1215,7 +1172,7 @@ prompt = "deploy to {{ env }}"
     // -- spawn_scratch tests --
 
     #[test]
-    fn spawn_scratch_creates_scratch_dir_and_uses_interactive() {
+    fn spawn_scratch_creates_scratch_dir_and_launches_agent() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
@@ -1223,7 +1180,14 @@ prompt = "deploy to {{ env }}"
         let service = TaskService::new(&store, &runtime, &paths);
 
         let output = service
-            .spawn_scratch("scratch-task", "noop", vec![])
+            .spawn(SpawnRequest {
+                task_name: "scratch-task",
+                skill_name: "noop",
+                params: vec![],
+                work_dir_mode: WorkDirMode::Scratch,
+                prompt_mode: PromptMode::Full,
+                project_id: None,
+            })
             .unwrap();
 
         assert_eq!(output.task_name, "scratch-task");
@@ -1242,17 +1206,23 @@ prompt = "deploy to {{ env }}"
             Some(expected_scratch.to_str().unwrap())
         );
 
-        // Verify call order: InitScratchDir, SetupDirConfig, SpawnAgent
+        // Verify call order: InitScratchDir, SetupDirConfig, LaunchAgent
         let calls = runtime.calls.borrow();
         assert!(
             !calls
                 .iter()
                 .any(|c| matches!(c, Call::CreateWorktree { .. })),
-            "spawn_scratch must not create a worktree"
+            "Scratch mode must not create a worktree"
         );
         assert!(matches!(calls[0], Call::InitScratchDir { .. }));
         assert!(matches!(calls[1], Call::SetupDirConfig { .. }));
-        assert!(matches!(calls[2], Call::SpawnAgent { .. }));
+        assert!(matches!(
+            calls[2],
+            Call::LaunchAgent {
+                has_user_prompt: true,
+                ..
+            }
+        ));
     }
 
     // -- Project CRUD via service layer --
@@ -1315,14 +1285,17 @@ prompt = "deploy to {{ env }}"
 
         // Spawn two tasks: one with project, one without
         let out1 = service
-            .spawn(
-                "proj-task",
-                "noop",
-                vec![],
-                None,
-                None,
-                Some("proj-1".to_string()),
-            )
+            .spawn(SpawnRequest {
+                task_name: "proj-task",
+                skill_name: "noop",
+                params: vec![],
+                work_dir_mode: WorkDirMode::Worktree {
+                    repo: service.project_root(),
+                    branch: None,
+                },
+                prompt_mode: PromptMode::Full,
+                project_id: Some("proj-1".to_string()),
+            })
             .unwrap();
         let out2 = spawn_test_task(&service); // no project
 

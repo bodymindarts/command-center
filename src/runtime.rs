@@ -9,6 +9,15 @@ pub struct SpawnResult {
     pub pane_id: String,
 }
 
+pub struct LaunchConfig<'a> {
+    pub task_name: &'a str,
+    pub session_id: &'a str,
+    pub system_prompt: Option<&'a str>,
+    pub work_dir: &'a Path,
+    /// Some = Full mode (--system-prompt), None = Interactive (--append-system-prompt + idle prompt)
+    pub user_prompt: Option<&'a str>,
+}
+
 pub trait Runtime {
     fn create_worktree(
         &self,
@@ -26,21 +35,7 @@ pub trait Runtime {
         skill_tools: &[String],
     ) -> Result<()>;
     fn init_scratch_dir(&self, scratch_dir: &Path) -> Result<()>;
-    fn spawn_agent(
-        &self,
-        task_name: &str,
-        session_id: &str,
-        system_prompt: Option<&str>,
-        user_prompt: &str,
-        work_dir: &Path,
-    ) -> Result<SpawnResult>;
-    fn spawn_interactive(
-        &self,
-        task_name: &str,
-        session_id: &str,
-        system_prompt: Option<&str>,
-        work_dir: &Path,
-    ) -> Result<SpawnResult>;
+    fn launch_agent(&self, config: LaunchConfig) -> Result<SpawnResult>;
     fn resume_agent(
         &self,
         task_name: &str,
@@ -270,29 +265,34 @@ impl Runtime for TmuxRuntime {
         Ok(())
     }
 
-    fn spawn_agent(
-        &self,
-        task_name: &str,
-        session_id: &str,
-        system_prompt: Option<&str>,
-        user_prompt: &str,
-        work_dir: &Path,
-    ) -> Result<SpawnResult> {
+    fn launch_agent(&self, config: LaunchConfig) -> Result<SpawnResult> {
         let claude_bin = self.resolve_binary("claude")?;
 
-        // Write prompts and launcher script into .claude/ so they never
-        // pollute the project's git status (works in any repo).
-        let claude_dir = work_dir.join(".claude");
+        let claude_dir = config.work_dir.join(".claude");
         std::fs::create_dir_all(&claude_dir)?;
 
-        std::fs::write(claude_dir.join("prompt.txt"), user_prompt)?;
-
         let mut script = format!("#!/bin/sh\nunset CLAUDECODE\nexec {claude_bin}");
-        script.push_str(&format!(" --session-id {session_id}"));
-        script.push_str(" \"$(cat .claude/prompt.txt)\"");
-        if let Some(sys) = system_prompt {
-            std::fs::write(claude_dir.join("system-prompt.txt"), sys)?;
-            script.push_str(" --system-prompt \"$(cat .claude/system-prompt.txt)\"");
+        script.push_str(&format!(" --session-id {}", config.session_id));
+
+        if let Some(user_prompt) = config.user_prompt {
+            // Full mode: write user prompt to file, use --system-prompt
+            std::fs::write(claude_dir.join("prompt.txt"), user_prompt)?;
+            script.push_str(" \"$(cat .claude/prompt.txt)\"");
+            if let Some(sys) = config.system_prompt {
+                std::fs::write(claude_dir.join("system-prompt.txt"), sys)?;
+                script.push_str(" --system-prompt \"$(cat .claude/system-prompt.txt)\"");
+            }
+        } else {
+            // Interactive mode: idle prompt, use --append-system-prompt
+            std::fs::write(
+                claude_dir.join("idle-prompt.txt"),
+                "Await further instructions.",
+            )?;
+            script.push_str(" \"$(cat .claude/idle-prompt.txt)\"");
+            if let Some(sys) = config.system_prompt {
+                std::fs::write(claude_dir.join("system-prompt.txt"), sys)?;
+                script.push_str(" --append-system-prompt \"$(cat .claude/system-prompt.txt)\"");
+            }
         }
 
         let script_path = claude_dir.join("launch.sh");
@@ -303,43 +303,7 @@ impl Runtime for TmuxRuntime {
             std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
         }
 
-        self.launch_agent_window(task_name, work_dir, "sh .claude/launch.sh")
-    }
-
-    fn spawn_interactive(
-        &self,
-        task_name: &str,
-        session_id: &str,
-        system_prompt: Option<&str>,
-        work_dir: &Path,
-    ) -> Result<SpawnResult> {
-        let claude_bin = self.resolve_binary("claude")?;
-
-        let claude_dir = work_dir.join(".claude");
-        std::fs::create_dir_all(&claude_dir)?;
-
-        std::fs::write(
-            claude_dir.join("idle-prompt.txt"),
-            "Await further instructions.",
-        )?;
-
-        let mut script = format!("#!/bin/sh\nunset CLAUDECODE\nexec {claude_bin}");
-        script.push_str(&format!(" --session-id {session_id}"));
-        script.push_str(" \"$(cat .claude/idle-prompt.txt)\"");
-        if let Some(sys) = system_prompt {
-            std::fs::write(claude_dir.join("system-prompt.txt"), sys)?;
-            script.push_str(" --append-system-prompt \"$(cat .claude/system-prompt.txt)\"");
-        }
-
-        let script_path = claude_dir.join("launch.sh");
-        std::fs::write(&script_path, script)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
-        }
-
-        self.launch_agent_window(task_name, work_dir, "sh .claude/launch.sh")
+        self.launch_agent_window(config.task_name, config.work_dir, "sh .claude/launch.sh")
     }
 
     fn resume_agent(
@@ -450,7 +414,7 @@ fn setup_worktree_config(
         // Ignore all generated files so agents don't commit them.
         std::fs::write(
             target_claude_dir.join(".gitignore"),
-            "launch.sh\nprompt.txt\nsystem-prompt.txt\nsettings.local.json\nhooks/\n.gitignore\n",
+            "launch.sh\nprompt.txt\nidle-prompt.txt\nsystem-prompt.txt\nsettings.local.json\nhooks/\n.gitignore\n",
         )?;
     }
     Ok(())

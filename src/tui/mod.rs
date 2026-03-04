@@ -21,7 +21,7 @@ use ratatui::backend::CrosstermBackend;
 use crate::permission::PermissionRequest;
 use crate::primitives::MessageRole;
 use crate::runtime::Runtime;
-use crate::service::TaskService;
+use crate::service::{PromptMode, SpawnRequest, TaskService, WorkDirMode};
 use app::{ActivePermission, App, Focus};
 
 const EXO_PERM_KEY: &str = "exo";
@@ -991,14 +991,18 @@ fn run_loop<R: Runtime>(
                                     KeyCode::Enter => {
                                         if !app.input.is_empty() {
                                             let name = app.input.take();
-                                            let _ = service.spawn(
-                                                &name,
-                                                "engineer",
-                                                vec![("task".to_string(), name.clone())],
-                                                None,
-                                                None,
-                                                app.active_project_id.clone(),
-                                            );
+                                            let root = service.project_root().to_path_buf();
+                                            let _ = service.spawn(SpawnRequest {
+                                                task_name: &name,
+                                                skill_name: "engineer",
+                                                params: vec![("task".to_string(), name.clone())],
+                                                work_dir_mode: WorkDirMode::Worktree {
+                                                    repo: &root,
+                                                    branch: None,
+                                                },
+                                                prompt_mode: PromptMode::Full,
+                                                project_id: app.active_project_id.clone(),
+                                            });
                                             if let Ok(tasks) = service
                                                 .list_visible(app.active_project_id.as_deref())
                                             {
