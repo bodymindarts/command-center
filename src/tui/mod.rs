@@ -1698,8 +1698,11 @@ fn run_loop<R: Runtime>(
         }
 
         // Handle "resolved" notifications from PostToolUse hooks.
-        // When a tool executes (approved in agent pane or elsewhere), clear
-        // the matching pending permission and respond to unblock the hook.
+        // A resolved notification means *some* tool executed in the task's CWD
+        // (possibly a pre-approved tool like Read/Glob). It does NOT identify
+        // which tool, so we must NOT auto-approve pending permissions here —
+        // those are resolved only by explicit user action (dashboard, Telegram)
+        // or by the in-pane vanish detection below.
         while let Ok(cwd) = resolved_rx.try_recv() {
             let resolved_cwd =
                 std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
@@ -1713,12 +1716,6 @@ fn run_loop<R: Runtime>(
                     .and_then(|t| t.tmux_pane.as_deref())
                 {
                     app.idle_panes.remove(pane_id);
-                }
-                // Drain ALL pending permissions for this task — respond with allow
-                // so the PermissionRequest hook processes can exit cleanly.
-                while let Some(perm) = app.take_permission(&name) {
-                    notify_tg_resolved(tg_tx, perm.perm_id, "✅ Resolved (tool executed)");
-                    let _ = write_response_to_stream(perm.stream, true, None);
                 }
             }
         }
