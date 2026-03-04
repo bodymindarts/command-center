@@ -8,7 +8,7 @@
 //! If the env vars are absent the feature is completely dormant.
 
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
@@ -80,6 +80,18 @@ pub fn start(
 // Bot loop (runs in its own thread)
 // ---------------------------------------------------------------------------
 
+/// Shared context passed through the bot's helper functions to avoid
+/// exceeding clippy's max-argument limit.
+struct BotCtx {
+    agent: ureq::Agent,
+    /// Longer-timeout agent for Whisper transcription calls.
+    whisper_agent: ureq::Agent,
+    base: String,
+    file_base: String,
+    chat_id: String,
+    openai_key: Option<String>,
+}
+
 fn run_bot(
     token: &str,
     chat_id: &str,
@@ -91,11 +103,20 @@ fn run_bot(
         "Bot starting (chat_id=***, token_len={})",
         token.len()
     ));
-    let agent = ureq::AgentBuilder::new()
-        .timeout_read(Duration::from_secs(5))
-        .timeout_write(Duration::from_secs(5))
-        .build();
-    let base = format!("https://api.telegram.org/bot{token}");
+    let ctx = BotCtx {
+        agent: ureq::AgentBuilder::new()
+            .timeout_read(Duration::from_secs(5))
+            .timeout_write(Duration::from_secs(5))
+            .build(),
+        whisper_agent: ureq::AgentBuilder::new()
+            .timeout_read(Duration::from_secs(30))
+            .timeout_write(Duration::from_secs(30))
+            .build(),
+        base: format!("https://api.telegram.org/bot{token}"),
+        file_base: format!("https://api.telegram.org/file/bot{token}"),
+        chat_id: chat_id.to_string(),
+        openai_key: std::env::var("OPENAI_API_KEY").ok(),
+    };
     let mut offset: i64 = 0;
     // perm_id → Telegram message_id so we can edit messages later.
     let mut msg_map: HashMap<u64, i64> = HashMap::new();
@@ -105,18 +126,16 @@ fn run_bot(
 
     while !cancel.load(Ordering::Relaxed) {
         // 1. Drain outbound messages from the TUI (non-blocking).
-        drain_outbound(&agent, &base, chat_id, &out_rx, &mut msg_map, &mut exo_buf);
+        drain_outbound(&ctx, &out_rx, &mut msg_map, &mut exo_buf);
 
         // 2. Long-poll Telegram for updates.
-        poll_updates(&agent, &base, chat_id, &mut offset, &in_tx, &mut msg_map);
+        poll_updates(&ctx, &mut offset, &in_tx, &mut msg_map);
     }
 }
 
 /// Process all queued outbound messages without blocking.
 fn drain_outbound(
-    agent: &ureq::Agent,
-    base: &str,
-    chat_id: &str,
+    ctx: &BotCtx,
     out_rx: &mpsc::Receiver<TgOutbound>,
     msg_map: &mut HashMap<u64, i64>,
     exo_buf: &mut String,
@@ -131,7 +150,7 @@ fn drain_outbound(
             } => {
                 let text = format_perm_text(&task_name, &tool_name, &tool_input_summary);
                 let body = serde_json::json!({
-                    "chat_id": chat_id,
+                    "chat_id": ctx.chat_id,
                     "text": text,
                     "parse_mode": "HTML",
                     "reply_markup": {
@@ -142,7 +161,7 @@ fn drain_outbound(
                         ]]
                     },
                 });
-                if let Some(resp) = tg_post(agent, &format!("{base}/sendMessage"), &body)
+                if let Some(resp) = tg_post(&ctx.agent, &format!("{}/sendMessage", ctx.base), &body)
                     && let Some(id) = resp["result"]["message_id"].as_i64()
                 {
                     msg_map.insert(perm_id, id);
@@ -151,12 +170,12 @@ fn drain_outbound(
             TgOutbound::Resolved { perm_id, outcome } => {
                 if let Some(msg_id) = msg_map.remove(&perm_id) {
                     let body = serde_json::json!({
-                        "chat_id": chat_id,
+                        "chat_id": ctx.chat_id,
                         "message_id": msg_id,
                         "text": outcome,
                         "parse_mode": "HTML",
                     });
-                    tg_post(agent, &format!("{base}/editMessageText"), &body);
+                    tg_post(&ctx.agent, &format!("{}/editMessageText", ctx.base), &body);
                 }
             }
             TgOutbound::ExoTextDelta { text } => {
@@ -165,10 +184,10 @@ fn drain_outbound(
             TgOutbound::ExoTurnDone => {
                 if !exo_buf.is_empty() {
                     let body = serde_json::json!({
-                        "chat_id": chat_id,
+                        "chat_id": ctx.chat_id,
                         "text": exo_buf.as_str(),
                     });
-                    tg_post(agent, &format!("{base}/sendMessage"), &body);
+                    tg_post(&ctx.agent, &format!("{}/sendMessage", ctx.base), &body);
                     exo_buf.clear();
                 }
             }
@@ -178,9 +197,7 @@ fn drain_outbound(
 
 /// Long-poll Telegram for updates and forward callback queries to the TUI.
 fn poll_updates(
-    agent: &ureq::Agent,
-    base: &str,
-    chat_id: &str,
+    ctx: &BotCtx,
     offset: &mut i64,
     in_tx: &mpsc::Sender<TgInbound>,
     msg_map: &mut HashMap<u64, i64>,
@@ -190,7 +207,7 @@ fn poll_updates(
         "timeout": 2,
         "allowed_updates": ["callback_query", "message"],
     });
-    let Some(resp) = tg_post(agent, &format!("{base}/getUpdates"), &body) else {
+    let Some(resp) = tg_post(&ctx.agent, &format!("{}/getUpdates", ctx.base), &body) else {
         return;
     };
     let Some(updates) = resp["result"].as_array() else {
@@ -205,7 +222,11 @@ fn poll_updates(
             // Answer the callback query to dismiss Telegram's loading spinner.
             if let Some(cb_id) = cb["id"].as_str() {
                 let answer = serde_json::json!({"callback_query_id": cb_id});
-                tg_post(agent, &format!("{base}/answerCallbackQuery"), &answer);
+                tg_post(
+                    &ctx.agent,
+                    &format!("{}/answerCallbackQuery", ctx.base),
+                    &answer,
+                );
             }
             // Parse the decision and forward to the TUI.
             if let Some(data) = cb["data"].as_str()
@@ -220,12 +241,12 @@ fn poll_updates(
                 // Edit the message to show the result immediately.
                 if let Some(msg_id) = msg_map.remove(&perm_id) {
                     let body = serde_json::json!({
-                        "chat_id": chat_id,
+                        "chat_id": ctx.chat_id,
                         "message_id": msg_id,
                         "text": label,
                         "parse_mode": "HTML",
                     });
-                    tg_post(agent, &format!("{base}/editMessageText"), &body);
+                    tg_post(&ctx.agent, &format!("{}/editMessageText", ctx.base), &body);
                 }
             }
         }
@@ -233,13 +254,23 @@ fn poll_updates(
         // Handle regular text messages → route to ExO.
         if let Some(msg) = update.get("message")
             && let Some(msg_chat_id) = msg["chat"]["id"].as_i64()
-            && msg_chat_id.to_string() == chat_id
+            && msg_chat_id.to_string() == ctx.chat_id
             && let Some(text) = msg["text"].as_str()
         {
             tg_log(&format!("Incoming message for ExO: {text}"));
             let _ = in_tx.send(TgInbound::ExoMessage {
                 text: text.to_string(),
             });
+        }
+
+        // Handle voice messages → transcribe and route to ExO.
+        if let Some(msg) = update.get("message")
+            && let Some(msg_chat_id) = msg["chat"]["id"].as_i64()
+            && msg_chat_id.to_string() == ctx.chat_id
+            && msg.get("voice").is_some()
+            && let Some(file_id) = msg["voice"]["file_id"].as_str()
+        {
+            handle_voice(ctx, file_id, in_tx);
         }
     }
 }
@@ -285,6 +316,152 @@ fn tg_log(msg: &str) {
     };
     let ts = chrono::Local::now().format("%H:%M:%S%.3f");
     let _ = writeln!(f, "[{ts}] {msg}");
+}
+
+// ---------------------------------------------------------------------------
+// Voice message handling
+// ---------------------------------------------------------------------------
+
+/// Process an incoming voice message: download, transcribe, and forward to ExO.
+fn handle_voice(ctx: &BotCtx, file_id: &str, in_tx: &mpsc::Sender<TgInbound>) {
+    let Some(ref api_key) = ctx.openai_key else {
+        let body = serde_json::json!({
+            "chat_id": ctx.chat_id,
+            "text": "⚠️ Voice messages require OPENAI_API_KEY for transcription.",
+        });
+        tg_post(&ctx.agent, &format!("{}/sendMessage", ctx.base), &body);
+        return;
+    };
+
+    let Some(audio_data) = download_voice(&ctx.agent, &ctx.base, &ctx.file_base, file_id) else {
+        let body = serde_json::json!({
+            "chat_id": ctx.chat_id,
+            "text": "⚠️ Failed to download voice message.",
+        });
+        tg_post(&ctx.agent, &format!("{}/sendMessage", ctx.base), &body);
+        return;
+    };
+
+    match transcribe_audio(&ctx.whisper_agent, api_key, &audio_data) {
+        Some(text) if !text.is_empty() => {
+            tg_log(&format!("Transcribed voice: {text}"));
+            // Echo the transcription back to Telegram so the user sees what was understood.
+            let body = serde_json::json!({
+                "chat_id": ctx.chat_id,
+                "text": format!("🎤 {text}"),
+            });
+            tg_post(&ctx.agent, &format!("{}/sendMessage", ctx.base), &body);
+            let _ = in_tx.send(TgInbound::ExoMessage { text });
+        }
+        _ => {
+            let body = serde_json::json!({
+                "chat_id": ctx.chat_id,
+                "text": "⚠️ Failed to transcribe voice message.",
+            });
+            tg_post(&ctx.agent, &format!("{}/sendMessage", ctx.base), &body);
+        }
+    }
+}
+
+/// Download a voice file from Telegram using the Bot File API.
+///
+/// 1. Call `getFile` to resolve the `file_id` to a `file_path`.
+/// 2. GET the file bytes from `https://api.telegram.org/file/bot<token>/<file_path>`.
+fn download_voice(
+    agent: &ureq::Agent,
+    base: &str,
+    file_base: &str,
+    file_id: &str,
+) -> Option<Vec<u8>> {
+    let body = serde_json::json!({"file_id": file_id});
+    let resp = tg_post(agent, &format!("{base}/getFile"), &body)?;
+    let file_path = resp["result"]["file_path"].as_str()?;
+
+    let url = format!("{file_base}/{file_path}");
+    tg_log(&format!(">>> downloading voice: {url}"));
+    match agent.get(&url).call() {
+        Ok(resp) => {
+            let mut buf = Vec::new();
+            if resp.into_reader().read_to_end(&mut buf).is_ok() {
+                tg_log(&format!("<<< downloaded {} bytes", buf.len()));
+                Some(buf)
+            } else {
+                tg_log("<<< failed to read voice response body");
+                None
+            }
+        }
+        Err(e) => {
+            tg_log(&format!("<<< voice download error: {e}"));
+            None
+        }
+    }
+}
+
+/// Transcribe audio bytes using OpenAI's Whisper API.
+///
+/// Sends a multipart/form-data POST to `/v1/audio/transcriptions` and returns
+/// the transcribed text on success.
+fn transcribe_audio(agent: &ureq::Agent, api_key: &str, audio_data: &[u8]) -> Option<String> {
+    let boundary = "----VoiceTranscription";
+
+    let mut body = Vec::new();
+    // File field
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"file\"; filename=\"voice.ogg\"\r\n\
+             Content-Type: audio/ogg\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(audio_data);
+    body.extend_from_slice(b"\r\n");
+    // Model field
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"model\"\r\n\r\n\
+             whisper-1\r\n"
+        )
+        .as_bytes(),
+    );
+    // Closing boundary
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+    tg_log(&format!(
+        ">>> Whisper transcription ({} bytes audio)",
+        audio_data.len()
+    ));
+    match agent
+        .post("https://api.openai.com/v1/audio/transcriptions")
+        .set("Authorization", &format!("Bearer {api_key}"))
+        .set(
+            "Content-Type",
+            &format!("multipart/form-data; boundary={boundary}"),
+        )
+        .send_bytes(&body)
+    {
+        Ok(resp) => {
+            let json: Value = match resp.into_json() {
+                Ok(v) => v,
+                Err(e) => {
+                    tg_log(&format!("<<< Whisper parse error: {e}"));
+                    return None;
+                }
+            };
+            tg_log(&format!("<<< Whisper response: {json}"));
+            json["text"].as_str().map(|s| s.to_string())
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            tg_log(&format!("<<< Whisper HTTP {code}: {body}"));
+            None
+        }
+        Err(e) => {
+            tg_log(&format!("<<< Whisper transport error: {e}"));
+            None
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
