@@ -91,6 +91,13 @@ pub enum ExoEvent {
     Error(String),
 }
 
+/// PM event tagged with its project ID so the shared pm_rx channel
+/// can route events to the correct PmContext.
+pub struct PmEvent {
+    pub project_id: String,
+    pub inner: ExoEvent,
+}
+
 /// Persistent claude session. The claude process stays alive across turns
 /// — messages are sent on stdin and responses streamed back on stdout without
 /// any respawn between turns. Used for both ExO and PM sessions.

@@ -9,7 +9,7 @@ use crate::task::Project;
 use super::app::{App, Focus};
 use super::chat::{ContentBlock, ExoState};
 
-pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, pm: &ExoState) {
+pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, pm: Option<&ExoState>) {
     let outer = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
@@ -354,7 +354,7 @@ fn render_chat(
     frame: &mut ratatui::Frame,
     app: &mut App,
     exo: &ExoState,
-    pm: &ExoState,
+    pm: Option<&ExoState>,
     area: Rect,
 ) {
     let searching = matches!(app.focus, Focus::TaskSearch);
@@ -429,7 +429,9 @@ fn render_chat(
         }
     } else if app.active_project.is_some() {
         // Render PM chat
-        render_chat_messages(&mut lines, &pm.messages, "PM", pm.streaming);
+        if let Some(pm) = pm {
+            render_chat_messages(&mut lines, &pm.messages, "PM", pm.streaming);
+        }
         if lines.is_empty() {
             lines.push(Line::from(Span::styled(
                 "Chat with PM to plan and coordinate project work",

@@ -3,6 +3,7 @@ mod chat;
 mod claude;
 mod widgets;
 
+use std::collections::HashMap;
 use std::io;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -38,31 +39,68 @@ fn find_task_name_by_cwd(work_dirs: &[(String, String)], cwd: &std::path::Path) 
         .map(|(name, _)| name.clone())
 }
 use chat::ExoState;
-use claude::{EXO_SYSTEM_PROMPT, ExoEvent, ExoSession, pm_system_prompt};
+use claude::{EXO_SYSTEM_PROMPT, ExoEvent, ExoSession, PmEvent, pm_system_prompt};
 
-/// Cancel the active PM session and reset chat state.
-fn cancel_pm(
-    pm: &mut ExoState,
-    pm_session: &mut Option<ExoSession>,
-    pm_cancel: &mut Arc<AtomicBool>,
-) {
-    pm_cancel.store(true, Ordering::Relaxed);
-    *pm_cancel = Arc::new(AtomicBool::new(false));
-    *pm_session = None;
-    *pm = ExoState::new();
+/// Holds the PM state and session for a single project.
+struct PmContext {
+    state: ExoState,
+    session: Option<ExoSession>,
+    cancel: Arc<AtomicBool>,
+    /// Sender that wraps ExoEvent → PmEvent with this project's ID.
+    bridge_tx: mpsc::Sender<ExoEvent>,
 }
 
-/// Load PM history from the database into chat state for a project.
-fn activate_pm<R: Runtime>(
-    pm: &mut ExoState,
+impl PmContext {
+    fn new(project_id: &str, pm_tx: &mpsc::Sender<PmEvent>) -> Self {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (bridge_tx, bridge_rx) = mpsc::channel::<ExoEvent>();
+        let pid = project_id.to_string();
+        let pm_tx = pm_tx.clone();
+        std::thread::spawn(move || {
+            for event in bridge_rx {
+                if pm_tx
+                    .send(PmEvent {
+                        project_id: pid.clone(),
+                        inner: event,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        PmContext {
+            state: ExoState::new(),
+            session: None,
+            cancel,
+            bridge_tx,
+        }
+    }
+}
+
+/// Cancel and remove a specific project's PM context.
+fn cancel_pm_context(pm_contexts: &mut HashMap<String, PmContext>, project_id: &str) {
+    if let Some(ctx) = pm_contexts.remove(project_id) {
+        ctx.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Ensure a PmContext exists for the project, creating and loading history if needed.
+fn ensure_pm_context<R: Runtime>(
+    pm_contexts: &mut HashMap<String, PmContext>,
     app: &mut App,
     service: &TaskService<R>,
     project_id: &str,
+    pm_tx: &mpsc::Sender<PmEvent>,
 ) {
-    pm.session_id = service.read_pm_session_id(project_id);
-    if let Ok(messages) = service.pm_messages(project_id) {
-        let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
-        pm.load_history(recent.into_iter().rev().collect());
+    if !pm_contexts.contains_key(project_id) {
+        let mut ctx = PmContext::new(project_id, pm_tx);
+        ctx.state.session_id = service.read_pm_session_id(project_id);
+        if let Ok(messages) = service.pm_messages(project_id) {
+            let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
+            ctx.state.load_history(recent.into_iter().rev().collect());
+        }
+        pm_contexts.insert(project_id.to_string(), ctx);
     }
     if let Ok(msgs) = service.pm_messages(project_id) {
         app.pm_messages = msgs;
@@ -99,11 +137,9 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
         EXO_SYSTEM_PROMPT,
     );
 
-    // PM (project manager) chat state and session
-    let mut pm = ExoState::new();
-    let (pm_tx, pm_rx) = mpsc::channel::<ExoEvent>();
-    let mut pm_session: Option<ExoSession> = None;
-    let mut pm_cancel = Arc::new(AtomicBool::new(false));
+    // PM (project manager) contexts: one per project, keyed by project ID
+    let mut pm_contexts: HashMap<String, PmContext> = HashMap::new();
+    let (pm_tx, pm_rx) = mpsc::channel::<PmEvent>();
 
     // Permission socket listener
     let (perm_tx, perm_rx) = mpsc::channel::<(UnixStream, PermissionRequest)>();
@@ -154,9 +190,7 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
         &mut app,
         &mut exo,
         &mut exo_session,
-        &mut pm,
-        &mut pm_session,
-        &mut pm_cancel,
+        &mut pm_contexts,
         &pm_tx,
         service,
         &rx,
@@ -167,7 +201,9 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
     );
 
     cancel.store(true, Ordering::Relaxed);
-    pm_cancel.store(true, Ordering::Relaxed);
+    for ctx in pm_contexts.values() {
+        ctx.cancel.store(true, Ordering::Relaxed);
+    }
 
     // Deny all pending permissions on exit
     for (_, mut queue) in app.pending_permissions.drain() {
@@ -217,13 +253,11 @@ fn run_loop<R: Runtime>(
     app: &mut App,
     exo: &mut ExoState,
     exo_session: &mut ExoSession,
-    pm: &mut ExoState,
-    pm_session: &mut Option<ExoSession>,
-    pm_cancel: &mut Arc<AtomicBool>,
-    pm_tx: &mpsc::Sender<ExoEvent>,
+    pm_contexts: &mut HashMap<String, PmContext>,
+    pm_tx: &mpsc::Sender<PmEvent>,
     service: &TaskService<R>,
     rx: &mpsc::Receiver<ExoEvent>,
-    pm_rx: &mpsc::Receiver<ExoEvent>,
+    pm_rx: &mpsc::Receiver<PmEvent>,
     perm_rx: &mpsc::Receiver<(UnixStream, PermissionRequest)>,
     resolved_rx: &mpsc::Receiver<String>,
     idle_rx: &mpsc::Receiver<String>,
@@ -231,13 +265,19 @@ fn run_loop<R: Runtime>(
     let mut last_tick = Instant::now();
 
     loop {
-        let tick_rate = if exo.streaming || pm.streaming {
+        let any_pm_streaming = pm_contexts.values().any(|ctx| ctx.state.streaming);
+        let tick_rate = if exo.streaming || any_pm_streaming {
             Duration::from_millis(50)
         } else {
             Duration::from_millis(500)
         };
 
-        terminal.draw(|frame| widgets::ui(frame, app, exo, pm))?;
+        let active_pm_state = app
+            .active_project_id
+            .as_deref()
+            .and_then(|pid| pm_contexts.get(pid))
+            .map(|ctx| &ctx.state);
+        terminal.draw(|frame| widgets::ui(frame, app, exo, active_pm_state))?;
 
         // Drain channel events
         while let Ok(ev) = rx.try_recv() {
@@ -290,61 +330,61 @@ fn run_loop<R: Runtime>(
             }
         }
 
-        // Drain PM channel events
-        while let Ok(ev) = pm_rx.try_recv() {
-            match ev {
+        // Drain PM channel events — route by project_id to the correct PmContext
+        while let Ok(pm_ev) = pm_rx.try_recv() {
+            let project_id = pm_ev.project_id;
+            let Some(ctx) = pm_contexts.get_mut(&project_id) else {
+                continue;
+            };
+            match pm_ev.inner {
                 ExoEvent::TextDelta(text) => {
-                    if pm.streaming {
-                        pm.append_text(&text);
+                    if ctx.state.streaming {
+                        ctx.state.append_text(&text);
                     }
                 }
                 ExoEvent::ToolStart(name) => {
-                    if pm.streaming {
-                        pm.add_tool_activity(name);
+                    if ctx.state.streaming {
+                        ctx.state.add_tool_activity(name);
                     }
                 }
                 ExoEvent::SessionId(id) => {
-                    if let Some(ref pid) = app.active_project_id {
-                        service.write_pm_session_id(pid, &id);
-                    }
-                    pm.session_id = Some(id.clone());
-                    if let Some(sess) = pm_session {
+                    service.write_pm_session_id(&project_id, &id);
+                    ctx.state.session_id = Some(id.clone());
+                    if let Some(sess) = &mut ctx.session {
                         sess.set_session_id(id);
                     }
                 }
                 ExoEvent::TurnDone => {
-                    pm.finish_streaming();
-                    if let Some(msg) = pm.messages.last()
+                    ctx.state.finish_streaming();
+                    if let Some(msg) = ctx.state.messages.last()
                         && matches!(msg.role, MessageRole::Assistant)
                         && msg.has_text()
-                        && let Some(ref pid) = app.active_project_id
                     {
                         let _ = service.insert_pm_message(
-                            pid,
+                            &project_id,
                             MessageRole::Assistant,
                             &msg.text_content(),
                         );
                     }
                 }
                 ExoEvent::ProcessExited => {
-                    pm.had_process_error = false;
-                    if let Some(sess) = pm_session {
+                    ctx.state.had_process_error = false;
+                    if let Some(sess) = &mut ctx.session {
                         sess.mark_exited();
                     }
-                    if pm.streaming {
-                        pm.add_error("PM process exited unexpectedly");
+                    if ctx.state.streaming {
+                        ctx.state.add_error("PM process exited unexpectedly");
                     }
                 }
                 ExoEvent::Error(e) => {
-                    pm.had_process_error = true;
-                    pm.add_error(&e);
-                    if let Some(msg) = pm.messages.last()
+                    ctx.state.had_process_error = true;
+                    ctx.state.add_error(&e);
+                    if let Some(msg) = ctx.state.messages.last()
                         && matches!(msg.role, MessageRole::Assistant)
                         && msg.has_text()
-                        && let Some(ref pid) = app.active_project_id
                     {
                         let _ = service.insert_pm_message(
-                            pid,
+                            &project_id,
                             MessageRole::Assistant,
                             &msg.text_content(),
                         );
@@ -419,7 +459,6 @@ fn run_loop<R: Runtime>(
                                 // Navigate to ExO view
                                 if app.active_project_id.is_some() {
                                     app.save_project_state();
-                                    cancel_pm(pm, pm_session, pm_cancel);
                                     app.pm_messages.clear();
                                     if let Ok(tasks) = service.list_visible(None) {
                                         app.refresh_tasks(tasks);
@@ -461,16 +500,14 @@ fn run_loop<R: Runtime>(
                                         app.show_detail = true;
                                         app.detail_scroll = 0;
                                     }
-                                    // Set up PM session for the target project
-                                    cancel_pm(pm, pm_session, pm_cancel);
-                                    activate_pm(pm, app, service, &pid);
+                                    // Set up PM context for the target project
+                                    ensure_pm_context(pm_contexts, app, service, &pid, pm_tx);
                                 } else {
                                     // Target is the default (ExO) view
                                     app.active_project = None;
                                     app.active_project_id = None;
                                     app.show_projects = false;
                                     app.pm_messages.clear();
-                                    cancel_pm(pm, pm_session, pm_cancel);
                                     if let Ok(tasks) = service.list_visible(None) {
                                         app.refresh_tasks(tasks);
                                     }
@@ -531,7 +568,6 @@ fn run_loop<R: Runtime>(
                         app.show_detail = false;
                         app.show_projects = false;
                         app.pm_messages.clear();
-                        cancel_pm(pm, pm_session, pm_cancel);
                         if let Ok(tasks) = service.list_visible(None) {
                             app.refresh_tasks(tasks);
                         }
@@ -589,8 +625,7 @@ fn run_loop<R: Runtime>(
                                     app.show_detail = false;
                                 }
                                 // Restore PM state
-                                cancel_pm(pm, pm_session, pm_cancel);
-                                activate_pm(pm, app, service, &id);
+                                ensure_pm_context(pm_contexts, app, service, &id, pm_tx);
                                 app.focus = Focus::ChatInput;
                                 app.chat_scroll = 0;
                                 app.restore_input();
@@ -618,8 +653,7 @@ fn run_loop<R: Runtime>(
                                 if let Ok(tasks) = service.list_visible(Some(&next_id)) {
                                     app.refresh_tasks(tasks);
                                 }
-                                cancel_pm(pm, pm_session, pm_cancel);
-                                activate_pm(pm, app, service, &next_id);
+                                ensure_pm_context(pm_contexts, app, service, &next_id, pm_tx);
                                 app.focus = Focus::ChatInput;
                                 app.chat_scroll = 0;
                                 app.restore_input();
@@ -915,8 +949,13 @@ fn run_loop<R: Runtime>(
                                             app.refresh_tasks(tasks);
                                         }
                                         // Set up PM state for this project
-                                        cancel_pm(pm, pm_session, pm_cancel);
-                                        activate_pm(pm, app, service, &project_id);
+                                        ensure_pm_context(
+                                            pm_contexts,
+                                            app,
+                                            service,
+                                            &project_id,
+                                            pm_tx,
+                                        );
                                         app.restore_input();
                                     }
                                 }
@@ -1008,8 +1047,7 @@ fn run_loop<R: Runtime>(
                                                     {
                                                         app.refresh_tasks(tasks);
                                                     }
-                                                    // Set up PM state
-                                                    cancel_pm(pm, pm_session, pm_cancel);
+                                                    // New project — PM context created lazily on first message
                                                     app.focus = Focus::ChatInput;
                                                     app.restore_input();
                                                 }
@@ -1147,8 +1185,11 @@ fn run_loop<R: Runtime>(
                                         if exo.streaming {
                                             exo.finish_streaming();
                                         }
-                                        if pm.streaming {
-                                            pm.finish_streaming();
+                                        if let Some(ref pid) = app.active_project_id
+                                            && let Some(ctx) = pm_contexts.get_mut(pid.as_str())
+                                            && ctx.state.streaming
+                                        {
+                                            ctx.state.finish_streaming();
                                         }
                                         app.chat_scroll = 0;
                                     }
@@ -1190,10 +1231,19 @@ fn run_loop<R: Runtime>(
                                         app.chat_scroll = 0;
                                         if !app.input.is_empty() {
                                             if let Some(ref pid) = app.active_project_id {
+                                                let pid = pid.clone();
+                                                // Ensure PM context exists
+                                                if !pm_contexts.contains_key(&pid) {
+                                                    pm_contexts.insert(
+                                                        pid.clone(),
+                                                        PmContext::new(&pid, pm_tx),
+                                                    );
+                                                }
+                                                let ctx = pm_contexts.get_mut(&pid).unwrap();
                                                 // PM chat: finish any in-progress streaming
-                                                if pm.streaming {
-                                                    pm.finish_streaming();
-                                                    if let Some(msg) = pm.messages.last()
+                                                if ctx.state.streaming {
+                                                    ctx.state.finish_streaming();
+                                                    if let Some(msg) = ctx.state.messages.last()
                                                         && matches!(
                                                             msg.role,
                                                             MessageRole::Assistant
@@ -1201,7 +1251,7 @@ fn run_loop<R: Runtime>(
                                                         && msg.has_text()
                                                     {
                                                         let _ = service.insert_pm_message(
-                                                            pid,
+                                                            &pid,
                                                             MessageRole::Assistant,
                                                             &msg.text_content(),
                                                         );
@@ -1209,35 +1259,35 @@ fn run_loop<R: Runtime>(
                                                 }
                                                 let msg = app.input.take();
                                                 let _ = service.insert_pm_message(
-                                                    pid,
+                                                    &pid,
                                                     MessageRole::User,
                                                     &msg,
                                                 );
-                                                pm.add_user_message(msg.clone());
+                                                ctx.state.add_user_message(msg.clone());
                                                 // Lazily create PM session
-                                                if pm_session.is_none() {
+                                                if ctx.session.is_none() {
                                                     let sid = service
-                                                        .read_pm_session_id(pid)
-                                                        .or_else(|| pm.session_id.clone());
+                                                        .read_pm_session_id(&pid)
+                                                        .or_else(|| ctx.state.session_id.clone());
                                                     let proj_name = app
                                                         .active_project
                                                         .as_deref()
                                                         .unwrap_or("unknown");
                                                     let prompt = pm_system_prompt(proj_name);
-                                                    *pm_session = Some(ExoSession::start(
+                                                    ctx.session = Some(ExoSession::start(
                                                         sid.as_deref(),
-                                                        Arc::clone(pm_cancel),
-                                                        pm_tx.clone(),
+                                                        Arc::clone(&ctx.cancel),
+                                                        ctx.bridge_tx.clone(),
                                                         &prompt,
                                                     ));
                                                     if let Some(ref s) = sid {
-                                                        pm.session_id = Some(s.clone());
+                                                        ctx.state.session_id = Some(s.clone());
                                                     }
                                                 }
-                                                if let Some(sess) = pm_session {
+                                                if let Some(sess) = &mut ctx.session {
                                                     sess.send_message(
                                                         &msg,
-                                                        pm.session_id.as_deref(),
+                                                        ctx.state.session_id.as_deref(),
                                                     );
                                                 }
                                             } else {
@@ -1371,10 +1421,12 @@ fn run_loop<R: Runtime>(
                             },
                             Focus::ConfirmCloseProject => match key.code {
                                 KeyCode::Char('y') => {
+                                    let closed_pid = app.active_project_id.take();
                                     app.active_project = None;
-                                    app.active_project_id = None;
                                     app.save_current_input();
-                                    cancel_pm(pm, pm_session, pm_cancel);
+                                    if let Some(pid) = closed_pid {
+                                        cancel_pm_context(pm_contexts, &pid);
+                                    }
                                     app.focus = Focus::TaskList;
                                     if let Ok(tasks) = service.list_visible(None) {
                                         app.refresh_tasks(tasks);
