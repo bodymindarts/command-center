@@ -758,24 +758,20 @@ fn run_loop<R: Runtime>(
                                     app.detail_scroll = 0;
                                 }
                                 KeyCode::PageDown => {
-                                    let half = (app.chat_viewport_height / 2).max(1);
-                                    app.detail_scroll = app.detail_scroll.saturating_sub(half);
+                                    app.detail_scroll = app.detail_scroll.saturating_add(10);
                                 }
                                 KeyCode::PageUp => {
-                                    let half = (app.chat_viewport_height / 2).max(1);
-                                    app.detail_scroll = app.detail_scroll.saturating_add(half);
+                                    app.detail_scroll = app.detail_scroll.saturating_sub(10);
                                 }
                                 KeyCode::Char('d')
                                     if key.modifiers.contains(KeyModifiers::CONTROL) =>
                                 {
-                                    let half = (app.chat_viewport_height / 2).max(1);
-                                    app.detail_scroll = app.detail_scroll.saturating_sub(half);
+                                    app.detail_scroll = app.detail_scroll.saturating_add(10);
                                 }
                                 KeyCode::Char('u')
                                     if key.modifiers.contains(KeyModifiers::CONTROL) =>
                                 {
-                                    let half = (app.chat_viewport_height / 2).max(1);
-                                    app.detail_scroll = app.detail_scroll.saturating_add(half);
+                                    app.detail_scroll = app.detail_scroll.saturating_sub(10);
                                 }
                                 KeyCode::Char('g')
                                     if key.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -1565,20 +1561,7 @@ fn run_loop<R: Runtime>(
                     app.selected_messages = messages;
                 }
                 if is_running {
-                    let height = app.chat_viewport_height.max(1);
-                    if let Some(pane_id) = pane.as_deref() {
-                        if let Some((output, history_len)) =
-                            service.capture_pane_windowed(pane_id, app.detail_scroll, height)
-                        {
-                            app.detail_live_output = Some(output);
-                            app.detail_pane_history = history_len;
-                            // Clamp scroll to max scrollable range
-                            let max_scroll = history_len.saturating_sub(height as usize) as u16;
-                            app.detail_scroll = app.detail_scroll.min(max_scroll);
-                        }
-                    } else {
-                        app.detail_live_output = None;
-                    }
+                    app.detail_live_output = pane.as_deref().and_then(|p| service.capture_pane(p));
                 } else {
                     app.detail_live_output = None;
                 }

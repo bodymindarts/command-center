@@ -415,18 +415,15 @@ fn render_chat(
         }
 
         if let Some(output) = &app.detail_live_output {
-            let header = if app.detail_scroll > 0 {
-                format!("--- Live (scrolled: +{} lines) ---", app.detail_scroll)
-            } else {
-                "--- Live ---".to_string()
-            };
+            let tail: Vec<&str> = output.lines().collect();
+            let start = tail.len().saturating_sub(500);
             lines.push(Line::from(Span::styled(
-                header,
+                format!("--- Live (last {} lines) ---", tail.len() - start),
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             )));
-            for l in output.lines() {
+            for l in &tail[start..] {
                 lines.push(Line::from(l.to_string()));
             }
         }

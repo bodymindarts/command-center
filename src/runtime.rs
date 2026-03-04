@@ -47,8 +47,6 @@ pub trait Runtime {
     fn forward_key(&self, pane_id: &str, key: &str) -> Result<()>;
     fn forward_literal(&self, pane_id: &str, text: &str) -> Result<()>;
     fn capture_pane_output(&self, pane_id: &str) -> Result<String>;
-    fn capture_pane_windowed(&self, pane_id: &str, start: i32, end: i32) -> Result<String>;
-    fn pane_scrollback_len(&self, pane_id: &str) -> Result<usize>;
     fn kill_tmux_window(&self, window_id: &str) -> Result<()>;
     fn select_window(&self, window_id: &str) -> Result<()>;
 }
@@ -345,27 +343,6 @@ impl Runtime for TmuxRuntime {
 
     fn capture_pane_output(&self, pane_id: &str) -> Result<String> {
         self.tmux_cmd(&["capture-pane", "-p", "-S", "-", "-t", pane_id])
-    }
-
-    fn capture_pane_windowed(&self, pane_id: &str, start: i32, end: i32) -> Result<String> {
-        self.tmux_cmd(&[
-            "capture-pane",
-            "-p",
-            "-S",
-            &start.to_string(),
-            "-E",
-            &end.to_string(),
-            "-t",
-            pane_id,
-        ])
-    }
-
-    fn pane_scrollback_len(&self, pane_id: &str) -> Result<usize> {
-        let output = self.tmux_cmd(&["display-message", "-t", pane_id, "-p", "#{history_size}"])?;
-        output
-            .trim()
-            .parse::<usize>()
-            .context("failed to parse history_size")
     }
 
     fn kill_tmux_window(&self, window_id: &str) -> Result<()> {
