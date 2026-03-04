@@ -79,10 +79,14 @@ impl fmt::Display for TaskStatus {
 impl From<String> for TaskStatus {
     fn from(s: String) -> Self {
         match s.as_str() {
+            "running" => Self::Running,
             "completed" => Self::Completed,
             "failed" => Self::Failed,
             "closed" => Self::Closed,
-            _ => Self::Running,
+            other => {
+                tracing::warn!(value = other, "unknown TaskStatus, defaulting to Running");
+                Self::Running
+            }
         }
     }
 }
@@ -116,7 +120,10 @@ impl From<String> for MessageRole {
             "system" => Self::System,
             "user" => Self::User,
             "assistant" => Self::Assistant,
-            _ => Self::User,
+            other => {
+                tracing::warn!(value = other, "unknown MessageRole, defaulting to User");
+                Self::User
+            }
         }
     }
 }

@@ -257,7 +257,7 @@ DASHSCRIPT
     local found_sock=false
     for i in $(seq 1 40); do
         # shellcheck disable=SC2012
-        sock=$(ls "$TMPDIR"/cc-permissions-*.sock 2>/dev/null | head -1)
+        sock=$(ls "$TMPDIR"/cc-permissions*.sock 2>/dev/null | head -1)
         [ -S "$sock" ] && { found_sock=true; break; }
         sleep 0.5
     done
