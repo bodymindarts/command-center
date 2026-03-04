@@ -84,12 +84,11 @@ pub fn start(
 /// exceeding clippy's max-argument limit.
 struct BotCtx {
     agent: ureq::Agent,
-    /// Longer-timeout agent for Whisper transcription calls.
-    whisper_agent: ureq::Agent,
     base: String,
     file_base: String,
     chat_id: String,
-    openai_key: Option<String>,
+    /// Path to the whisper GGML model file (for voice transcription).
+    whisper_model: String,
 }
 
 fn run_bot(
@@ -108,14 +107,11 @@ fn run_bot(
             .timeout_read(Duration::from_secs(5))
             .timeout_write(Duration::from_secs(5))
             .build(),
-        whisper_agent: ureq::AgentBuilder::new()
-            .timeout_read(Duration::from_secs(30))
-            .timeout_write(Duration::from_secs(30))
-            .build(),
         base: format!("https://api.telegram.org/bot{token}"),
         file_base: format!("https://api.telegram.org/file/bot{token}"),
         chat_id: chat_id.to_string(),
-        openai_key: std::env::var("OPENAI_API_KEY").ok(),
+        whisper_model: std::env::var("WHISPER_MODEL")
+            .unwrap_or_else(|_| "data/ggml-base.bin".to_string()),
     };
     let mut offset: i64 = 0;
     // perm_id → Telegram message_id so we can edit messages later.
@@ -322,43 +318,26 @@ fn tg_log(msg: &str) {
 // Voice message handling
 // ---------------------------------------------------------------------------
 
-/// Process an incoming voice message: download, transcribe, and forward to ExO.
+/// Process an incoming voice message: download, transcribe locally, forward to ExO.
 fn handle_voice(ctx: &BotCtx, file_id: &str, in_tx: &mpsc::Sender<TgInbound>) {
-    let Some(ref api_key) = ctx.openai_key else {
-        let body = serde_json::json!({
-            "chat_id": ctx.chat_id,
-            "text": "⚠️ Voice messages require OPENAI_API_KEY for transcription.",
-        });
-        tg_post(&ctx.agent, &format!("{}/sendMessage", ctx.base), &body);
-        return;
-    };
-
     let Some(audio_data) = download_voice(&ctx.agent, &ctx.base, &ctx.file_base, file_id) else {
-        let body = serde_json::json!({
-            "chat_id": ctx.chat_id,
-            "text": "⚠️ Failed to download voice message.",
-        });
-        tg_post(&ctx.agent, &format!("{}/sendMessage", ctx.base), &body);
+        tg_send(ctx, "⚠️ Failed to download voice message.");
         return;
     };
 
-    match transcribe_audio(&ctx.whisper_agent, api_key, &audio_data) {
+    // Ensure the whisper model is available (auto-download on first use).
+    if !ensure_whisper_model(ctx) {
+        return;
+    }
+
+    match transcribe_audio(&ctx.whisper_model, &audio_data) {
         Some(text) if !text.is_empty() => {
             tg_log(&format!("Transcribed voice: {text}"));
-            // Echo the transcription back to Telegram so the user sees what was understood.
-            let body = serde_json::json!({
-                "chat_id": ctx.chat_id,
-                "text": format!("🎤 {text}"),
-            });
-            tg_post(&ctx.agent, &format!("{}/sendMessage", ctx.base), &body);
+            tg_send(ctx, &format!("🎤 {text}"));
             let _ = in_tx.send(TgInbound::ExoMessage { text });
         }
         _ => {
-            let body = serde_json::json!({
-                "chat_id": ctx.chat_id,
-                "text": "⚠️ Failed to transcribe voice message.",
-            });
-            tg_post(&ctx.agent, &format!("{}/sendMessage", ctx.base), &body);
+            tg_send(ctx, "⚠️ Failed to transcribe voice message.");
         }
     }
 }
@@ -397,71 +376,110 @@ fn download_voice(
     }
 }
 
-/// Transcribe audio bytes using OpenAI's Whisper API.
+/// Ensure the whisper GGML model file exists, downloading it if necessary.
 ///
-/// Sends a multipart/form-data POST to `/v1/audio/transcriptions` and returns
-/// the transcribed text on success.
-fn transcribe_audio(agent: &ureq::Agent, api_key: &str, audio_data: &[u8]) -> Option<String> {
-    let boundary = "----VoiceTranscription";
+/// Uses the HuggingFace-hosted ggml-base.bin (~142 MB) and streams it directly
+/// to disk so we don't buffer the whole file in memory.
+fn ensure_whisper_model(ctx: &BotCtx) -> bool {
+    use std::path::Path;
 
-    let mut body = Vec::new();
-    // File field
-    body.extend_from_slice(
-        format!(
-            "--{boundary}\r\n\
-             Content-Disposition: form-data; name=\"file\"; filename=\"voice.ogg\"\r\n\
-             Content-Type: audio/ogg\r\n\r\n"
-        )
-        .as_bytes(),
-    );
-    body.extend_from_slice(audio_data);
-    body.extend_from_slice(b"\r\n");
-    // Model field
-    body.extend_from_slice(
-        format!(
-            "--{boundary}\r\n\
-             Content-Disposition: form-data; name=\"model\"\r\n\r\n\
-             whisper-1\r\n"
-        )
-        .as_bytes(),
-    );
-    // Closing boundary
-    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    if Path::new(&ctx.whisper_model).exists() {
+        return true;
+    }
 
-    tg_log(&format!(
-        ">>> Whisper transcription ({} bytes audio)",
-        audio_data.len()
-    ));
-    match agent
-        .post("https://api.openai.com/v1/audio/transcriptions")
-        .set("Authorization", &format!("Bearer {api_key}"))
-        .set(
-            "Content-Type",
-            &format!("multipart/form-data; boundary={boundary}"),
-        )
-        .send_bytes(&body)
-    {
+    tg_log("Whisper model not found, downloading ggml-base.bin …");
+    tg_send(ctx, "⏳ Downloading whisper model (first time only)…");
+
+    let url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin";
+    let dl_agent = ureq::AgentBuilder::new()
+        .timeout_read(Duration::from_secs(300))
+        .build();
+
+    match dl_agent.get(url).call() {
         Ok(resp) => {
-            let json: Value = match resp.into_json() {
-                Ok(v) => v,
+            // Ensure parent directory exists.
+            if let Some(parent) = Path::new(&ctx.whisper_model).parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let mut file = match std::fs::File::create(&ctx.whisper_model) {
+                Ok(f) => f,
                 Err(e) => {
-                    tg_log(&format!("<<< Whisper parse error: {e}"));
-                    return None;
+                    tg_log(&format!("Failed to create model file: {e}"));
+                    tg_send(ctx, "⚠️ Failed to save whisper model.");
+                    return false;
                 }
             };
-            tg_log(&format!("<<< Whisper response: {json}"));
-            json["text"].as_str().map(|s| s.to_string())
+            if let Err(e) = std::io::copy(&mut resp.into_reader(), &mut file) {
+                tg_log(&format!("Failed to write model file: {e}"));
+                let _ = std::fs::remove_file(&ctx.whisper_model);
+                tg_send(ctx, "⚠️ Failed to download whisper model.");
+                return false;
+            }
+            tg_log("Whisper model downloaded successfully");
+            true
         }
-        Err(ureq::Error::Status(code, resp)) => {
-            let body = resp.into_string().unwrap_or_default();
-            tg_log(&format!("<<< Whisper HTTP {code}: {body}"));
+        Err(e) => {
+            tg_log(&format!("Model download error: {e}"));
+            tg_send(ctx, "⚠️ Failed to download whisper model.");
+            false
+        }
+    }
+}
+
+/// Transcribe audio using the local `whisper-cli` binary.
+///
+/// Writes the audio to a temp file, runs whisper-cli, and captures stdout.
+fn transcribe_audio(model_path: &str, audio_data: &[u8]) -> Option<String> {
+    use std::process::Command;
+
+    // Write audio to a temp file.
+    let tmp = std::env::temp_dir().join(format!("voice-{}.ogg", std::process::id()));
+    if std::fs::write(&tmp, audio_data).is_err() {
+        tg_log("Failed to write temp audio file");
+        return None;
+    }
+
+    tg_log(&format!(
+        ">>> whisper-cli transcription ({} bytes audio)",
+        audio_data.len()
+    ));
+
+    let result = Command::new("whisper-cli")
+        .args([
+            "-m", model_path, "-nt", // no timestamps
+            "-np", // no extra prints
+            "-l", "auto", // auto-detect language
+        ])
+        .arg(&tmp)
+        .output();
+
+    let _ = std::fs::remove_file(&tmp);
+
+    match result {
+        Ok(output) if output.status.success() => {
+            let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            tg_log(&format!("<<< whisper-cli output: {text}"));
+            if text.is_empty() { None } else { Some(text) }
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tg_log(&format!("<<< whisper-cli failed: {stderr}"));
             None
         }
         Err(e) => {
-            tg_log(&format!("<<< Whisper transport error: {e}"));
+            tg_log(&format!("<<< whisper-cli spawn error: {e}"));
             None
         }
     }
+}
+
+/// Convenience: send a plain text message to the bot's chat.
+fn tg_send(ctx: &BotCtx, text: &str) {
+    let body = serde_json::json!({
+        "chat_id": ctx.chat_id,
+        "text": text,
+    });
+    tg_post(&ctx.agent, &format!("{}/sendMessage", ctx.base), &body);
 }
 
 // ---------------------------------------------------------------------------

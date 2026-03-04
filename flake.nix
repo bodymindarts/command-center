@@ -99,6 +99,9 @@
             # Data / persistence
             pkgs.sqlite
 
+            # Voice transcription (local, for Telegram voice messages)
+            pkgs.whisper-cpp
+
             # Search & filtering
             pkgs.fzf
             pkgs.ripgrep
