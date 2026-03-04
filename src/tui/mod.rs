@@ -601,7 +601,6 @@ fn run_loop<R: Runtime>(
                     {
                         let names = app.permissions.task_names_with_pending();
                         if !names.is_empty() {
-                            app.save_current_input();
                             let current = app.focused_perm_key();
                             let idx = names
                                 .iter()
@@ -613,26 +612,29 @@ fn run_loop<R: Runtime>(
                                 // Navigate to ExO view
                                 if app.active_project_id.is_some() {
                                     app.save_project_state();
-                                    app.pm_messages.clear();
+                                    app.switch_to_project(None);
                                     if let Ok(tasks) = service.list_visible(None) {
-                                        app.refresh_tasks(tasks);
+                                        app.finish_project_switch(tasks);
                                     }
+                                } else {
+                                    app.show_detail = false;
                                 }
-                                app.show_detail = false;
                             } else if let Some(pos) = app.tasks.iter().position(|t| t.name == name)
                             {
                                 // Task is in the current project view
+                                app.save_current_input();
                                 app.list_state.select(Some(pos));
                                 app.show_detail = true;
                                 app.detail_scroll = 0;
+                                app.focus = Focus::ChatInput;
+                                app.chat_scroll = 0;
+                                app.restore_input();
                             } else {
                                 // Task is in a different project — switch to it
                                 let target_pid =
                                     app.global_task_projects.get(&name).cloned().flatten();
-                                // Save current project state before switching
                                 app.save_project_state();
                                 if let Some(pid) = target_pid {
-                                    // Switch to the target project
                                     if let Ok(projects) = service.list_projects() {
                                         app.projects = projects;
                                     }
@@ -646,19 +648,17 @@ fn run_loop<R: Runtime>(
                                                 pid.as_str().to_string(),
                                             )
                                         });
-                                    app.active_project = Some(proj_name);
-                                    app.active_project_id = Some(pid.clone());
-                                    app.show_projects = false;
+                                    app.switch_to_project(Some((proj_name, pid.clone())));
                                     if let Ok(tasks) = service.list_visible(Some(&pid)) {
-                                        app.refresh_tasks(tasks);
+                                        app.finish_project_switch(tasks);
                                     }
+                                    // Select the target task and show detail
                                     if let Some(pos) = app.tasks.iter().position(|t| t.name == name)
                                     {
                                         app.list_state.select(Some(pos));
                                         app.show_detail = true;
                                         app.detail_scroll = 0;
                                     }
-                                    // Set up PM context for the target project
                                     ensure_pm_context(
                                         pm_contexts,
                                         app,
@@ -668,12 +668,9 @@ fn run_loop<R: Runtime>(
                                     );
                                 } else {
                                     // Target is the default (ExO) view
-                                    app.active_project = None;
-                                    app.active_project_id = None;
-                                    app.show_projects = false;
-                                    app.pm_messages.clear();
+                                    app.switch_to_project(None);
                                     if let Ok(tasks) = service.list_visible(None) {
-                                        app.refresh_tasks(tasks);
+                                        app.finish_project_switch(tasks);
                                     }
                                     if let Some(pos) = app.tasks.iter().position(|t| t.name == name)
                                     {
@@ -683,9 +680,6 @@ fn run_loop<R: Runtime>(
                                     }
                                 }
                             }
-                            app.focus = Focus::ChatInput;
-                            app.chat_scroll = 0;
-                            app.restore_input();
                         } else if app.list_state.selected().is_some() {
                             app.save_current_input();
                             app.show_detail = true;
@@ -763,18 +757,11 @@ fn run_loop<R: Runtime>(
                     } else if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('o')
                     {
-                        app.save_current_input();
-                        // Remember last project + view state so Ctrl+R can restore it
                         app.save_project_state();
-                        app.show_detail = false;
-                        app.show_projects = false;
-                        app.pm_messages.clear();
+                        app.switch_to_project(None);
                         if let Ok(tasks) = service.list_visible(None) {
-                            app.refresh_tasks(tasks);
+                            app.finish_project_switch(tasks);
                         }
-                        app.focus = Focus::ChatInput;
-                        app.chat_scroll = 0;
-                        app.restore_input();
                     // Global: Ctrl+R returns to PM (or last active project from ExO)
                     } else if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('r')
@@ -803,37 +790,24 @@ fn run_loop<R: Runtime>(
                                         .map(|p| (p.name.clone(), p.id.clone(), false, None))
                                 });
                             if let Some((name, id, saved_show_detail, saved_task_name)) = target {
-                                app.save_current_input();
-                                app.active_project = Some(name);
-                                app.active_project_id = Some(id.clone());
-                                app.show_projects = false;
+                                app.switch_to_project(Some((name, id.clone())));
                                 if let Ok(tasks) = service.list_visible(Some(&id)) {
-                                    app.refresh_tasks(tasks);
+                                    app.finish_project_switch(tasks);
                                 }
                                 // Restore the view state the user had when they left
-                                if saved_show_detail {
-                                    if let Some(ref task_name) = saved_task_name
-                                        && let Some(idx) =
-                                            app.tasks.iter().position(|t| &t.name == task_name)
-                                    {
-                                        app.list_state.select(Some(idx));
-                                        app.show_detail = true;
-                                        app.detail_scroll = 0;
-                                    } else {
-                                        app.show_detail = false;
-                                    }
-                                } else {
-                                    app.show_detail = false;
+                                if saved_show_detail
+                                    && let Some(ref task_name) = saved_task_name
+                                    && let Some(idx) =
+                                        app.tasks.iter().position(|t| &t.name == task_name)
+                                {
+                                    app.list_state.select(Some(idx));
+                                    app.show_detail = true;
+                                    app.detail_scroll = 0;
                                 }
-                                // Restore PM state
                                 ensure_pm_context(pm_contexts, app, service, id.as_str(), pm_tx);
-                                app.focus = Focus::ChatInput;
-                                app.chat_scroll = 0;
-                                app.restore_input();
                             }
                         // If in a project PM view, cycle to next project
                         } else if app.active_project_id.is_some() && !app.show_detail {
-                            app.save_current_input();
                             // Refresh project list and find the next one
                             if let Ok(projects) = service.list_projects() {
                                 app.projects = projects;
@@ -847,12 +821,9 @@ fn run_loop<R: Runtime>(
                                 let next = &app.projects[next_idx];
                                 let next_id = next.id.clone();
                                 let next_name = next.name.clone();
-                                app.active_project = Some(next_name);
-                                app.active_project_id = Some(next_id.clone());
-                                app.show_detail = false;
-                                app.show_projects = false;
+                                app.switch_to_project(Some((next_name, next_id.clone())));
                                 if let Ok(tasks) = service.list_visible(Some(&next_id)) {
-                                    app.refresh_tasks(tasks);
+                                    app.finish_project_switch(tasks);
                                 }
                                 ensure_pm_context(
                                     pm_contexts,
@@ -861,9 +832,6 @@ fn run_loop<R: Runtime>(
                                     next_id.as_str(),
                                     pm_tx,
                                 );
-                                app.focus = Focus::ChatInput;
-                                app.chat_scroll = 0;
-                                app.restore_input();
                             }
                         }
                     } else {
@@ -1145,17 +1113,13 @@ fn run_loop<R: Runtime>(
                                     if let Some(project) = app.selected_project() {
                                         let project_id = project.id.clone();
                                         let project_name = project.name.clone();
-                                        app.active_project = Some(project_name);
-                                        app.active_project_id = Some(project_id.clone());
-                                        app.show_projects = false;
-                                        app.show_detail = false;
-                                        app.focus = Focus::ChatInput;
-                                        app.chat_scroll = 0;
-                                        // Load tasks for this project
+                                        app.switch_to_project(Some((
+                                            project_name,
+                                            project_id.clone(),
+                                        )));
                                         if let Ok(tasks) = service.list_visible(Some(&project_id)) {
-                                            app.refresh_tasks(tasks);
+                                            app.finish_project_switch(tasks);
                                         }
-                                        // Set up PM state for this project
                                         ensure_pm_context(
                                             pm_contexts,
                                             app,
@@ -1163,7 +1127,6 @@ fn run_loop<R: Runtime>(
                                             project_id.as_str(),
                                             pm_tx,
                                         );
-                                        app.restore_input();
                                     }
                                 }
                                 KeyCode::Char('n') => {
@@ -1178,12 +1141,10 @@ fn run_loop<R: Runtime>(
                                 }
                                 KeyCode::Char('p') | KeyCode::Esc => {
                                     // Go back to default task view
-                                    app.show_projects = false;
-                                    app.active_project = None;
-                                    app.active_project_id = None;
+                                    app.switch_to_project(None);
                                     app.focus = Focus::TaskList;
                                     if let Ok(tasks) = service.list_visible(None) {
-                                        app.refresh_tasks(tasks);
+                                        app.finish_project_switch(tasks);
                                     }
                                 }
                                 _ => {}
@@ -1245,22 +1206,16 @@ fn run_loop<R: Runtime>(
                                             let name = app.input.take();
                                             match service.create_project(&name, "") {
                                                 Ok(project) => {
-                                                    // Enter the new project
                                                     let project_id = project.id.clone();
-                                                    app.active_project = Some(project.name.clone());
-                                                    app.active_project_id =
-                                                        Some(project_id.clone());
-                                                    app.show_projects = false;
-                                                    app.show_detail = false;
-                                                    app.chat_scroll = 0;
+                                                    app.switch_to_project(Some((
+                                                        project.name.clone(),
+                                                        project_id.clone(),
+                                                    )));
                                                     if let Ok(tasks) =
                                                         service.list_visible(Some(&project_id))
                                                     {
-                                                        app.refresh_tasks(tasks);
+                                                        app.finish_project_switch(tasks);
                                                     }
-                                                    // New project — PM context created lazily on first message
-                                                    app.focus = Focus::ChatInput;
-                                                    app.restore_input();
                                                 }
                                                 Err(e) => {
                                                     app.status_error =
@@ -1636,15 +1591,14 @@ fn run_loop<R: Runtime>(
                             },
                             Focus::ConfirmCloseProject => match key.code {
                                 KeyCode::Char('y') => {
-                                    let closed_pid = app.active_project_id.take();
-                                    app.active_project = None;
-                                    app.save_current_input();
+                                    let closed_pid = app.active_project_id.clone();
+                                    app.switch_to_project(None);
+                                    app.focus = Focus::TaskList;
                                     if let Some(pid) = closed_pid {
                                         cancel_pm_context(pm_contexts, pid.as_str());
                                     }
-                                    app.focus = Focus::TaskList;
                                     if let Ok(tasks) = service.list_visible(None) {
-                                        app.refresh_tasks(tasks);
+                                        app.finish_project_switch(tasks);
                                     }
                                 }
                                 KeyCode::Char('n') | KeyCode::Esc => {

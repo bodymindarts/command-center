@@ -238,6 +238,26 @@ impl App {
         }
     }
 
+    /// Prepare a project switch: save current input, set project fields, clear PM
+    /// messages, and reset view to the PM/ExO chat. Pass `None` to switch to ExO.
+    pub fn switch_to_project(&mut self, project: Option<(ProjectName, ProjectId)>) {
+        self.save_current_input();
+        self.active_project = project.as_ref().map(|(n, _)| n.clone());
+        self.active_project_id = project.map(|(_, id)| id);
+        self.show_projects = false;
+        self.show_detail = false;
+        self.pm_messages.clear();
+        self.focus = Focus::ChatInput;
+        self.chat_scroll = 0;
+    }
+
+    /// Complete a project switch by loading the new task list and restoring
+    /// the chat input buffer for the new context.
+    pub fn finish_project_switch(&mut self, tasks: Vec<Task>) {
+        self.refresh_tasks(tasks);
+        self.restore_input();
+    }
+
     /// Returns the permission key for the currently visible pane.
     /// Task name if viewing a task's detail, "exo" otherwise.
     pub fn focused_perm_key(&self) -> TaskName {
