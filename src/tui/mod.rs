@@ -1,6 +1,7 @@
 mod app;
 mod chat;
 mod claude;
+mod input;
 mod telegram;
 mod widgets;
 
