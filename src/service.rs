@@ -1134,4 +1134,202 @@ prompt = "deploy to {{ env }}"
         assert!(err.is_err());
         assert!(err.unwrap_err().to_string().contains("already running"));
     }
+
+    // -- spawn_no_worktree tests --
+
+    #[test]
+    fn spawn_no_worktree_uses_setup_dir_config_and_interactive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        let service = TaskService::new(&store, &runtime, &paths);
+
+        let output = service
+            .spawn_no_worktree("nw-task", "noop", vec![], None)
+            .unwrap();
+
+        assert_eq!(output.task_name, "nw-task");
+        assert_eq!(output.skill_name, "noop");
+        assert_eq!(output.window_id, "@fake-win");
+
+        // Task is stored and running
+        let tasks = store.list_active_tasks().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].name, "nw-task");
+        assert_eq!(tasks[0].tmux_pane.as_deref(), Some("%fake-pane"));
+
+        // Verify call order: SetupDirConfig then SpawnInteractive (no CreateWorktree)
+        let calls = runtime.calls.borrow();
+        assert!(
+            !calls
+                .iter()
+                .any(|c| matches!(c, Call::CreateWorktree { .. })),
+            "spawn_no_worktree must not create a worktree"
+        );
+        assert!(matches!(calls[0], Call::SetupDirConfig { .. }));
+        assert!(matches!(calls[1], Call::SpawnInteractive { .. }));
+    }
+
+    #[test]
+    fn spawn_no_worktree_uses_custom_repo_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        let service = TaskService::new(&store, &runtime, &paths);
+
+        let custom_repo = tmp.path().join("other-repo");
+        std::fs::create_dir_all(&custom_repo).unwrap();
+
+        let output = service
+            .spawn_no_worktree("nw-task", "noop", vec![], Some(&custom_repo))
+            .unwrap();
+        assert_eq!(output.task_name, "nw-task");
+
+        // Task work_dir should be the custom repo path
+        let task = store
+            .get_task_by_prefix(output.task_id.as_str())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            task.work_dir.as_deref(),
+            Some(custom_repo.to_str().unwrap())
+        );
+
+        // Verify SetupDirConfig was called with the custom path
+        let calls = runtime.calls.borrow();
+        let setup_call = calls
+            .iter()
+            .find(|c| matches!(c, Call::SetupDirConfig { .. }))
+            .unwrap();
+        if let Call::SetupDirConfig { work_dir } = setup_call {
+            assert_eq!(work_dir, &custom_repo);
+        }
+    }
+
+    // -- spawn_scratch tests --
+
+    #[test]
+    fn spawn_scratch_creates_scratch_dir_and_uses_interactive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        let service = TaskService::new(&store, &runtime, &paths);
+
+        let output = service
+            .spawn_scratch("scratch-task", "noop", vec![])
+            .unwrap();
+
+        assert_eq!(output.task_name, "scratch-task");
+        assert_eq!(output.skill_name, "noop");
+        assert_eq!(output.window_id, "@fake-win");
+
+        // Task is stored and running
+        let tasks = store.list_active_tasks().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].name, "scratch-task");
+
+        // Work dir should be data_dir/scratch/scratch-task
+        let expected_scratch = paths.data_dir.join("scratch").join("scratch-task");
+        assert_eq!(
+            tasks[0].work_dir.as_deref(),
+            Some(expected_scratch.to_str().unwrap())
+        );
+
+        // Verify call order: InitScratchDir, SetupDirConfig, SpawnInteractive
+        let calls = runtime.calls.borrow();
+        assert!(
+            !calls
+                .iter()
+                .any(|c| matches!(c, Call::CreateWorktree { .. })),
+            "spawn_scratch must not create a worktree"
+        );
+        assert!(matches!(calls[0], Call::InitScratchDir { .. }));
+        assert!(matches!(calls[1], Call::SetupDirConfig { .. }));
+        assert!(matches!(calls[2], Call::SpawnInteractive { .. }));
+    }
+
+    // -- Project CRUD via service layer --
+
+    #[test]
+    fn create_and_list_projects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        let service = TaskService::new(&store, &runtime, &paths);
+
+        let project = service
+            .create_project("web-app", "frontend project")
+            .unwrap();
+        assert_eq!(project.name, "web-app");
+        assert_eq!(project.description, "frontend project");
+        assert!(!project.id.is_empty());
+
+        let projects = service.list_projects().unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "web-app");
+    }
+
+    #[test]
+    fn delete_project_by_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        let service = TaskService::new(&store, &runtime, &paths);
+
+        service.create_project("temp-proj", "").unwrap();
+        assert_eq!(service.list_projects().unwrap().len(), 1);
+
+        service.delete_project("temp-proj").unwrap();
+        assert!(service.list_projects().unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_project_errors_on_unknown_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        let service = TaskService::new(&store, &runtime, &paths);
+
+        let err = service.delete_project("ghost");
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("no project found"));
+    }
+
+    #[test]
+    fn list_visible_scoped_to_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let store = Store::open_in_memory().unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        let service = TaskService::new(&store, &runtime, &paths);
+
+        // Spawn two tasks: one with project, one without
+        let out1 = service
+            .spawn(
+                "proj-task",
+                "noop",
+                vec![],
+                None,
+                None,
+                Some("proj-1".to_string()),
+            )
+            .unwrap();
+        let out2 = spawn_test_task(&service); // no project
+
+        // list_visible(None) should only return the unscoped task
+        let unscoped = service.list_visible(None).unwrap();
+        assert_eq!(unscoped.len(), 1);
+        assert_eq!(unscoped[0].id, out2.task_id);
+
+        // list_visible(Some("proj-1")) should only return the project task
+        let scoped = service.list_visible(Some("proj-1")).unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].id, out1.task_id);
+    }
 }

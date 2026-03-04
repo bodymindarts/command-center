@@ -463,4 +463,142 @@ mod tests {
         assert!(messages[0].created_at <= messages[1].created_at);
         assert!(messages[1].created_at <= messages[2].created_at);
     }
+
+    // -- Project CRUD tests --
+
+    #[test]
+    fn insert_and_get_project_by_name() {
+        let store = test_store();
+        store
+            .insert_project("p1", "my-project", "a description")
+            .unwrap();
+
+        let project = store.get_project_by_name("my-project").unwrap().unwrap();
+        assert_eq!(project.id, "p1");
+        assert_eq!(project.name, "my-project");
+        assert_eq!(project.description, "a description");
+    }
+
+    #[test]
+    fn get_project_by_name_returns_none_for_unknown() {
+        let store = test_store();
+        let project = store.get_project_by_name("nonexistent").unwrap();
+        assert!(project.is_none());
+    }
+
+    #[test]
+    fn list_projects_empty() {
+        let store = test_store();
+        let projects = store.list_projects().unwrap();
+        assert!(projects.is_empty());
+    }
+
+    #[test]
+    fn list_projects_ordered_by_created_at() {
+        let store = test_store();
+        store.insert_project("p1", "alpha", "first").unwrap();
+        store.insert_project("p2", "beta", "second").unwrap();
+        store.insert_project("p3", "gamma", "third").unwrap();
+
+        let projects = store.list_projects().unwrap();
+        assert_eq!(projects.len(), 3);
+        assert_eq!(projects[0].name, "alpha");
+        assert_eq!(projects[1].name, "beta");
+        assert_eq!(projects[2].name, "gamma");
+        assert!(projects[0].created_at <= projects[1].created_at);
+        assert!(projects[1].created_at <= projects[2].created_at);
+    }
+
+    #[test]
+    fn insert_project_rejects_duplicate_name() {
+        let store = test_store();
+        store.insert_project("p1", "dup", "first").unwrap();
+        let err = store.insert_project("p2", "dup", "second");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn delete_project_removes_it() {
+        let store = test_store();
+        store.insert_project("p1", "doomed", "bye").unwrap();
+        assert!(store.get_project_by_name("doomed").unwrap().is_some());
+
+        store.delete_project("p1").unwrap();
+        assert!(store.get_project_by_name("doomed").unwrap().is_none());
+        assert!(store.list_projects().unwrap().is_empty());
+    }
+
+    // -- list_visible_tasks_for_project tests --
+
+    fn insert_task_with_project(store: &Store, id: &str, name: &str, project_id: Option<&str>) {
+        let task = Task {
+            id: TaskId::from(id.to_string()),
+            name: name.to_string(),
+            skill_name: "noop".to_string(),
+            params_json: "{}".to_string(),
+            status: TaskStatus::Running,
+            tmux_pane: Some("%1".to_string()),
+            tmux_window: Some("@1".to_string()),
+            work_dir: None,
+            session_id: None,
+            started_at: Utc::now(),
+            completed_at: None,
+            exit_code: None,
+            output: None,
+            project_id: project_id.map(String::from),
+        };
+        store.insert_task(&task).unwrap();
+    }
+
+    #[test]
+    fn visible_tasks_null_project_returns_only_unscoped() {
+        let store = test_store();
+        insert_task_with_project(&store, "t1", "no-project", None);
+        insert_task_with_project(&store, "t2", "has-project", Some("proj-1"));
+
+        let visible = store.list_visible_tasks_for_project(None).unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].name, "no-project");
+    }
+
+    #[test]
+    fn visible_tasks_with_project_returns_only_matching() {
+        let store = test_store();
+        insert_task_with_project(&store, "t1", "no-project", None);
+        insert_task_with_project(&store, "t2", "proj-a-task", Some("proj-a"));
+        insert_task_with_project(&store, "t3", "proj-b-task", Some("proj-b"));
+
+        let visible = store
+            .list_visible_tasks_for_project(Some("proj-a"))
+            .unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].name, "proj-a-task");
+    }
+
+    #[test]
+    fn visible_tasks_running_sorted_before_completed() {
+        let store = test_store();
+        insert_task_with_project(&store, "t1", "completed-task", None);
+        store.complete_task("t1", 0, None).unwrap();
+        insert_task_with_project(&store, "t2", "running-task", None);
+
+        let visible = store.list_visible_tasks_for_project(None).unwrap();
+        assert_eq!(visible.len(), 2);
+        // Running tasks should come first
+        assert_eq!(visible[0].name, "running-task");
+        assert!(visible[0].status.is_running());
+        assert_eq!(visible[1].name, "completed-task");
+        assert!(!visible[1].status.is_running());
+    }
+
+    #[test]
+    fn visible_tasks_empty_for_unknown_project() {
+        let store = test_store();
+        insert_task_with_project(&store, "t1", "task", Some("proj-a"));
+
+        let visible = store
+            .list_visible_tasks_for_project(Some("proj-z"))
+            .unwrap();
+        assert!(visible.is_empty());
+    }
 }

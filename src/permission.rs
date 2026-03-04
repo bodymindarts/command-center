@@ -397,6 +397,71 @@ mod tests {
         assert!(parse_request_json("not json {{{").is_none());
     }
 
+    // -- parse_resolved_json tests --
+
+    #[test]
+    fn parse_resolved_json_returns_cwd_when_resolved() {
+        let json = r#"{"_resolved": true, "cwd": "/home/user/project"}"#;
+        assert_eq!(
+            parse_resolved_json(json),
+            Some("/home/user/project".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_resolved_json_returns_none_when_false() {
+        let json = r#"{"_resolved": false, "cwd": "/home/user/project"}"#;
+        assert_eq!(parse_resolved_json(json), None);
+    }
+
+    #[test]
+    fn parse_resolved_json_returns_none_for_invalid_json() {
+        assert_eq!(parse_resolved_json("not json"), None);
+    }
+
+    #[test]
+    fn parse_resolved_json_returns_none_without_resolved_key() {
+        let json = r#"{"cwd": "/tmp"}"#;
+        assert_eq!(parse_resolved_json(json), None);
+    }
+
+    #[test]
+    fn parse_resolved_json_returns_none_without_cwd() {
+        let json = r#"{"_resolved": true}"#;
+        assert_eq!(parse_resolved_json(json), None);
+    }
+
+    // -- parse_idle_json tests --
+
+    #[test]
+    fn parse_idle_json_returns_cwd_when_idle() {
+        let json = r#"{"_idle": true, "cwd": "/workspace"}"#;
+        assert_eq!(parse_idle_json(json), Some("/workspace".to_string()));
+    }
+
+    #[test]
+    fn parse_idle_json_returns_none_when_false() {
+        let json = r#"{"_idle": false, "cwd": "/workspace"}"#;
+        assert_eq!(parse_idle_json(json), None);
+    }
+
+    #[test]
+    fn parse_idle_json_returns_none_for_invalid_json() {
+        assert_eq!(parse_idle_json("garbage"), None);
+    }
+
+    #[test]
+    fn parse_idle_json_returns_none_without_idle_key() {
+        let json = r#"{"cwd": "/tmp"}"#;
+        assert_eq!(parse_idle_json(json), None);
+    }
+
+    #[test]
+    fn parse_idle_json_returns_none_without_cwd() {
+        let json = r#"{"_idle": true}"#;
+        assert_eq!(parse_idle_json(json), None);
+    }
+
     #[test]
     fn socket_listener_roundtrip() {
         use std::os::unix::net::UnixStream;
