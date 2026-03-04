@@ -3,8 +3,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 
-use crate::primitives::{MessageRole, TaskStatus};
-use crate::task::Project;
+use crate::primitives::MessageRole;
+use crate::task::{DisplayStatus, Project};
 
 use super::app::{App, Focus};
 use super::chat::{ContentBlock, ExoState};
@@ -92,22 +92,15 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, pm: Option<
 }
 
 fn task_list_item(app: &App, task: &crate::task::Task) -> ListItem<'static> {
-    let is_active = task.status.is_running() && app.is_task_active(task.tmux_pane.as_ref());
-    let status_char = match task.status {
-        TaskStatus::Running if is_active => "●",
-        TaskStatus::Running => "r",
-        TaskStatus::Completed => "c",
-        TaskStatus::Failed => "f",
-        TaskStatus::Closed => "x",
-    };
-    let is_running = task.status.is_running();
-    let color = status_color(&task.status);
-    let dim = if is_running || is_active {
-        Modifier::empty()
-    } else {
+    let ds = task.display_status(&app.idle_panes);
+    let status_char = ds.indicator();
+    let color = display_status_color(&ds);
+    let dim = if ds.is_dim() {
         Modifier::DIM
+    } else {
+        Modifier::empty()
     };
-    let fresh_mod = if is_active {
+    let fresh_mod = if ds == DisplayStatus::Active {
         Modifier::BOLD
     } else {
         Modifier::empty()
@@ -1094,11 +1087,11 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     frame.render_widget(bar, area);
 }
 
-fn status_color(status: &TaskStatus) -> Color {
-    match status {
-        TaskStatus::Running => Color::Yellow,
-        TaskStatus::Completed => Color::Green,
-        TaskStatus::Failed => Color::Red,
-        TaskStatus::Closed => Color::Magenta,
+fn display_status_color(ds: &DisplayStatus) -> Color {
+    match ds {
+        DisplayStatus::Active | DisplayStatus::Idle => Color::Yellow,
+        DisplayStatus::Completed => Color::Green,
+        DisplayStatus::Failed => Color::Red,
+        DisplayStatus::Closed => Color::Magenta,
     }
 }

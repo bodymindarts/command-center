@@ -450,14 +450,6 @@ impl App {
         }
     }
 
-    /// Returns true if the task's tmux pane is NOT idle (prompt not visible).
-    pub fn is_task_active(&self, pane_id: Option<&PaneId>) -> bool {
-        let Some(pane_id) = pane_id else {
-            return false;
-        };
-        !self.idle_panes.contains(pane_id)
-    }
-
     pub fn add_permission(&mut self, perm: ActivePermission) {
         self.pending_permissions
             .entry(perm.task_name.clone())

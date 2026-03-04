@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -6,6 +6,35 @@ use chrono::{DateTime, Utc};
 use crate::primitives::{
     MessageRole, PaneId, ProjectId, ProjectName, TaskId, TaskName, TaskStatus, WindowId,
 };
+
+/// Visual status of a task, combining persisted `TaskStatus` with runtime
+/// idle-detection state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayStatus {
+    Active,
+    Idle,
+    Completed,
+    Failed,
+    Closed,
+}
+
+impl DisplayStatus {
+    /// Single-char indicator for the task list.
+    pub fn indicator(&self) -> &str {
+        match self {
+            Self::Active => "●",
+            Self::Idle => "◉",
+            Self::Completed => "✓",
+            Self::Failed => "✗",
+            Self::Closed => "○",
+        }
+    }
+
+    /// Whether the task should be rendered with DIM modifier.
+    pub fn is_dim(&self) -> bool {
+        !matches!(self, Self::Active | Self::Idle)
+    }
+}
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -50,6 +79,25 @@ impl Task {
             exit_code: None,
             output: None,
             project_id,
+        }
+    }
+
+    fn is_idle(&self, idle_panes: &HashSet<PaneId>) -> bool {
+        self.status.is_running()
+            && self
+                .tmux_pane
+                .as_ref()
+                .is_some_and(|p| idle_panes.contains(p))
+    }
+
+    /// Derive the visual display status from persisted status + idle set.
+    pub fn display_status(&self, idle_panes: &HashSet<PaneId>) -> DisplayStatus {
+        match self.status {
+            TaskStatus::Running if self.is_idle(idle_panes) => DisplayStatus::Idle,
+            TaskStatus::Running => DisplayStatus::Active,
+            TaskStatus::Completed => DisplayStatus::Completed,
+            TaskStatus::Failed => DisplayStatus::Failed,
+            TaskStatus::Closed => DisplayStatus::Closed,
         }
     }
 }
