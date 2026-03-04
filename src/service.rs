@@ -392,6 +392,29 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         self.runtime.capture_pane_output(pane_id).ok()
     }
 
+    /// Capture a windowed slice of pane scrollback.
+    /// Returns (output, history_length) where history_length is the total scrollback size.
+    pub fn capture_pane_windowed(
+        &self,
+        pane_id: &str,
+        scroll_offset: u16,
+        viewport_height: u16,
+    ) -> Option<(String, usize)> {
+        let history_len = self.runtime.pane_scrollback_len(pane_id).unwrap_or(0);
+        let height = viewport_height as i32;
+        let offset = scroll_offset as i32;
+
+        // Negative indices count from the bottom: -1 = last line
+        let end = -(offset + 1);
+        let start = end - height + 1;
+
+        let output = self
+            .runtime
+            .capture_pane_windowed(pane_id, start, end)
+            .ok()?;
+        Some((output, history_len))
+    }
+
     pub fn insert_exo_message(&self, role: MessageRole, content: &str) -> Result<()> {
         self.store.insert_message(EXO_CHAT_ID, role, content)
     }
@@ -645,6 +668,14 @@ mod tests {
                 .borrow()
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("no capture result"))
+        }
+
+        fn capture_pane_windowed(&self, pane_id: &str, _start: i32, _end: i32) -> Result<String> {
+            self.capture_pane_output(pane_id)
+        }
+
+        fn pane_scrollback_len(&self, _pane_id: &str) -> Result<usize> {
+            Ok(0)
         }
 
         fn kill_tmux_window(&self, window_id: &str) -> Result<()> {

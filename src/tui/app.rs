@@ -306,8 +306,11 @@ pub struct App {
     pub show_detail: bool,
     pub pending_permissions: HashMap<String, VecDeque<ActivePermission>>,
     pub selected_messages: Vec<TaskMessage>,
+    /// Offset from bottom of tmux scrollback. 0 = auto-follow (latest output).
     pub detail_scroll: u16,
     pub detail_live_output: Option<String>,
+    /// Total scrollback history length (for clamping detail_scroll).
+    pub detail_pane_history: usize,
     pub window_numbers: HashMap<String, String>,
     pub chat_buffers: HashMap<String, String>,
     pub chat_scroll: u16,
@@ -363,6 +366,7 @@ impl App {
             selected_messages: Vec::new(),
             detail_scroll: 0,
             detail_live_output: None,
+            detail_pane_history: 0,
             window_numbers: HashMap::new(),
             chat_buffers: HashMap::new(),
             chat_scroll: 0,
