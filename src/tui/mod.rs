@@ -263,7 +263,25 @@ fn run_loop<R: Runtime>(
     idle_rx: &mpsc::Receiver<String>,
 ) -> Result<()> {
     let mut last_tick = Instant::now();
-    let mut startup_idle_checked = false;
+
+    // Before first render, assume all running agents are idle, then
+    // remove any that are actually active (no `❯` prompt).
+    // After startup, idle/resolved hooks handle this.
+    if let Ok(tasks) = service.list_active() {
+        for task in &tasks {
+            if task.status.is_running() {
+                app.fresh_tasks.insert(task.id.as_str().to_string());
+                if let Some(ref pane) = task.tmux_pane
+                    && let Some(output) = service.capture_pane(pane)
+                {
+                    let is_idle = output.lines().rev().take(5).any(|l| l.trim() == "❯");
+                    if !is_idle {
+                        app.fresh_tasks.remove(task.id.as_str());
+                    }
+                }
+            }
+        }
+    }
 
     loop {
         let any_pm_streaming = pm_contexts.values().any(|ctx| ctx.state.streaming);
@@ -1471,25 +1489,6 @@ fn run_loop<R: Runtime>(
                 let _ = write_response_to_stream(perm.stream, false, None);
             }
             app.window_numbers = crate::runtime::tmux_window_numbers();
-            // On first tick, assume all running agents are idle, then
-            // remove any that are actually active (no `❯` prompt).
-            // After startup, idle/resolved hooks handle this.
-            if !startup_idle_checked {
-                startup_idle_checked = true;
-                for task in &all_active {
-                    if task.status.is_running() {
-                        app.fresh_tasks.insert(task.id.as_str().to_string());
-                        if let Some(ref pane) = task.tmux_pane
-                            && let Some(output) = service.capture_pane(pane)
-                        {
-                            let is_idle = output.lines().rev().take(5).any(|l| l.trim() == "❯");
-                            if !is_idle {
-                                app.fresh_tasks.remove(task.id.as_str());
-                            }
-                        }
-                    }
-                }
-            }
             // Update selected messages and live output for detail view
             if let Some(task) = app.selected_task() {
                 let task_id = task.id.as_str().to_string();
