@@ -1363,6 +1363,23 @@ pub(super) fn drain_idle(app: &mut App, idle_rx: &mpsc::Receiver<String>) {
     }
 }
 
+/// Drain active notifications from Notification hooks — mark pane as not idle.
+pub(super) fn drain_active(app: &mut App, active_rx: &mpsc::Receiver<String>) {
+    while let Ok(cwd) = active_rx.try_recv() {
+        let cwd_path =
+            std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
+        if let Some(task_name) = find_task_name_by_cwd(&app.global_task_work_dirs, &cwd_path)
+            && let Some(pane_id) = app
+                .tasks
+                .iter()
+                .find(|t| t.name == task_name)
+                .and_then(|t| t.tmux_pane.as_ref())
+        {
+            app.idle_panes.remove(pane_id);
+        }
+    }
+}
+
 pub(super) fn drain_permissions(
     app: &mut App,
     perm_rx: &mpsc::Receiver<(UnixStream, PermissionRequest)>,

@@ -154,6 +154,7 @@ pub fn run<R: Runtime>(
     let (perm_tx, perm_rx) = mpsc::channel::<(UnixStream, PermissionRequest)>();
     let (resolved_tx, resolved_rx) = mpsc::channel::<String>();
     let (idle_tx, idle_rx) = mpsc::channel::<String>();
+    let (active_tx, active_rx) = mpsc::channel::<String>(); // CWD of active agent
     let perm_cancel = Arc::clone(&cancel);
     let (listener, socket_path) = crate::permission::start_socket_listener()?;
     // SAFETY: called once at startup before spawning threads that read env vars.
@@ -182,6 +183,8 @@ pub fn run<R: Runtime>(
                             let _ = resolved_tx.send(cwd);
                         } else if let Some(cwd) = crate::permission::parse_idle_json(&buf) {
                             let _ = idle_tx.send(cwd);
+                        } else if let Some(cwd) = crate::permission::parse_active_json(&buf) {
+                            let _ = active_tx.send(cwd);
                         } else if let Some(req) = crate::permission::parse_request_json(&buf) {
                             let _ = perm_tx.send((stream, req));
                         }
@@ -219,6 +222,7 @@ pub fn run<R: Runtime>(
         &perm_rx,
         &resolved_rx,
         &idle_rx,
+        &active_rx,
         tg_tx.as_ref(),
         tg_rx.as_ref(),
     );
@@ -273,6 +277,7 @@ fn run_loop<R: Runtime>(
     perm_rx: &mpsc::Receiver<(UnixStream, PermissionRequest)>,
     resolved_rx: &mpsc::Receiver<String>,
     idle_rx: &mpsc::Receiver<String>,
+    active_rx: &mpsc::Receiver<String>,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
     tg_rx: Option<&mpsc::Receiver<telegram::TgInbound>>,
 ) -> Result<()> {
@@ -280,7 +285,9 @@ fn run_loop<R: Runtime>(
     let mut perm_id_counter: u64 = 0;
     let mut tg_perm_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
 
-    // Start with all running panes assumed idle.
+    // Start with all running panes assumed idle. Notification hooks
+    // (idle_prompt → idle, permission_prompt/elicitation_dialog → active)
+    // and message-sent will flip state — no screen-capture polling needed.
     app.idle_panes = app
         .tasks
         .iter()
@@ -368,6 +375,7 @@ fn run_loop<R: Runtime>(
         // Drain socket events
         handlers::drain_resolved(app, resolved_rx, tg_tx, &mut tg_perm_ids);
         handlers::drain_idle(app, idle_rx);
+        handlers::drain_active(app, active_rx);
         handlers::drain_permissions(app, perm_rx, tg_tx, &mut tg_perm_ids, &mut perm_id_counter);
         handlers::drain_telegram(app, exo, exo_session, service, tg_rx);
         handlers::detect_vanished_perms(app, tg_tx, &mut tg_perm_ids);
