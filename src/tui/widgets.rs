@@ -788,21 +788,14 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool
     // Visible width inside borders
     let visible_width = area.width.saturating_sub(2);
 
-    let buf = app.input.buffer();
-    let (display, cursor_pos, scroll) = if app.input.has_paste() {
-        let n = app.input.paste_line_count();
-        let label = format!("{prefix}[{n} lines pasted]");
-        let cpos = label.len() as u16;
-        (label, cpos, 0u16)
+    let display_buf = app.input.display_text();
+    let cursor_pos = prefix_len + app.input.display_cursor() as u16;
+    let scroll = if cursor_pos >= visible_width {
+        cursor_pos - visible_width + 1
     } else {
-        let cpos = prefix_len + app.input.cursor as u16;
-        let s = if cpos >= visible_width {
-            cpos - visible_width + 1
-        } else {
-            0
-        };
-        (format!("{prefix}{buf}"), cpos, s)
+        0
     };
+    let display = format!("{prefix}{display_buf}");
 
     let input = Paragraph::new(display)
         .block(
