@@ -27,6 +27,16 @@ pub struct ActivePermission {
     pub tool_name: String,
     pub tool_input_summary: String,
     pub permission_suggestions: Vec<serde_json::Value>,
+    /// AskUser question text (set when tool_name == "AskUserQuestion").
+    pub askuser_question: Option<String>,
+    /// AskUser options (label, description pairs).
+    pub askuser_options: Vec<(String, String)>,
+}
+
+impl ActivePermission {
+    pub fn is_askuser(&self) -> bool {
+        self.askuser_question.is_some()
+    }
 }
 
 /// Saved UI state for a project, restored on Ctrl+R.
@@ -546,6 +556,26 @@ impl App {
             }
         }
         stale
+    }
+
+    /// Count pending AskUser permissions in the current project.
+    pub fn current_project_askuser_count(&self) -> usize {
+        let current_pid = self.active_project_id.as_deref();
+        self.pending_permissions
+            .iter()
+            .filter(|(task_name, _)| {
+                if task_name.as_str() == "exo" {
+                    current_pid.is_none()
+                } else {
+                    let task_pid = self
+                        .global_task_projects
+                        .get(task_name.as_str())
+                        .and_then(|pid| pid.as_deref());
+                    task_pid == current_pid
+                }
+            })
+            .map(|(_, queue)| queue.iter().filter(|p| p.is_askuser()).count())
+            .sum()
     }
 
     fn current_chat_key(&self) -> String {

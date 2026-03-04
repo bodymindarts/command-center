@@ -588,6 +588,7 @@ fn run_loop<R: Runtime>(
                         terminal.hide_cursor()?;
                         terminal.clear()?;
                     // Global: Ctrl+P cycles to next task with pending permissions
+                    // (including AskUser prompts, which are stored as permissions)
                     } else if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('p')
                     {
@@ -711,6 +712,34 @@ fn run_loop<R: Runtime>(
                         {
                             let _ = write_response_to_stream(stream, allow, None);
                             notify_tg_resolved(tg_tx, perm_id, "❌ Denied locally");
+                        }
+                    // Number keys 1-4 answer an AskUser prompt (front permission is AskUser)
+                    } else if matches!(key.code, KeyCode::Char('1'..='4'))
+                        && key.modifiers.is_empty()
+                        && app.show_detail
+                        && app
+                            .peek_permission(&app.focused_perm_key())
+                            .is_some_and(|p| p.is_askuser())
+                    {
+                        let digit = match key.code {
+                            KeyCode::Char(c) => c.to_digit(10).unwrap_or(1) as usize,
+                            _ => 1,
+                        };
+                        let perm_key = app.focused_perm_key();
+                        if let Some(perm) = app.peek_permission(&perm_key) {
+                            let idx = digit - 1;
+                            if idx < perm.askuser_options.len() {
+                                let label = perm.askuser_options[idx].0.clone();
+                                let perm_id = perm.perm_id;
+                                if let Some(perm) = app.take_permission(&perm_key) {
+                                    let _ = write_response_with_message(perm.stream, true, &label);
+                                    notify_tg_resolved(
+                                        tg_tx,
+                                        perm_id,
+                                        &format!("✅ Selected: {label}"),
+                                    );
+                                }
+                            }
                         }
                     // Global: Ctrl+O returns to ExO chat
                     } else if key.modifiers.contains(KeyModifiers::CONTROL)
@@ -1748,6 +1777,14 @@ fn run_loop<R: Runtime>(
                 }
                 tg_perm_ids.insert(perm_id);
             }
+            // Parse AskUser options when tool_name is AskUserQuestion
+            let (askuser_question, askuser_options) = if req.tool_name == "AskUserQuestion"
+                && let Some((q, opts)) = parse_ask_user_options(req.tool_input.as_ref())
+            {
+                (Some(q), opts)
+            } else {
+                (None, Vec::new())
+            };
             let perm = ActivePermission {
                 perm_id,
                 stream,
@@ -1755,6 +1792,8 @@ fn run_loop<R: Runtime>(
                 tool_name: req.tool_name,
                 tool_input_summary: req.tool_input_summary,
                 permission_suggestions: req.permission_suggestions,
+                askuser_question,
+                askuser_options,
             };
             app.add_permission(perm);
         }

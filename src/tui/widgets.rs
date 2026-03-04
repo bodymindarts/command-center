@@ -19,19 +19,32 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, pm: Option<
     let searching = matches!(app.focus, Focus::TaskSearch);
     let in_task_chat = !searching && app.show_detail && app.selected_task().is_some();
     let focused_perm_key = app.focused_perm_key();
-    let show_perm = in_task_chat && app.peek_permission(&focused_perm_key).is_some();
+    let front_perm = app.peek_permission(&focused_perm_key);
+    let show_perm = in_task_chat && front_perm.is_some_and(|p| !p.is_askuser());
+    let show_askuser = in_task_chat && front_perm.is_some_and(|p| p.is_askuser());
     let show_delete = matches!(app.focus, Focus::ConfirmDelete(_));
     let show_delete_project = matches!(app.focus, Focus::ConfirmDeleteProject(_));
     let show_close_task = matches!(app.focus, Focus::ConfirmCloseTask(_));
     let show_close_project = matches!(app.focus, Focus::ConfirmCloseProject);
-    let show_mid_panel =
-        show_perm || show_delete || show_delete_project || show_close_task || show_close_project;
+    let show_mid_panel = show_perm
+        || show_askuser
+        || show_delete
+        || show_delete_project
+        || show_close_task
+        || show_close_project;
+    let mid_panel_height = if show_askuser {
+        // 2 (border) + 1 (question) + 1 (blank) + up to 4 options
+        let n_opts = front_perm.map(|p| p.askuser_options.len()).unwrap_or(2);
+        (4 + n_opts) as u16
+    } else {
+        5
+    };
     let left = if show_mid_panel {
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Min(0),
-                Constraint::Length(5),
+                Constraint::Length(mid_panel_height),
                 Constraint::Length(3),
                 Constraint::Length(1),
             ])
@@ -59,6 +72,8 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, pm: Option<
         render_delete_confirm_panel(frame, app, left[1]);
     } else if show_perm {
         render_permission_panel(frame, app, left[1]);
+    } else if show_askuser {
+        render_askuser_panel(frame, app, left[1]);
     }
 
     let focused_input = matches!(
@@ -152,6 +167,20 @@ fn task_list_item(app: &App, task: &crate::task::Task) -> ListItem<'static> {
         return ListItem::new(vec![main_line, sub_line]);
     }
 
+    // AskUser sub-line if the front permission for this task is an AskUser question (green)
+    if let Some(queue) = app.pending_permissions.get(&task.name)
+        && let Some(front) = queue.front()
+        && front.is_askuser()
+    {
+        let question = front.askuser_question.as_deref().unwrap_or("?");
+        let truncated: String = question.chars().take(50).collect();
+        let sub_line = Line::from(Span::styled(
+            format!("    ? {truncated}"),
+            Style::default().fg(Color::Green),
+        ));
+        return ListItem::new(vec![main_line, sub_line]);
+    }
+
     ListItem::new(main_line)
 }
 
@@ -193,7 +222,10 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
         Color::DarkGray
     };
 
-    let total_perm = app.current_project_perm_count();
+    let total_askuser = app.current_project_askuser_count();
+    let total_perm = app
+        .current_project_perm_count()
+        .saturating_sub(total_askuser);
     let other_perms = app.other_project_perm_counts();
     let mut title_spans: Vec<Span> = Vec::new();
     if searching {
@@ -203,15 +235,31 @@ fn render_task_list(frame: &mut ratatui::Frame, app: &mut App, area: Rect, focus
             app.tasks.len()
         )));
     } else if let Some(ref name) = app.active_project {
+        let mut badges = Vec::new();
         if total_perm > 0 {
-            title_spans.push(Span::raw(format!(" {name} ({total_perm} perm) ")));
-        } else {
-            title_spans.push(Span::raw(format!(" {name} ")));
+            badges.push(format!("{total_perm} perm"));
         }
-    } else if total_perm > 0 {
-        title_spans.push(Span::raw(format!(" Tasks ({total_perm} perm) ")));
+        if total_askuser > 0 {
+            badges.push(format!("{total_askuser} ask"));
+        }
+        if badges.is_empty() {
+            title_spans.push(Span::raw(format!(" {name} ")));
+        } else {
+            title_spans.push(Span::raw(format!(" {name} ({}) ", badges.join(", "))));
+        }
     } else {
-        title_spans.push(Span::raw(" Tasks "));
+        let mut badges = Vec::new();
+        if total_perm > 0 {
+            badges.push(format!("{total_perm} perm"));
+        }
+        if total_askuser > 0 {
+            badges.push(format!("{total_askuser} ask"));
+        }
+        if badges.is_empty() {
+            title_spans.push(Span::raw(" Tasks "));
+        } else {
+            title_spans.push(Span::raw(format!(" Tasks ({}) ", badges.join(", "))));
+        }
     }
     if !other_perms.is_empty() {
         let parts: Vec<String> = other_perms
@@ -598,6 +646,63 @@ fn render_permission_panel(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+fn render_askuser_panel(frame: &mut ratatui::Frame, app: &App, area: Rect) {
+    let perm_key = app.focused_perm_key();
+    let Some(perm) = app.peek_permission(&perm_key) else {
+        return;
+    };
+    if !perm.is_askuser() {
+        return;
+    }
+    let question = perm.askuser_question.as_deref().unwrap_or("?");
+    let extra = app
+        .pending_permissions
+        .get(&perm_key)
+        .map(|q| q.len().saturating_sub(1))
+        .unwrap_or(0);
+    let more = if extra > 0 {
+        format!(" (+{extra} more)")
+    } else {
+        String::new()
+    };
+    let mut lines = vec![
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                question.to_string(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(more, Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(""),
+    ];
+    for (i, (label, description)) in perm.askuser_options.iter().enumerate().take(4) {
+        let num = i + 1;
+        let desc = if description.is_empty() {
+            String::new()
+        } else {
+            format!(" - {description}")
+        };
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                format!("{num}"),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!(". {label}{desc}")),
+        ]));
+    }
+    let block = Block::default()
+        .title(" AskUser ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Green));
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
 fn render_delete_confirm_panel(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     let Focus::ConfirmDelete(ref id) = app.focus else {
         return;
@@ -765,10 +870,13 @@ fn render_delete_project_panel(frame: &mut ratatui::Frame, app: &App, area: Rect
 }
 
 fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool) {
-    let focused_has_perms =
-        app.show_detail && app.peek_permission(&app.focused_perm_key()).is_some();
+    let front_input_perm = app.peek_permission(&app.focused_perm_key());
+    let focused_has_perms = app.show_detail && front_input_perm.is_some_and(|p| !p.is_askuser());
+    let focused_has_askuser = app.show_detail && front_input_perm.is_some_and(|p| p.is_askuser());
     let border_color = if focused && focused_has_perms {
         Color::Yellow
+    } else if focused && focused_has_askuser {
+        Color::Green
     } else if focused {
         Color::Blue
     } else {
@@ -832,6 +940,21 @@ fn perm_hint_spans() -> Vec<Span<'static>> {
     ]
 }
 
+fn askuser_hint_spans(n_opts: usize) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::raw("  ")];
+    let labels = ["1", "2", "3", "4"];
+    for (i, label) in labels.iter().enumerate().take(n_opts.min(4)) {
+        if i > 0 {
+            spans.push(Span::raw("/"));
+        }
+        spans.push(Span::styled(*label, Style::default().fg(Color::Green)));
+    }
+    spans.push(Span::raw(" select  "));
+    spans.push(Span::styled("^P", Style::default().fg(Color::Green)));
+    spans.push(Span::raw(" next"));
+    spans
+}
+
 fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     // Show transient error in red, replacing normal keybinding hints
     if let Some(ref err) = app.status_error {
@@ -843,7 +966,8 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
         return;
     }
 
-    let has_perms = app.show_detail && app.peek_permission(&app.focused_perm_key()).is_some();
+    let front_p = app.peek_permission(&app.focused_perm_key());
+    let has_perms = app.show_detail && front_p.is_some_and(|p| !p.is_askuser());
     let mut spans = match &app.focus {
         Focus::ProjectNameInput => vec![
             Span::styled(" Enter", Style::default().fg(Color::Yellow)),
@@ -954,8 +1078,12 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
             ]
         }
     };
+    let has_askuser = app.show_detail && front_p.is_some_and(|p| p.is_askuser());
     if has_perms {
         spans.extend(perm_hint_spans());
+    } else if has_askuser {
+        let n_opts = front_p.map(|p| p.askuser_options.len()).unwrap_or(0);
+        spans.extend(askuser_hint_spans(n_opts));
     }
 
     let bar = Paragraph::new(Line::from(spans)).style(Style::default().fg(Color::DarkGray));
