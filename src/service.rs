@@ -219,6 +219,7 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         skill.validate_params(&params_map)?;
 
         let system_prompt = skill.render_system()?;
+        let user_prompt = skill.render_prompt(&params_map)?;
 
         let scratch_dir = self.paths.data_dir.join("scratch").join(task_name);
         self.runtime.init_scratch_dir(&scratch_dir)?;
@@ -235,11 +236,14 @@ impl<'a, R: Runtime> TaskService<'a, R> {
         self.store.insert_task(&task)?;
         self.store
             .update_session_id(task.id.as_str(), &session_id)?;
+        self.store
+            .insert_message(task.id.as_str(), MessageRole::System, &user_prompt)?;
 
-        let result = self.runtime.spawn_interactive(
+        let result = self.runtime.spawn_agent(
             task_name,
             &session_id,
             system_prompt.as_deref(),
+            &user_prompt,
             &scratch_dir,
         )?;
         self.store
@@ -1238,7 +1242,7 @@ prompt = "deploy to {{ env }}"
             Some(expected_scratch.to_str().unwrap())
         );
 
-        // Verify call order: InitScratchDir, SetupDirConfig, SpawnInteractive
+        // Verify call order: InitScratchDir, SetupDirConfig, SpawnAgent
         let calls = runtime.calls.borrow();
         assert!(
             !calls
@@ -1248,7 +1252,7 @@ prompt = "deploy to {{ env }}"
         );
         assert!(matches!(calls[0], Call::InitScratchDir { .. }));
         assert!(matches!(calls[1], Call::SetupDirConfig { .. }));
-        assert!(matches!(calls[2], Call::SpawnInteractive { .. }));
+        assert!(matches!(calls[2], Call::SpawnAgent { .. }));
     }
 
     // -- Project CRUD via service layer --
