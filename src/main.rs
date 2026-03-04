@@ -53,10 +53,15 @@ fn main() -> Result<()> {
                 project,
             },
         )?,
-        Command::List { all, project } => cmd_list(&service, all, project)?,
-        Command::History => cmd_list(&service, true, None)?,
+        Command::List {
+            all,
+            project,
+            filter,
+        } => cmd_list(&service, all, project, filter)?,
+        Command::History => cmd_list(&service, true, None, None)?,
         Command::Log { id } => cmd_log(&service, &id)?,
         Command::Close { id } => cmd_close(&service, &id)?,
+        Command::Reopen { id } => cmd_reopen(&service, &id)?,
         Command::Delete { id } => cmd_delete(&service, &id)?,
         Command::Dash { resume } => tui::run(&service, resume.as_deref())?,
         Command::Start { resume } => cmd_start(resume.as_deref())?,
@@ -123,8 +128,13 @@ fn cmd_spawn(service: &TaskService<impl Runtime>, opts: SpawnOpts) -> Result<()>
     Ok(())
 }
 
-fn cmd_list(service: &TaskService<impl Runtime>, all: bool, project: Option<String>) -> Result<()> {
-    let tasks = if all {
+fn cmd_list(
+    service: &TaskService<impl Runtime>,
+    all: bool,
+    project: Option<String>,
+    filter: Option<String>,
+) -> Result<()> {
+    let mut tasks = if all {
         service.list_all()?
     } else if let Some(ref name) = project {
         let project_id = service.resolve_project_id(name)?;
@@ -132,6 +142,11 @@ fn cmd_list(service: &TaskService<impl Runtime>, all: bool, project: Option<Stri
     } else {
         service.list_active()?
     };
+
+    if let Some(ref pattern) = filter {
+        let pattern_lower = pattern.to_lowercase();
+        tasks.retain(|t| t.name.to_lowercase().contains(&pattern_lower));
+    }
 
     if tasks.is_empty() {
         println!("No tasks.");
@@ -195,6 +210,12 @@ fn cmd_close(service: &TaskService<impl Runtime>, id: &str) -> Result<()> {
         result.task_name,
         result.task_id.short()
     );
+    Ok(())
+}
+
+fn cmd_reopen(service: &TaskService<impl Runtime>, id: &str) -> Result<()> {
+    let window_id = service.reopen(id)?;
+    println!("Reopened task {id} (window: {window_id})");
     Ok(())
 }
 

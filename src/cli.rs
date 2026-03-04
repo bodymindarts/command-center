@@ -54,6 +54,10 @@ pub enum Command {
         /// Filter tasks by project name
         #[arg(long)]
         project: Option<String>,
+
+        /// Filter tasks by name (case-insensitive substring match)
+        #[arg(long)]
+        filter: Option<String>,
     },
 
     /// List all tasks (alias for list --all)
@@ -67,6 +71,12 @@ pub enum Command {
 
     /// Close a running task (capture output, kill tmux window)
     Close {
+        /// Task ID (prefix match)
+        id: String,
+    },
+
+    /// Reopen a closed/completed task (resume agent in tmux)
+    Reopen {
         /// Task ID (prefix match)
         id: String,
     },
