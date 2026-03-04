@@ -415,14 +415,14 @@ fn render_chat(
         }
 
         if let Some(output) = &app.detail_live_output {
+            let tail: Vec<&str> = output.lines().collect();
+            let start = tail.len().saturating_sub(500);
             lines.push(Line::from(Span::styled(
-                "--- Live (last 50 lines) ---",
+                format!("--- Live (last {} lines) ---", tail.len() - start),
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             )));
-            let tail: Vec<&str> = output.lines().collect();
-            let start = tail.len().saturating_sub(50);
             for l in &tail[start..] {
                 lines.push(Line::from(l.to_string()));
             }
