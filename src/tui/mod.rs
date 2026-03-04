@@ -351,6 +351,7 @@ fn run_loop<R: Runtime>(
                 ExoEvent::TextDelta(text) => {
                     if exo.streaming {
                         exo.append_text(&text);
+                        app.chat_scroll = 0;
                     }
                 }
                 ExoEvent::ToolStart(name) => {
@@ -402,10 +403,14 @@ fn run_loop<R: Runtime>(
             let Some(ctx) = pm_contexts.get_mut(&project_id) else {
                 continue;
             };
+            let is_active_pm = app.active_project_id.as_deref() == Some(project_id.as_str());
             match pm_ev.inner {
                 ExoEvent::TextDelta(text) => {
                     if ctx.state.streaming {
                         ctx.state.append_text(&text);
+                        if is_active_pm {
+                            app.chat_scroll = 0;
+                        }
                     }
                 }
                 ExoEvent::ToolStart(name) => {
@@ -1367,6 +1372,7 @@ fn run_loop<R: Runtime>(
                                                         &msg,
                                                         ctx.state.session_id.as_deref(),
                                                     );
+                                                    app.chat_scroll = 0;
                                                 }
                                             } else {
                                                 // ExO chat: stream to ExO
@@ -1393,6 +1399,7 @@ fn run_loop<R: Runtime>(
                                                 exo.add_user_message(msg.clone());
                                                 exo_session
                                                     .send_message(&msg, exo.session_id.as_deref());
+                                                app.chat_scroll = 0;
                                             }
                                         }
                                     }
