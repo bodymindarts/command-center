@@ -113,8 +113,10 @@ pub struct ExoSession {
 }
 
 impl ExoSession {
-    /// Start a new persistent claude process and background reader thread.
-    pub fn start(
+    /// Create a new session and eagerly spawn the claude process so it
+    /// warms up in the background. `Command::spawn` returns immediately
+    /// (fork+exec) so this does not block the caller.
+    pub fn new(
         session_id: Option<&str>,
         cancel: Arc<AtomicBool>,
         tx: mpsc::Sender<ExoEvent>,

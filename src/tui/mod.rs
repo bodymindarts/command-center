@@ -155,7 +155,7 @@ pub fn run<R: Runtime>(
     }
     let (tx, rx) = mpsc::channel::<ExoEvent>();
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut exo_session = ExoSession::start(
+    let mut exo_session = ExoSession::new(
         exo.session_id.as_deref(),
         Arc::clone(&cancel),
         tx.clone(),
@@ -182,10 +182,18 @@ pub fn run<R: Runtime>(
     crate::permission::write_socket_breadcrumb(service.project_root(), &socket_path);
     // Re-embed socket path in active worktrees so hooks from pre-existing
     // tasks connect to this dashboard's socket after a restart.
-    if let Ok(tasks) = service.list_visible(app.active_project_id.as_deref()) {
-        let work_dirs: Vec<String> = tasks.iter().filter_map(|t| t.work_dir.clone()).collect();
+    // Reuse the task list from above and run in a background thread to
+    // avoid blocking the first render.
+    {
+        let work_dirs: Vec<String> = app
+            .tasks
+            .iter()
+            .filter_map(|t| t.work_dir.clone())
+            .collect();
         let sock_str = socket_path.to_string_lossy().to_string();
-        crate::runtime::reembed_socket_in_worktrees(&work_dirs, &sock_str);
+        std::thread::spawn(move || {
+            crate::runtime::reembed_socket_in_worktrees(&work_dirs, &sock_str);
+        });
     }
     std::thread::spawn(move || {
         while !perm_cancel.load(Ordering::Relaxed) {
@@ -1375,7 +1383,7 @@ fn run_loop<R: Runtime>(
                                                         .as_deref()
                                                         .unwrap_or("unknown");
                                                     let prompt = pm_system_prompt(proj_name);
-                                                    ctx.session = Some(ExoSession::start(
+                                                    ctx.session = Some(ExoSession::new(
                                                         sid.as_deref(),
                                                         Arc::clone(&ctx.cancel),
                                                         ctx.bridge_tx.clone(),
