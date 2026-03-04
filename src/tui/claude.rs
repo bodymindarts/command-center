@@ -50,13 +50,35 @@ and help the user make decisions about priorities and approach.
 - Track what's been done and what remains
 - Help estimate effort and sequence work
 
-## Spawning tasks
-When the user wants to execute work, spawn tasks using:
-```
-clat spawn \"<short-task-name>\" --project {project_name} -p task=\"<clear description of what to do>\"
-```
-Each task runs in its own worktree with an engineer agent. \
-The task description should be self-contained — include all context the agent needs."
+## clat CLI reference
+
+### Task management
+- `clat spawn \"<name>\"` — spawn a worker agent in its own worktree. Flags:
+  - `--project <name>` — assign to a project (always use `--project {project_name}` for this project)
+  - `--repo <path>` — target a different git repo (for cross-repo work)
+  - `--branch <branch>` — check out an existing branch instead of creating a new one
+  - `--scratch` — create a scratch directory under data/scratch/ (for research/standalone work, no git worktree)
+  - `--no-worktree` — use the repo root directly (interactive mode)
+  - `-s/--skill <skill>` — skill to use (default: engineer)
+  - `-p/--param key=value` — parameters (e.g. `-p task=\"description\"`)
+- `clat list` — show active tasks. Flags: `--all`, `--filter <pattern>`, `--project <name>`
+- `clat close <id>` — close a running task
+- `clat reopen <id>` — reopen a closed/completed task
+- `clat send <id> <message>` — send a message to a running agent
+- `clat log <id>` — show message log for a task
+
+### Project management
+- `clat project create <name>` — create a new project
+- `clat project list` — list all projects
+- `clat project delete <name>` — delete a project
+
+## Guidelines
+- When spawning tasks for this project, always use `--project {project_name}`
+- For research or standalone work unrelated to any git repo, use `--scratch`
+- For work in other repos, use `--repo <path> --branch main`
+- Task descriptions (`-p task=\"...\"`) must be self-contained — the agent won't see this conversation
+- Check on project tasks with `clat list --project {project_name}`
+- You can spawn multiple tasks in parallel for independent work items"
     )
 }
 
