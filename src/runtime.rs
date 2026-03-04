@@ -203,6 +203,7 @@ impl Runtime for TmuxRuntime {
         }
 
         setup_worktree_config(hooks_source, &worktree_path, skill_tools)?;
+        merge_repo_settings(repo_root, &worktree_path)?;
 
         Ok(worktree_path)
     }
@@ -417,6 +418,39 @@ fn setup_worktree_config(
             "launch.sh\nprompt.txt\nidle-prompt.txt\nsystem-prompt.txt\nsettings.local.json\nhooks/\n.gitignore\n",
         )?;
     }
+    Ok(())
+}
+
+/// Merge non-managed keys from the source repo's `.claude/settings.local.json`
+/// into the worktree's settings. Keys like `mcpServers` are preserved while
+/// managed keys (`hooks`, `permissions`) already set by [`setup_worktree_config`]
+/// take precedence.
+fn merge_repo_settings(repo_root: &Path, worktree_path: &Path) -> Result<()> {
+    let repo_settings_path = repo_root.join(".claude").join("settings.local.json");
+    if !repo_settings_path.is_file() {
+        return Ok(());
+    }
+
+    let repo_content = std::fs::read_to_string(&repo_settings_path)?;
+    let repo_settings: serde_json::Value = serde_json::from_str(&repo_content)?;
+    let Some(repo_obj) = repo_settings.as_object() else {
+        return Ok(());
+    };
+
+    let wt_settings_path = worktree_path.join(".claude").join("settings.local.json");
+    let wt_content = std::fs::read_to_string(&wt_settings_path).unwrap_or_default();
+    let mut wt_settings: serde_json::Value =
+        serde_json::from_str(&wt_content).unwrap_or_else(|_| serde_json::json!({}));
+
+    if let Some(wt_obj) = wt_settings.as_object_mut() {
+        for (key, value) in repo_obj {
+            if !wt_obj.contains_key(key) {
+                wt_obj.insert(key.clone(), value.clone());
+            }
+        }
+    }
+
+    std::fs::write(&wt_settings_path, wt_settings.to_string())?;
     Ok(())
 }
 
