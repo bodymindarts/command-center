@@ -21,6 +21,19 @@ command-center/
 └── data/              # Local sqlite db, session logs (gitignored)
 ```
 
+## Spawning Tasks (ExO / PM)
+
+When spawning tasks, always use the appropriate skill (`-s` flag):
+
+```sh
+clat spawn "<name>" -s researcher -p task="..."   # research, feasibility, RnD
+clat spawn "<name>" -s engineer -p task="..."     # implementation, bug fixes, features
+clat spawn "<name>" -s reviewer -p task="..."     # code review
+clat spawn "<name>" -p task="..."                 # defaults to engineer
+```
+
+Choose the skill based on the task's nature, not its topic. Research tasks explore and report back — they don't commit code. Engineer tasks implement and commit. Review tasks audit existing code/PRs.
+
 ## Dev Shell
 
 ```sh

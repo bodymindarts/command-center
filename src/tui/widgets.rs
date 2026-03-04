@@ -124,7 +124,7 @@ fn task_list_item(app: &App, task: &crate::task::Task) -> ListItem<'static> {
         ),
         Span::styled(
             format!("{:<8} ", task.skill_name),
-            Style::default().fg(Color::DarkGray).add_modifier(dim),
+            Style::default().fg(Color::Gray).add_modifier(dim),
         ),
         Span::styled(
             format!("{time}"),
