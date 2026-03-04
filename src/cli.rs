@@ -136,6 +136,12 @@ pub enum Command {
         action: ProjectAction,
     },
 
+    /// Stream hook messages from the dashboard in real-time (for debugging)
+    StreamHooks {
+        /// Filter by task name (substring match)
+        task: Option<String>,
+    },
+
     /// Commands called by spawned agents (hooks, lifecycle)
     #[command(hide = true)]
     Agent {

@@ -70,6 +70,7 @@ fn main() -> Result<()> {
         Command::Start { resume, caffeinate } => cmd_start(resume.as_deref(), caffeinate)?,
         Command::Goto { id } => cmd_goto(&service, &id)?,
         Command::Send { id, message } => cmd_send(&service, &id, &message)?,
+        Command::StreamHooks { task } => cmd_stream_hooks(&paths, task.as_deref())?,
         Command::Skill { action } => cmd_skill(action, &service)?,
         Command::Project { action } => cmd_project(action, &service)?,
         Command::Agent { action } => match action {
@@ -383,6 +384,80 @@ fn cmd_complete(
     println!("Task {id} marked as {status} (exit code: {exit_code})");
 
     Ok(())
+}
+
+fn cmd_stream_hooks(paths: &Paths, task_filter: Option<&str>) -> Result<()> {
+    use std::io::{BufRead, Seek};
+
+    let log_path = paths.hooks_log_path();
+    if !log_path.exists() {
+        bail!(
+            "Hooks log not found at {}. Is the dashboard running?",
+            log_path.display()
+        );
+    }
+
+    let mut file = std::fs::File::open(&log_path).context("failed to open hooks log")?;
+    // Seek to end — only show new messages
+    file.seek(std::io::SeekFrom::End(0))?;
+
+    eprintln!(
+        "Streaming hook messages from {}{}",
+        log_path.display(),
+        task_filter
+            .map(|t| format!(" (filter: {t})"))
+            .unwrap_or_default()
+    );
+    eprintln!("Press Ctrl+C to stop.\n");
+
+    let mut reader = std::io::BufReader::new(file);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => {
+                // No new data — sleep briefly and retry
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Ok(_) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                // Parse to check task filter and colorize
+                if let Ok(entry) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    let task = entry["task"].as_str().unwrap_or("?");
+                    if let Some(filter) = task_filter
+                        && !task.to_lowercase().contains(&filter.to_lowercase())
+                    {
+                        continue;
+                    }
+                    let ts = entry["ts"].as_str().unwrap_or("");
+                    let msg_type = entry["type"].as_str().unwrap_or("");
+                    let cwd = entry["cwd"].as_str().unwrap_or("");
+                    print_hook_line(ts, msg_type, task, cwd);
+                } else {
+                    // Unparseable line — print raw
+                    println!("{trimmed}");
+                }
+            }
+            Err(e) => {
+                bail!("Error reading hooks log: {e}");
+            }
+        }
+    }
+}
+
+fn print_hook_line(ts: &str, msg_type: &str, task: &str, cwd: &str) {
+    // ANSI colors: gray=90, green=32, blue=34, yellow=33, red=31
+    let (color_code, label) = match msg_type {
+        "_idle" => ("90", "idle"),
+        "_active" => ("32", "active"),
+        "_resolved" => ("34", "resolved"),
+        "permission" => ("33", "permission"),
+        other => ("0", other),
+    };
+    println!("\x1b[2m{ts}\x1b[0m \x1b[{color_code}m{label:<10}\x1b[0m \x1b[1m{task}\x1b[0m  {cwd}");
 }
 
 fn cmd_skill(action: SkillAction, service: &TaskService<impl Runtime>) -> Result<()> {

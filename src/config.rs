@@ -36,6 +36,10 @@ impl Paths {
     pub fn pm_session_file(&self, project_id: &str) -> PathBuf {
         self.data_dir.join(format!("pm-session-{project_id}"))
     }
+
+    pub fn hooks_log_path(&self) -> PathBuf {
+        self.data_dir.join("hooks.log")
+    }
 }
 
 fn find_project_root() -> Result<PathBuf> {
