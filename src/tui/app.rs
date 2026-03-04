@@ -51,7 +51,9 @@ impl Segment {
 }
 
 fn paste_summary(content: &str) -> String {
-    let n = content.lines().count();
+    // Normalize \r\n and bare \r to \n, then count lines
+    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+    let n = normalized.lines().count().max(1);
     format!("[{n} lines pasted]")
 }
 
@@ -128,6 +130,8 @@ impl InputState {
     /// the two halves.  The cursor moves to the start of the second half so
     /// subsequent typing appears *after* the paste summary.
     pub fn set_paste(&mut self, text: String) {
+        // Normalize line endings: \r\n → \n, bare \r → \n
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
         let (before, after) = match &self.segments[self.cursor_seg] {
             Segment::Typed(chars) => (
                 chars[..self.cursor_off].to_vec(),
