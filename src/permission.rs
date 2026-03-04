@@ -80,17 +80,7 @@ pub fn parse_resolved_json(json: &str) -> Option<String> {
     None
 }
 
-/// Check if a message is an "active" notification from a Notification hook
-/// (permission_prompt or elicitation_dialog). Returns the CWD if so.
-pub fn parse_active_json(json: &str) -> Option<String> {
-    let parsed: Value = serde_json::from_str(json).ok()?;
-    if parsed.get("_active")?.as_bool()? {
-        return parsed.get("cwd").and_then(|c| c.as_str()).map(String::from);
-    }
-    None
-}
-
-/// Check if a message is an "idle" notification from a Notification hook.
+/// Check if a message is an "idle" notification from a Stop hook.
 /// Returns the CWD if so.
 pub fn parse_idle_json(json: &str) -> Option<String> {
     let parsed: Value = serde_json::from_str(json).ok()?;
@@ -558,37 +548,6 @@ mod tests {
     fn parse_resolved_json_returns_none_without_cwd() {
         let json = r#"{"_resolved": true}"#;
         assert_eq!(parse_resolved_json(json), None);
-    }
-
-    // -- parse_active_json tests --
-
-    #[test]
-    fn parse_active_json_returns_cwd_when_active() {
-        let json = r#"{"_active": true, "cwd": "/workspace"}"#;
-        assert_eq!(parse_active_json(json), Some("/workspace".to_string()));
-    }
-
-    #[test]
-    fn parse_active_json_returns_none_when_false() {
-        let json = r#"{"_active": false, "cwd": "/workspace"}"#;
-        assert_eq!(parse_active_json(json), None);
-    }
-
-    #[test]
-    fn parse_active_json_returns_none_for_invalid_json() {
-        assert_eq!(parse_active_json("garbage"), None);
-    }
-
-    #[test]
-    fn parse_active_json_returns_none_without_active_key() {
-        let json = r#"{"cwd": "/tmp"}"#;
-        assert_eq!(parse_active_json(json), None);
-    }
-
-    #[test]
-    fn parse_active_json_returns_none_without_cwd() {
-        let json = r#"{"_active": true}"#;
-        assert_eq!(parse_active_json(json), None);
     }
 
     // -- parse_idle_json tests --

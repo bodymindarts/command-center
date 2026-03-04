@@ -170,7 +170,6 @@ pub fn run<R: Runtime>(
     let (perm_tx, perm_rx) = mpsc::channel::<(UnixStream, PermissionRequest)>();
     let (resolved_tx, resolved_rx) = mpsc::channel::<String>(); // CWD of resolved tool
     let (idle_tx, idle_rx) = mpsc::channel::<String>(); // CWD of idle agent
-    let (active_tx, active_rx) = mpsc::channel::<String>(); // CWD of active agent
     let perm_cancel = Arc::clone(&cancel);
     let (listener, socket_path) = crate::permission::start_socket_listener()?;
     // SAFETY: called once at startup before spawning threads that read env vars.
@@ -206,8 +205,6 @@ pub fn run<R: Runtime>(
                             let _ = resolved_tx.send(cwd);
                         } else if let Some(cwd) = crate::permission::parse_idle_json(&buf) {
                             let _ = idle_tx.send(cwd);
-                        } else if let Some(cwd) = crate::permission::parse_active_json(&buf) {
-                            let _ = active_tx.send(cwd);
                         } else if let Some(req) = crate::permission::parse_request_json(&buf) {
                             let _ = perm_tx.send((stream, req));
                         }
@@ -245,7 +242,6 @@ pub fn run<R: Runtime>(
         &perm_rx,
         &resolved_rx,
         &idle_rx,
-        &active_rx,
         tg_tx.as_ref(),
         tg_rx.as_ref(),
     );
@@ -381,7 +377,6 @@ fn run_loop<R: Runtime>(
     perm_rx: &mpsc::Receiver<(UnixStream, PermissionRequest)>,
     resolved_rx: &mpsc::Receiver<String>,
     idle_rx: &mpsc::Receiver<String>,
-    active_rx: &mpsc::Receiver<String>,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
     tg_rx: Option<&mpsc::Receiver<telegram::TgInbound>>,
 ) -> Result<()> {
@@ -392,15 +387,16 @@ fn run_loop<R: Runtime>(
     // pending_permissions without an explicit dashboard resolution).
     let mut tg_perm_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
 
-    // Start with all running panes assumed idle. Notification hooks
-    // (idle_prompt → idle, permission_prompt/elicitation_dialog → active)
-    // and message-sent will flip state — no screen-capture polling needed.
-    app.idle_panes = app
+    // Seed idle pane detection before first render.
+    let running_pane_ids: Vec<String> = app
         .tasks
         .iter()
         .filter(|t| t.status.is_running())
         .filter_map(|t| t.tmux_pane.clone())
         .collect();
+    let pane_refs: Vec<&str> = running_pane_ids.iter().map(|s| s.as_str()).collect();
+    app.idle_panes = crate::runtime::idle_panes(&pane_refs);
+    let mut last_activity_check = Instant::now();
 
     loop {
         let any_pm_streaming = pm_contexts.values().any(|ctx| ctx.state.streaming);
@@ -1642,6 +1638,18 @@ fn run_loop<R: Runtime>(
             if let Ok(tasks) = service.list_visible(app.active_project_id.as_deref()) {
                 app.refresh_tasks(tasks);
             }
+            // Refresh idle pane detection every 2 seconds (single list-panes call).
+            if last_activity_check.elapsed() >= Duration::from_secs(2) {
+                let running_pane_ids: Vec<String> = app
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status.is_running())
+                    .filter_map(|t| t.tmux_pane.clone())
+                    .collect();
+                let pane_refs: Vec<&str> = running_pane_ids.iter().map(|s| s.as_str()).collect();
+                app.idle_panes = crate::runtime::idle_panes(&pane_refs);
+                last_activity_check = Instant::now();
+            }
             // Update global task→project mapping and drain stale permissions.
             // Uses the full (unscoped) active task list so permissions for tasks
             // in other projects aren't incorrectly drained or miscounted.
@@ -1709,16 +1717,10 @@ fn run_loop<R: Runtime>(
                 {
                     app.idle_panes.remove(pane_id);
                 }
-                // If this task had a pending permission, it was resolved in-pane.
-                // Clear it so the dashboard and Telegram stop showing it.
-                if let Some(perm) = app.take_permission(&name) {
-                    notify_tg_resolved(tg_tx, perm.perm_id, "✅ Resolved in pane");
-                    tg_perm_ids.remove(&perm.perm_id);
-                }
             }
         }
 
-        // Drain idle notifications from Notification hooks — immediately mark pane as idle.
+        // Drain idle notifications from Stop hooks — immediately mark pane as idle.
         while let Ok(cwd) = idle_rx.try_recv() {
             let cwd_path =
                 std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
@@ -1730,21 +1732,6 @@ fn run_loop<R: Runtime>(
                     .and_then(|t| t.tmux_pane.as_deref())
             {
                 app.idle_panes.insert(pane_id.to_string());
-            }
-        }
-
-        // Drain active notifications from Notification hooks — mark pane as not idle.
-        while let Ok(cwd) = active_rx.try_recv() {
-            let cwd_path =
-                std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
-            if let Some(task_name) = find_task_name_by_cwd(&app.global_task_work_dirs, &cwd_path)
-                && let Some(pane_id) = app
-                    .tasks
-                    .iter()
-                    .find(|t| t.name == task_name)
-                    .and_then(|t| t.tmux_pane.as_deref())
-            {
-                app.idle_panes.remove(pane_id);
             }
         }
 
