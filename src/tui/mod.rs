@@ -1709,6 +1709,12 @@ fn run_loop<R: Runtime>(
                 {
                     app.idle_panes.remove(pane_id);
                 }
+                // If this task had a pending permission, it was resolved in-pane.
+                // Clear it so the dashboard and Telegram stop showing it.
+                if let Some(perm) = app.take_permission(&name) {
+                    notify_tg_resolved(tg_tx, perm.perm_id, "✅ Resolved in pane");
+                    tg_perm_ids.remove(&perm.perm_id);
+                }
             }
         }
 
