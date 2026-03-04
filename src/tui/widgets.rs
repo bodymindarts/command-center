@@ -92,12 +92,10 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, pm: Option<
 }
 
 fn task_list_item(app: &App, task: &crate::task::Task) -> ListItem<'static> {
-    let is_active = app.is_task_active(task.tmux_pane.as_deref());
+    let is_active = task.status.is_running() && app.is_task_active(task.tmux_pane.as_deref());
     let status_char = match task.status {
         TaskStatus::Running if is_active => "●",
         TaskStatus::Running => "r",
-        TaskStatus::Completed if is_active => "●",
-        TaskStatus::Failed if is_active => "●",
         TaskStatus::Completed => "c",
         TaskStatus::Failed => "f",
         TaskStatus::Closed => "x",
