@@ -8,6 +8,7 @@
 //! If the env vars are absent the feature is completely dormant.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
@@ -72,6 +73,10 @@ fn run_bot(
     out_rx: mpsc::Receiver<TgOutbound>,
     in_tx: mpsc::Sender<TgInbound>,
 ) {
+    tg_log(&format!(
+        "Bot starting (chat_id=***, token_len={})",
+        token.len()
+    ));
     let agent = ureq::AgentBuilder::new()
         .timeout_read(Duration::from_secs(5))
         .timeout_write(Duration::from_secs(5))
@@ -199,13 +204,43 @@ fn poll_updates(
 // Telegram API helpers
 // ---------------------------------------------------------------------------
 
-/// Fire-and-forget JSON POST.  Returns the parsed response body on success.
+/// JSON POST with file logging for debugging.
 fn tg_post(agent: &ureq::Agent, url: &str, body: &Value) -> Option<Value> {
-    agent
-        .post(url)
-        .send_json(body)
-        .ok()
-        .and_then(|resp| resp.into_json::<Value>().ok())
+    let method = url.rsplit('/').next().unwrap_or("?");
+    tg_log(&format!(">>> {method}\n    body: {body}"));
+    match agent.post(url).send_json(body) {
+        Ok(resp) => match resp.into_json::<Value>() {
+            Ok(val) => {
+                tg_log(&format!("<<< OK: {val}"));
+                Some(val)
+            }
+            Err(e) => {
+                tg_log(&format!("<<< parse error: {e}"));
+                None
+            }
+        },
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            tg_log(&format!("<<< HTTP {code}: {body}"));
+            None
+        }
+        Err(e) => {
+            tg_log(&format!("<<< transport error: {e}"));
+            None
+        }
+    }
+}
+
+fn tg_log(msg: &str) {
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("data/telegram.log")
+    else {
+        return;
+    };
+    let ts = chrono::Local::now().format("%H:%M:%S%.3f");
+    let _ = writeln!(f, "[{ts}] {msg}");
 }
 
 // ---------------------------------------------------------------------------
