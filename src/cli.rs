@@ -98,6 +98,10 @@ pub enum Command {
         /// Resume an existing Claude session by ID
         #[arg(long)]
         resume: Option<String>,
+
+        /// Prevent system sleep while the dashboard is running (macOS only)
+        #[arg(long)]
+        caffeinate: bool,
     },
 
     /// Launch the ExO workspace (tmux + dashboard)
@@ -105,6 +109,10 @@ pub enum Command {
         /// Resume an existing Claude session by ID
         #[arg(long)]
         resume: Option<String>,
+
+        /// Prevent system sleep while the dashboard is running (macOS only)
+        #[arg(long)]
+        caffeinate: bool,
     },
 
     /// Send a message to a running agent's tmux pane

@@ -108,7 +108,31 @@ fn ensure_pm_context<R: Runtime>(
     }
 }
 
-pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -> Result<()> {
+/// Spawn `caffeinate -s` to prevent system sleep (macOS only).
+/// Returns the child handle if successful, or None with a warning on failure.
+fn spawn_caffeinate() -> Option<std::process::Child> {
+    match std::process::Command::new("caffeinate")
+        .arg("-s")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => Some(child),
+        Err(e) => {
+            eprintln!("warning: failed to spawn caffeinate: {e}");
+            None
+        }
+    }
+}
+
+pub fn run<R: Runtime>(
+    service: &TaskService<R>,
+    resume_session: Option<&str>,
+    caffeinate: bool,
+) -> Result<()> {
+    let mut caffeinate_child = if caffeinate { spawn_caffeinate() } else { None };
+
     terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
     crossterm::execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
@@ -233,6 +257,11 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
     }
     let _ = std::fs::remove_file(&socket_path);
     crate::permission::remove_socket_breadcrumb(service.project_root());
+
+    if let Some(ref mut child) = caffeinate_child {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 
     terminal::disable_raw_mode()?;
     crossterm::execute!(

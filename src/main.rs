@@ -28,7 +28,10 @@ fn main() -> Result<()> {
     let runtime = TmuxRuntime;
     let service = TaskService::new(&store, &runtime, &paths);
 
-    let command = cli.command.unwrap_or(Command::Dash { resume: None });
+    let command = cli.command.unwrap_or(Command::Dash {
+        resume: None,
+        caffeinate: false,
+    });
 
     match command {
         Command::Spawn {
@@ -63,8 +66,8 @@ fn main() -> Result<()> {
         Command::Close { id } => cmd_close(&service, &id)?,
         Command::Reopen { id } => cmd_reopen(&service, &id)?,
         Command::Delete { id } => cmd_delete(&service, &id)?,
-        Command::Dash { resume } => tui::run(&service, resume.as_deref())?,
-        Command::Start { resume } => cmd_start(resume.as_deref())?,
+        Command::Dash { resume, caffeinate } => tui::run(&service, resume.as_deref(), caffeinate)?,
+        Command::Start { resume, caffeinate } => cmd_start(resume.as_deref(), caffeinate)?,
         Command::Goto { id } => cmd_goto(&service, &id)?,
         Command::Send { id, message } => cmd_send(&service, &id, &message)?,
         Command::Skill { action } => cmd_skill(action, &service)?,
@@ -310,7 +313,7 @@ fn cmd_goto(service: &TaskService<impl Runtime>, id: &str) -> Result<()> {
     service.goto(id)
 }
 
-fn cmd_start(resume: Option<&str>) -> Result<()> {
+fn cmd_start(resume: Option<&str>, caffeinate: bool) -> Result<()> {
     let exe = std::env::current_exe()
         .context("failed to resolve current executable")?
         .display()
@@ -319,6 +322,9 @@ fn cmd_start(resume: Option<&str>) -> Result<()> {
     let mut dash_cmd = format!("{exe} dash");
     if let Some(sid) = resume {
         dash_cmd.push_str(&format!(" --resume {sid}"));
+    }
+    if caffeinate {
+        dash_cmd.push_str(" --caffeinate");
     }
 
     if std::env::var("TMUX").is_ok() {
