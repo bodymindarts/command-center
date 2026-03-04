@@ -7,3 +7,4 @@ data/
 .claude/perm-socket
 .bacon-locations
 TASK.md
+.env
