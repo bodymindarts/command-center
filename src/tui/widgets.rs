@@ -19,7 +19,7 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, pm: Option<
     let searching = matches!(app.focus, Focus::TaskSearch);
     let in_task_chat = !searching && app.show_detail && app.selected_task().is_some();
     let focused_perm_key = app.focused_perm_key();
-    let front_perm = app.peek_permission(&focused_perm_key);
+    let front_perm = app.permissions.peek(&focused_perm_key);
     let show_perm = in_task_chat && front_perm.is_some_and(|p| !p.is_askuser());
     let show_askuser = in_task_chat && front_perm.is_some_and(|p| p.is_askuser());
     let show_delete = matches!(app.focus, Focus::ConfirmDelete(_));
@@ -139,7 +139,7 @@ fn task_list_item(app: &App, task: &crate::task::Task) -> ListItem<'static> {
     ]);
 
     // Permission sub-line if this task has pending permissions
-    if let Some(queue) = app.pending_permissions.get(&task.name)
+    if let Some(queue) = app.permissions.get(&task.name)
         && let Some(front) = queue.front()
     {
         let extra = queue.len().saturating_sub(1);
@@ -159,7 +159,7 @@ fn task_list_item(app: &App, task: &crate::task::Task) -> ListItem<'static> {
     }
 
     // AskUser sub-line if the front permission for this task is an AskUser question (green)
-    if let Some(queue) = app.pending_permissions.get(&task.name)
+    if let Some(queue) = app.permissions.get(&task.name)
         && let Some(front) = queue.front()
         && front.is_askuser()
     {
@@ -578,11 +578,11 @@ fn render_chat_messages(
 
 fn render_permission_panel(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     let perm_key = app.focused_perm_key();
-    let Some(req) = app.peek_permission(&perm_key) else {
+    let Some(req) = app.permissions.peek(&perm_key) else {
         return;
     };
     let extra = app
-        .pending_permissions
+        .permissions
         .get(&perm_key)
         .map(|q| q.len().saturating_sub(1))
         .unwrap_or(0);
@@ -640,7 +640,7 @@ fn render_permission_panel(frame: &mut ratatui::Frame, app: &App, area: Rect) {
 
 fn render_askuser_panel(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     let perm_key = app.focused_perm_key();
-    let Some(perm) = app.peek_permission(&perm_key) else {
+    let Some(perm) = app.permissions.peek(&perm_key) else {
         return;
     };
     if !perm.is_askuser() {
@@ -648,7 +648,7 @@ fn render_askuser_panel(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     }
     let question = perm.askuser_question.as_deref().unwrap_or("?");
     let extra = app
-        .pending_permissions
+        .permissions
         .get(&perm_key)
         .map(|q| q.len().saturating_sub(1))
         .unwrap_or(0);
@@ -866,7 +866,7 @@ fn render_delete_project_panel(frame: &mut ratatui::Frame, app: &App, area: Rect
 }
 
 fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect, focused: bool) {
-    let front_input_perm = app.peek_permission(&app.focused_perm_key());
+    let front_input_perm = app.permissions.peek(&app.focused_perm_key());
     let focused_has_perms = app.show_detail && front_input_perm.is_some_and(|p| !p.is_askuser());
     let focused_has_askuser = app.show_detail && front_input_perm.is_some_and(|p| p.is_askuser());
     let border_color = if focused && focused_has_perms {
@@ -962,7 +962,7 @@ fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
         return;
     }
 
-    let front_p = app.peek_permission(&app.focused_perm_key());
+    let front_p = app.permissions.peek(&app.focused_perm_key());
     let has_perms = app.show_detail && front_p.is_some_and(|p| !p.is_askuser());
     let mut spans = match &app.focus {
         Focus::ProjectNameInput => vec![

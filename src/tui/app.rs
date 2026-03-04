@@ -1,10 +1,12 @@
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::os::unix::net::UnixStream;
+use std::collections::{HashMap, HashSet};
 
 use ratatui::widgets::ListState;
 
 use crate::primitives::{PaneId, ProjectId, ProjectName, TaskId, TaskName, WindowId};
 use crate::task::{Project, Task, TaskMessage};
+
+pub use super::input::InputState;
+pub use super::permissions::PermissionStore;
 
 pub enum Focus {
     TaskList,
@@ -20,25 +22,6 @@ pub enum Focus {
     ConfirmCloseProject,
 }
 
-pub struct ActivePermission {
-    pub perm_id: u64,
-    pub stream: UnixStream,
-    pub task_name: TaskName,
-    pub tool_name: String,
-    pub tool_input_summary: String,
-    pub permission_suggestions: Vec<serde_json::Value>,
-    /// AskUser question text (set when tool_name == "AskUserQuestion").
-    pub askuser_question: Option<String>,
-    /// AskUser options (label, description pairs).
-    pub askuser_options: Vec<(String, String)>,
-}
-
-impl ActivePermission {
-    pub fn is_askuser(&self) -> bool {
-        self.askuser_question.is_some()
-    }
-}
-
 /// Saved UI state for a project, restored on Ctrl+R.
 pub struct SavedProjectState {
     pub name: ProjectName,
@@ -47,8 +30,6 @@ pub struct SavedProjectState {
     pub selected_task_name: Option<TaskName>,
 }
 
-pub use super::input::InputState;
-
 pub struct App {
     pub tasks: Vec<Task>,
     pub list_state: ListState,
@@ -56,7 +37,7 @@ pub struct App {
     pub focus: Focus,
     pub input: InputState,
     pub show_detail: bool,
-    pub pending_permissions: HashMap<TaskName, VecDeque<ActivePermission>>,
+    pub permissions: PermissionStore,
     pub selected_messages: Vec<TaskMessage>,
     pub detail_scroll: u16,
     pub detail_live_output: Option<String>,
@@ -110,7 +91,7 @@ impl App {
             focus: Focus::ChatInput,
             input: InputState::new(),
             show_detail: false,
-            pending_permissions: HashMap::new(),
+            permissions: PermissionStore::new(),
             selected_messages: Vec::new(),
             detail_scroll: 0,
             detail_live_output: None,
@@ -192,124 +173,25 @@ impl App {
         }
     }
 
-    pub fn add_permission(&mut self, perm: ActivePermission) {
-        self.pending_permissions
-            .entry(perm.task_name.clone())
-            .or_default()
-            .push_back(perm);
-    }
-
-    pub fn take_permission(&mut self, name: &TaskName) -> Option<ActivePermission> {
-        let queue = self.pending_permissions.get_mut(name)?;
-        let perm = queue.pop_front();
-        if queue.is_empty() {
-            self.pending_permissions.remove(name);
-        }
-        perm
-    }
-
-    pub fn peek_permission(&self, name: &TaskName) -> Option<&ActivePermission> {
-        self.pending_permissions.get(name)?.front()
-    }
-
-    pub fn tasks_with_permissions(&self) -> Vec<TaskName> {
-        let mut names: Vec<TaskName> = self.pending_permissions.keys().cloned().collect();
-        names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-        names
-    }
-
     /// Count pending permissions only for tasks in the current project.
-    /// "exo" key belongs to the default (no-project) scope.
     pub fn current_project_perm_count(&self) -> usize {
-        let current_pid = self.active_project_id.as_ref();
-        self.pending_permissions
-            .iter()
-            .filter(|(task_name, _)| {
-                if task_name.as_str() == "exo" {
-                    current_pid.is_none()
-                } else {
-                    let task_pid = self
-                        .global_task_projects
-                        .get(*task_name)
-                        .and_then(|pid| pid.as_ref());
-                    task_pid == current_pid
-                }
-            })
-            .map(|(_, queue)| queue.len())
-            .sum()
+        self.permissions
+            .count_for_project(self.active_project_id.as_ref(), &self.global_task_projects)
     }
 
     /// Count pending permissions for tasks NOT in the current project.
-    /// Returns a vec of (project_name_or_default, count) for display.
-    /// Uses `global_task_projects` (updated every tick) so lookups work
-    /// even when `self.tasks` is scoped to a single project.
     pub fn other_project_perm_counts(&self) -> Vec<(String, usize)> {
-        let current_pid = self.active_project_id.as_ref();
-        let mut counts: std::collections::BTreeMap<String, usize> =
-            std::collections::BTreeMap::new();
-        for (task_name, queue) in &self.pending_permissions {
-            let task_pid = self
-                .global_task_projects
-                .get(task_name)
-                .and_then(|pid| pid.as_ref());
-            if task_pid != current_pid {
-                let label = if let Some(pid) = task_pid {
-                    self.projects
-                        .iter()
-                        .find(|p| p.id == *pid)
-                        .map(|p| p.name.as_str().to_string())
-                        .unwrap_or_else(|| "?".to_string())
-                } else {
-                    "default".to_string()
-                };
-                *counts.entry(label).or_default() += queue.len();
-            }
-        }
-        counts.into_iter().collect()
-    }
-
-    /// Remove and return all permissions for task names that don't correspond
-    /// to any globally running task. The "exo" key is always preserved.
-    /// `all_running_names` must contain names of ALL running tasks across all
-    /// projects, not just the currently displayed ones.
-    pub fn drain_stale_permissions(
-        &mut self,
-        all_running_names: &HashSet<TaskName>,
-    ) -> Vec<ActivePermission> {
-        let stale_keys: Vec<TaskName> = self
-            .pending_permissions
-            .keys()
-            .filter(|k| k.as_str() != "exo" && !all_running_names.contains(*k))
-            .cloned()
-            .collect();
-
-        let mut stale = Vec::new();
-        for key in stale_keys {
-            if let Some(queue) = self.pending_permissions.remove(&key) {
-                stale.extend(queue);
-            }
-        }
-        stale
+        self.permissions.other_project_counts(
+            self.active_project_id.as_ref(),
+            &self.global_task_projects,
+            &self.projects,
+        )
     }
 
     /// Count pending AskUser permissions in the current project.
     pub fn current_project_askuser_count(&self) -> usize {
-        let current_pid = self.active_project_id.as_ref();
-        self.pending_permissions
-            .iter()
-            .filter(|(task_name, _)| {
-                if task_name.as_str() == "exo" {
-                    current_pid.is_none()
-                } else {
-                    let task_pid = self
-                        .global_task_projects
-                        .get(*task_name)
-                        .and_then(|pid| pid.as_ref());
-                    task_pid == current_pid
-                }
-            })
-            .map(|(_, queue)| queue.iter().filter(|p| p.is_askuser()).count())
-            .sum()
+        self.permissions
+            .askuser_count_for_project(self.active_project_id.as_ref(), &self.global_task_projects)
     }
 
     fn current_chat_key(&self) -> String {
@@ -373,10 +255,13 @@ impl App {
     /// back to any task with pending permissions.
     pub fn active_permission_key(&self) -> Option<TaskName> {
         let focused = self.focused_perm_key();
-        if self.peek_permission(&focused).is_some() {
+        if self.permissions.peek(&focused).is_some() {
             return Some(focused);
         }
-        self.tasks_with_permissions().into_iter().next()
+        self.permissions
+            .task_names_with_pending()
+            .into_iter()
+            .next()
     }
 
     pub fn next_project(&mut self) {

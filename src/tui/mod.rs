@@ -2,6 +2,7 @@ mod app;
 mod chat;
 mod claude;
 mod input;
+mod permissions;
 mod telegram;
 mod widgets;
 
@@ -24,7 +25,8 @@ use crate::permission::PermissionRequest;
 use crate::primitives::{MessageRole, TaskName};
 use crate::runtime::Runtime;
 use crate::service::{PromptMode, SpawnRequest, TaskService, WorkDirMode};
-use app::{ActivePermission, App, Focus};
+use app::{App, Focus};
+use permissions::ActivePermission;
 
 const EXO_PERM_KEY: &str = "exo";
 
@@ -256,7 +258,7 @@ pub fn run<R: Runtime>(
     }
 
     // Deny all pending permissions on exit
-    for (_, mut queue) in app.pending_permissions.drain() {
+    for (_, mut queue) in app.permissions.drain_all() {
         for perm in queue.drain(..) {
             if let Some(tx) = tg_tx.as_ref() {
                 let _ = tx.send(telegram::TgOutbound::Resolved {
@@ -344,7 +346,7 @@ fn resolve_permission(
     allow: bool,
 ) -> Option<(UnixStream, bool, Vec<serde_json::Value>, u64)> {
     let perm_key = app.active_permission_key()?;
-    let perm = app.take_permission(&perm_key)?;
+    let perm = app.permissions.take(&perm_key)?;
     Some((
         perm.stream,
         allow,
@@ -597,7 +599,7 @@ fn run_loop<R: Runtime>(
                     } else if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('p')
                     {
-                        let names = app.tasks_with_permissions();
+                        let names = app.permissions.task_names_with_pending();
                         if !names.is_empty() {
                             app.save_current_input();
                             let current = app.focused_perm_key();
@@ -696,7 +698,7 @@ fn run_loop<R: Runtime>(
                     } else if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('y')
                         && app.show_detail
-                        && app.peek_permission(&app.focused_perm_key()).is_some()
+                        && app.permissions.peek(&app.focused_perm_key()).is_some()
                     {
                         if let Some((stream, allow, _suggestions, perm_id)) =
                             resolve_permission(app, true)
@@ -708,7 +710,7 @@ fn run_loop<R: Runtime>(
                     } else if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('t')
                         && app.show_detail
-                        && app.peek_permission(&app.focused_perm_key()).is_some()
+                        && app.permissions.peek(&app.focused_perm_key()).is_some()
                     {
                         if let Some((stream, allow, suggestions, perm_id)) =
                             resolve_permission(app, true)
@@ -720,7 +722,7 @@ fn run_loop<R: Runtime>(
                     } else if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('n')
                         && app.show_detail
-                        && app.peek_permission(&app.focused_perm_key()).is_some()
+                        && app.permissions.peek(&app.focused_perm_key()).is_some()
                     {
                         if let Some((stream, allow, _suggestions, perm_id)) =
                             resolve_permission(app, false)
@@ -733,7 +735,8 @@ fn run_loop<R: Runtime>(
                         && key.modifiers.is_empty()
                         && app.show_detail
                         && app
-                            .peek_permission(&app.focused_perm_key())
+                            .permissions
+                            .peek(&app.focused_perm_key())
                             .is_some_and(|p| p.is_askuser())
                     {
                         let digit = match key.code {
@@ -741,12 +744,12 @@ fn run_loop<R: Runtime>(
                             _ => 1,
                         };
                         let perm_key = app.focused_perm_key();
-                        if let Some(perm) = app.peek_permission(&perm_key) {
+                        if let Some(perm) = app.permissions.peek(&perm_key) {
                             let idx = digit - 1;
                             if idx < perm.askuser_options.len() {
                                 let label = perm.askuser_options[idx].0.clone();
                                 let perm_id = perm.perm_id;
-                                if let Some(perm) = app.take_permission(&perm_key) {
+                                if let Some(perm) = app.permissions.take(&perm_key) {
                                     let _ = write_response_with_message(perm.stream, true, &label);
                                     notify_tg_resolved(
                                         tg_tx,
@@ -1686,7 +1689,7 @@ fn run_loop<R: Runtime>(
                 .iter()
                 .filter_map(|t| t.work_dir.as_ref().map(|wd| (t.name.clone(), wd.clone())))
                 .collect();
-            for perm in app.drain_stale_permissions(&all_running_names) {
+            for perm in app.permissions.drain_stale(&all_running_names) {
                 notify_tg_resolved(tg_tx, perm.perm_id, "⚪ Expired (task ended)");
                 let _ = write_response_to_stream(perm.stream, false, None);
             }
@@ -1745,7 +1748,7 @@ fn run_loop<R: Runtime>(
                 // If the front pending permission for this task was approved
                 // in-pane (i.e. the agent resolved it without dashboard
                 // intervention), clear it and notify Telegram.
-                if let Some(perm) = app.take_permission(name) {
+                if let Some(perm) = app.permissions.take(name) {
                     let _ = write_response_to_stream(perm.stream, false, None);
                     if tg_perm_ids.remove(&perm.perm_id) {
                         notify_tg_resolved(tg_tx, perm.perm_id, "✅ Resolved in pane");
@@ -1826,7 +1829,7 @@ fn run_loop<R: Runtime>(
                 askuser_question,
                 askuser_options,
             };
-            app.add_permission(perm);
+            app.permissions.add(perm);
         }
 
         // Handle Telegram inbound messages (permissions + ExO chat).
@@ -1836,15 +1839,16 @@ fn run_loop<R: Runtime>(
                     telegram::TgInbound::PermissionDecision { perm_id, action } => {
                         // Find which task this perm_id belongs to.
                         let task_name = app
-                            .pending_permissions
+                            .permissions
                             .iter()
                             .find(|(_, queue)| queue.iter().any(|p| p.perm_id == perm_id))
                             .map(|(name, _)| name.clone());
                         if let Some(name) = task_name
                             && app
-                                .peek_permission(&name)
+                                .permissions
+                                .peek(&name)
                                 .is_some_and(|front| front.perm_id == perm_id)
-                            && let Some(perm) = app.take_permission(&name)
+                            && let Some(perm) = app.permissions.take(&name)
                         {
                             let (allow, suggestions) = match action {
                                 telegram::PermAction::Approve => (true, None),
@@ -1863,15 +1867,16 @@ fn run_loop<R: Runtime>(
                     telegram::TgInbound::QuestionAnswer { perm_id, answer } => {
                         // Find which task this perm_id belongs to.
                         let task_name = app
-                            .pending_permissions
+                            .permissions
                             .iter()
                             .find(|(_, queue)| queue.iter().any(|p| p.perm_id == perm_id))
                             .map(|(name, _)| name.clone());
                         if let Some(name) = task_name
                             && app
-                                .peek_permission(&name)
+                                .permissions
+                                .peek(&name)
                                 .is_some_and(|front| front.perm_id == perm_id)
-                            && let Some(perm) = app.take_permission(&name)
+                            && let Some(perm) = app.permissions.take(&name)
                         {
                             let _ = write_response_with_message(perm.stream, true, &answer);
                         }
@@ -1905,11 +1910,7 @@ fn run_loop<R: Runtime>(
         // Sending a duplicate Resolved is safe — the bot thread's msg_map
         // deduplicates via remove().
         if !tg_perm_ids.is_empty() {
-            let still_pending: std::collections::HashSet<u64> = app
-                .pending_permissions
-                .values()
-                .flat_map(|q| q.iter().map(|p| p.perm_id))
-                .collect();
+            let still_pending = app.permissions.all_perm_ids();
             let vanished: Vec<u64> = tg_perm_ids
                 .iter()
                 .filter(|id| !still_pending.contains(id))
