@@ -440,6 +440,9 @@ fn run_loop<R: Runtime>(
                                 app.save_project_state();
                                 if let Some(pid) = target_pid {
                                     // Switch to the target project
+                                    if let Ok(projects) = service.list_projects() {
+                                        app.projects = projects;
+                                    }
                                     let proj_name = app
                                         .projects
                                         .iter()
