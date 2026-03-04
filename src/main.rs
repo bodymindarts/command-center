@@ -145,18 +145,6 @@ fn cmd_spawn(service: &TaskService<impl Runtime>, opts: SpawnOpts) -> Result<()>
     Ok(())
 }
 
-fn format_time_ago(secs: i64) -> String {
-    if secs < 60 {
-        format!("{secs}s ago")
-    } else if secs < 3600 {
-        format!("{}m ago", secs / 60)
-    } else if secs < 86400 {
-        format!("{}h ago", secs / 3600)
-    } else {
-        format!("{}d ago", secs / 86400)
-    }
-}
-
 fn cmd_list(
     service: &TaskService<impl Runtime>,
     all: bool,
@@ -207,24 +195,27 @@ fn cmd_list(
     }
 
     let win_numbers = crate::runtime::tmux_window_numbers();
-    let pane_acts = crate::runtime::pane_activities();
+    let running_pane_ids: Vec<String> = tasks
+        .iter()
+        .filter(|t| t.status.is_running())
+        .filter_map(|t| t.tmux_pane.clone())
+        .collect();
+    let pane_refs: Vec<&str> = running_pane_ids.iter().map(|s| s.as_str()).collect();
+    let idle = crate::runtime::idle_panes(&pane_refs);
     let rows: Vec<Row> = tasks
         .iter()
         .map(|t| {
-            let activity = t
-                .tmux_pane
-                .as_deref()
-                .and_then(|pane| pane_acts.get(pane))
-                .map(|&ts| {
-                    let now_unix = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs() as i64;
-                    let ago = now_unix - ts;
-                    let label = if ago < 60 { "active" } else { "idle" };
-                    format!("{label} ({})", format_time_ago(ago))
-                })
-                .unwrap_or_else(|| "-".to_string());
+            let activity = if !t.status.is_running() {
+                "-".to_string()
+            } else if let Some(ref pane) = t.tmux_pane {
+                if idle.contains(pane.as_str()) {
+                    "idle".to_string()
+                } else {
+                    "active".to_string()
+                }
+            } else {
+                "-".to_string()
+            };
             Row {
                 win_num: t
                     .tmux_window

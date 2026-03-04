@@ -387,8 +387,16 @@ fn run_loop<R: Runtime>(
     // pending_permissions without an explicit dashboard resolution).
     let mut tg_perm_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
 
-    // Seed pane activity timestamps before first render.
-    app.pane_activities = crate::runtime::pane_activities();
+    // Seed idle pane detection before first render.
+    let running_pane_ids: Vec<String> = app
+        .tasks
+        .iter()
+        .filter(|t| t.status.is_running())
+        .filter_map(|t| t.tmux_pane.clone())
+        .collect();
+    let pane_refs: Vec<&str> = running_pane_ids.iter().map(|s| s.as_str()).collect();
+    app.idle_panes = crate::runtime::idle_panes(&pane_refs);
+    let mut last_activity_check = Instant::now();
 
     loop {
         let any_pm_streaming = pm_contexts.values().any(|ctx| ctx.state.streaming);
@@ -1303,11 +1311,14 @@ fn run_loop<R: Runtime>(
                                     KeyCode::Enter => {
                                         if !app.input.is_empty() {
                                             let msg = app.input.take();
-                                            if let Some(task) = app.selected_task()
-                                                && let Some(pane) = task.tmux_pane.as_deref()
-                                            {
+                                            let pane_id = app
+                                                .selected_task()
+                                                .and_then(|t| t.tmux_pane.clone());
+                                            if let Some(pane) = pane_id.as_deref() {
                                                 service.forward_literal(pane, &msg);
                                                 service.forward_key(pane, "Enter");
+                                                // Message sent → agent will start working.
+                                                app.idle_panes.remove(pane);
                                             }
                                         }
                                     }
@@ -1598,8 +1609,18 @@ fn run_loop<R: Runtime>(
             if let Ok(tasks) = service.list_visible(app.active_project_id.as_deref()) {
                 app.refresh_tasks(tasks);
             }
-            // Refresh activity status from tmux pane timestamps.
-            app.pane_activities = crate::runtime::pane_activities();
+            // Refresh idle pane detection every 2 seconds (single list-panes call).
+            if last_activity_check.elapsed() >= Duration::from_secs(2) {
+                let running_pane_ids: Vec<String> = app
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status.is_running())
+                    .filter_map(|t| t.tmux_pane.clone())
+                    .collect();
+                let pane_refs: Vec<&str> = running_pane_ids.iter().map(|s| s.as_str()).collect();
+                app.idle_panes = crate::runtime::idle_panes(&pane_refs);
+                last_activity_check = Instant::now();
+            }
             // Update global task→project mapping and drain stale permissions.
             // Uses the full (unscoped) active task list so permissions for tasks
             // in other projects aren't incorrectly drained or miscounted.
@@ -1655,6 +1676,15 @@ fn run_loop<R: Runtime>(
                 std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
             let task_name = find_task_name_by_cwd(&app.global_task_work_dirs, &resolved_cwd);
             if let Some(name) = task_name {
+                // Tool executed in-pane → task is active.
+                if let Some(pane_id) = app
+                    .tasks
+                    .iter()
+                    .find(|t| t.name == name)
+                    .and_then(|t| t.tmux_pane.as_deref())
+                {
+                    app.idle_panes.remove(pane_id);
+                }
                 // Drain ALL pending permissions for this task — respond with allow
                 // so the PermissionRequest hook processes can exit cleanly.
                 while let Some(perm) = app.take_permission(&name) {
@@ -1664,8 +1694,20 @@ fn run_loop<R: Runtime>(
             }
         }
 
-        // Drain idle notifications from Stop hooks (no longer used for status).
-        while idle_rx.try_recv().is_ok() {}
+        // Drain idle notifications from Stop hooks — immediately mark pane as idle.
+        while let Ok(cwd) = idle_rx.try_recv() {
+            let cwd_path =
+                std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
+            if let Some(task_name) = find_task_name_by_cwd(&app.global_task_work_dirs, &cwd_path)
+                && let Some(pane_id) = app
+                    .tasks
+                    .iter()
+                    .find(|t| t.name == task_name)
+                    .and_then(|t| t.tmux_pane.as_deref())
+            {
+                app.idle_panes.insert(pane_id.to_string());
+            }
+        }
 
         // Drain permission requests from socket — non-blocking, no focus change
         while let Ok((stream, req)) = perm_rx.try_recv() {
@@ -1673,6 +1715,15 @@ fn run_loop<R: Runtime>(
                 .unwrap_or_else(|_| std::path::PathBuf::from(&req.cwd));
             let task_name = find_task_name_by_cwd(&app.global_task_work_dirs, &req_cwd)
                 .unwrap_or_else(|| EXO_PERM_KEY.to_string());
+            // Permission request → task is actively working.
+            if let Some(pane_id) = app
+                .tasks
+                .iter()
+                .find(|t| t.name == task_name)
+                .and_then(|t| t.tmux_pane.as_deref())
+            {
+                app.idle_panes.remove(pane_id);
+            }
             perm_id_counter += 1;
             let perm_id = perm_id_counter;
             if let Some(tx) = tg_tx {

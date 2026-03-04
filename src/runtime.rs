@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -543,19 +543,24 @@ pub fn tmux_window_numbers() -> HashMap<String, String> {
     map
 }
 
-/// Returns a mapping from tmux pane ID (e.g. "%5") to its last activity unix timestamp.
-pub fn pane_activities() -> HashMap<String, i64> {
-    let mut map = HashMap::new();
-    if let Ok(output) = tmux_cmd(&["list-panes", "-s", "-F", "#{pane_id} #{pane_activity}"]) {
-        for line in output.lines() {
-            if let Some((id, ts_str)) = line.split_once(' ')
-                && let Ok(ts) = ts_str.parse::<i64>()
-            {
-                map.insert(id.to_string(), ts);
+/// Returns the set of pane IDs that appear idle by inspecting the Claude Code UI.
+/// A pane is idle when its last non-empty line does NOT contain "esc" (case-insensitive),
+/// since Claude Code shows "esc to interrupt" / "Esc to cancel" while actively working.
+pub fn idle_panes(pane_ids: &[&str]) -> HashSet<String> {
+    let mut set = HashSet::new();
+    for &pane_id in pane_ids {
+        if let Ok(output) = tmux_cmd(&["capture-pane", "-p", "-t", pane_id]) {
+            let last_line = output
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("");
+            if !last_line.to_ascii_lowercase().contains("esc") {
+                set.insert(pane_id.to_string());
             }
         }
     }
-    map
+    set
 }
 
 /// Free function for workspace bootstrapping (cmd_start), not a task operation.

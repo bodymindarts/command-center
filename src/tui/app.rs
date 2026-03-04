@@ -312,9 +312,8 @@ pub struct App {
     pub chat_buffers: HashMap<String, String>,
     pub chat_scroll: u16,
     pub chat_viewport_height: u16,
-    /// Tmux pane activity timestamps (unix epoch), refreshed every tick.
-    /// Used to determine active/idle status.
-    pub pane_activities: HashMap<String, i64>,
+    /// Pane IDs that appear idle (shell prompt visible), refreshed periodically.
+    pub idle_panes: HashSet<String>,
     /// Transient error message shown in the prompt bar. Cleared on next keypress.
     pub status_error: Option<String>,
     /// Currently active project name (for display). None = default (ExO).
@@ -367,7 +366,7 @@ impl App {
             chat_buffers: HashMap::new(),
             chat_scroll: 0,
             chat_viewport_height: 0,
-            pane_activities: HashMap::new(),
+            idle_panes: HashSet::new(),
             status_error: None,
             active_project: None,
             active_project_id: None,
@@ -441,18 +440,12 @@ impl App {
         }
     }
 
-    /// Returns true if the task's tmux pane had activity within the last 60 seconds.
+    /// Returns true if the task's tmux pane is NOT idle (prompt not visible).
     pub fn is_task_active(&self, pane_id: Option<&str>) -> bool {
         let Some(pane_id) = pane_id else {
             return false;
         };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-        self.pane_activities
-            .get(pane_id)
-            .is_some_and(|&ts| (now - ts) < 60)
+        !self.idle_panes.contains(pane_id)
     }
 
     pub fn add_permission(&mut self, perm: ActivePermission) {
