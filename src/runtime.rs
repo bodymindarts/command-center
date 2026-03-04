@@ -360,6 +360,9 @@ impl Runtime for TmuxRuntime {
 
     fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> Result<()> {
         self.tmux_cmd(&["send-keys", "-t", pane_id, "-l", message])?;
+        // Small delay so Claude Code finishes processing pasted text
+        // before the Enter key arrives to submit it.
+        std::thread::sleep(std::time::Duration::from_millis(100));
         self.tmux_cmd(&["send-keys", "-t", pane_id, "Enter"])?;
         Ok(())
     }
