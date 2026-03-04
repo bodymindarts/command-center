@@ -142,6 +142,18 @@ fn cmd_spawn(service: &TaskService<impl Runtime>, opts: SpawnOpts) -> Result<()>
     Ok(())
 }
 
+fn format_time_ago(secs: i64) -> String {
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
+    }
+}
+
 fn cmd_list(
     service: &TaskService<impl Runtime>,
     all: bool,
@@ -179,6 +191,8 @@ fn cmd_list(
         skill: String,
         #[tabled(rename = "Status")]
         status: String,
+        #[tabled(rename = "Activity")]
+        activity: String,
         #[tabled(rename = "Pane")]
         pane: String,
         #[tabled(rename = "Window")]
@@ -190,26 +204,39 @@ fn cmd_list(
     }
 
     let win_numbers = crate::runtime::tmux_window_numbers();
+    let msg_times = service.last_message_times().unwrap_or_default();
+    let now = chrono::Utc::now();
     let rows: Vec<Row> = tasks
         .iter()
-        .map(|t| Row {
-            win_num: t
-                .tmux_window
-                .as_deref()
-                .and_then(|w| win_numbers.get(w))
-                .cloned()
-                .unwrap_or_else(|| "-".to_string()),
-            id: t.id.short().to_string(),
-            name: t.name.clone(),
-            skill: t.skill_name.clone(),
-            status: t.status.to_string(),
-            pane: t.tmux_pane.clone().unwrap_or_else(|| "-".to_string()),
-            window: t.tmux_window.clone().unwrap_or_default(),
-            started: t.started_at.format("%H:%M:%S").to_string(),
-            exit_code: t
-                .exit_code
-                .map(|c: i32| c.to_string())
-                .unwrap_or_else(|| "-".to_string()),
+        .map(|t| {
+            let activity = msg_times
+                .get(t.id.as_str())
+                .map(|ts| {
+                    let ago = (now - *ts).num_seconds();
+                    let label = if ago < 60 { "active" } else { "idle" };
+                    format!("{label} ({})", format_time_ago(ago))
+                })
+                .unwrap_or_else(|| "-".to_string());
+            Row {
+                win_num: t
+                    .tmux_window
+                    .as_deref()
+                    .and_then(|w| win_numbers.get(w))
+                    .cloned()
+                    .unwrap_or_else(|| "-".to_string()),
+                id: t.id.short().to_string(),
+                name: t.name.clone(),
+                skill: t.skill_name.clone(),
+                status: t.status.to_string(),
+                activity,
+                pane: t.tmux_pane.clone().unwrap_or_else(|| "-".to_string()),
+                window: t.tmux_window.clone().unwrap_or_default(),
+                started: t.started_at.format("%H:%M:%S").to_string(),
+                exit_code: t
+                    .exit_code
+                    .map(|c: i32| c.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+            }
         })
         .collect();
 

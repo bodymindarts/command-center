@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Result, bail};
+use chrono::{DateTime, Utc};
 
 use crate::config::Paths;
 use crate::primitives::{MessageRole, TaskId};
@@ -390,6 +391,10 @@ impl<'a, R: Runtime> TaskService<'a, R> {
 
     pub fn capture_pane(&self, pane_id: &str) -> Option<String> {
         self.runtime.capture_pane_output(pane_id).ok()
+    }
+
+    pub fn last_message_times(&self) -> Result<HashMap<String, DateTime<Utc>>> {
+        self.store.last_message_times()
     }
 
     pub fn insert_exo_message(&self, role: MessageRole, content: &str) -> Result<()> {

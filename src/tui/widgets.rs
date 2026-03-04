@@ -77,24 +77,24 @@ pub fn ui(frame: &mut ratatui::Frame, app: &mut App, exo: &ExoState, pm: Option<
 }
 
 fn task_list_item(app: &App, task: &crate::task::Task) -> ListItem<'static> {
-    let is_fresh = app.fresh_tasks.contains(task.id.as_str());
+    let is_active = app.is_task_active(task.id.as_str());
     let status_char = match task.status {
-        TaskStatus::Running if is_fresh => "●",
+        TaskStatus::Running if is_active => "●",
         TaskStatus::Running => "r",
-        TaskStatus::Completed if is_fresh => "●",
-        TaskStatus::Failed if is_fresh => "●",
+        TaskStatus::Completed if is_active => "●",
+        TaskStatus::Failed if is_active => "●",
         TaskStatus::Completed => "c",
         TaskStatus::Failed => "f",
         TaskStatus::Closed => "x",
     };
     let is_running = task.status.is_running();
     let color = status_color(&task.status);
-    let dim = if is_running || is_fresh {
+    let dim = if is_running || is_active {
         Modifier::empty()
     } else {
         Modifier::DIM
     };
-    let fresh_mod = if is_fresh {
+    let fresh_mod = if is_active {
         Modifier::BOLD
     } else {
         Modifier::empty()

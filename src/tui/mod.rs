@@ -307,27 +307,9 @@ fn run_loop<R: Runtime>(
     let mut last_tick = Instant::now();
     let mut perm_id_counter: u64 = 0;
 
-    // Before first render, assume all running agents are idle, then
-    // remove any that are actually active (no `❯` prompt).
-    // After startup, idle/resolved hooks handle this.
-    if let Ok(tasks) = service.list_active() {
-        for task in &tasks {
-            if task.status.is_running() {
-                app.fresh_tasks.insert(task.id.as_str().to_string());
-                if let Some(ref pane) = task.tmux_pane
-                    && let Some(output) = service.capture_pane(pane)
-                {
-                    let is_idle = output
-                        .lines()
-                        .rev()
-                        .take(5)
-                        .any(|l| l.trim().trim_end_matches('\u{a0}') == "❯");
-                    if !is_idle {
-                        app.fresh_tasks.remove(task.id.as_str());
-                    }
-                }
-            }
-        }
+    // Seed last_message_times from the DB before first render.
+    if let Ok(times) = service.last_message_times() {
+        app.last_message_times = times;
     }
 
     loop {
@@ -1246,10 +1228,8 @@ fn run_loop<R: Runtime>(
                                             if let Some(task) = app.selected_task()
                                                 && let Some(pane) = task.tmux_pane.as_deref()
                                             {
-                                                let id = task.id.as_str().to_string();
                                                 service.forward_literal(pane, &msg);
                                                 service.forward_key(pane, "Enter");
-                                                app.acknowledge_fresh(&id);
                                             }
                                         }
                                     }
@@ -1540,6 +1520,10 @@ fn run_loop<R: Runtime>(
             if let Ok(tasks) = service.list_visible(app.active_project_id.as_deref()) {
                 app.refresh_tasks(tasks);
             }
+            // Refresh activity status from DB message timestamps.
+            if let Ok(times) = service.last_message_times() {
+                app.last_message_times = times;
+            }
             // Update global task→project mapping and drain stale permissions.
             // Uses the full (unscoped) active task list so permissions for tasks
             // in other projects aren't incorrectly drained or miscounted.
@@ -1601,27 +1585,11 @@ fn run_loop<R: Runtime>(
                     notify_tg_resolved(tg_tx, perm.perm_id, "✅ Resolved (tool executed)");
                     let _ = write_response_to_stream(perm.stream, true, None);
                 }
-                // Agent is actively working — clear idle indicator
-                if let Some(task) = app.tasks.iter().find(|t| t.name == name) {
-                    app.fresh_tasks.remove(task.id.as_str());
-                }
             }
         }
 
-        // Handle idle notifications from Stop hooks.
-        // Mark the matching task as fresh so the ● indicator appears.
-        while let Ok(cwd) = idle_rx.try_recv() {
-            let idle_cwd =
-                std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
-            if let Some(name) = find_task_name_by_cwd(&app.global_task_work_dirs, &idle_cwd) {
-                // Look up the task ID from the global map's matching name.
-                // Check project-scoped tasks first, then fall back to all_active
-                // data stored in global_task_projects.
-                if let Some(task) = app.tasks.iter().find(|t| t.name == name) {
-                    app.fresh_tasks.insert(task.id.as_str().to_string());
-                }
-            }
-        }
+        // Drain idle notifications from Stop hooks (no longer used for status).
+        while idle_rx.try_recv().is_ok() {}
 
         // Drain permission requests from socket — non-blocking, no focus change
         while let Ok((stream, req)) = perm_rx.try_recv() {
