@@ -1471,19 +1471,21 @@ fn run_loop<R: Runtime>(
                 let _ = write_response_to_stream(perm.stream, false, None);
             }
             app.window_numbers = crate::runtime::tmux_window_numbers();
-            // On first tick, detect idle agents by checking pane output for
-            // Claude's `❯` prompt. After startup, idle hooks handle this.
+            // On first tick, assume all running agents are idle, then
+            // remove any that are actually active (no `❯` prompt).
+            // After startup, idle/resolved hooks handle this.
             if !startup_idle_checked {
                 startup_idle_checked = true;
                 for task in &all_active {
-                    if task.status.is_running()
-                        && !app.fresh_tasks.contains(task.id.as_str())
-                        && let Some(ref pane) = task.tmux_pane
-                        && let Some(output) = service.capture_pane(pane)
-                    {
-                        let is_idle = output.lines().rev().take(5).any(|l| l.trim() == "❯");
-                        if is_idle {
-                            app.fresh_tasks.insert(task.id.as_str().to_string());
+                    if task.status.is_running() {
+                        app.fresh_tasks.insert(task.id.as_str().to_string());
+                        if let Some(ref pane) = task.tmux_pane
+                            && let Some(output) = service.capture_pane(pane)
+                        {
+                            let is_idle = output.lines().rev().take(5).any(|l| l.trim() == "❯");
+                            if !is_idle {
+                                app.fresh_tasks.remove(task.id.as_str());
+                            }
                         }
                     }
                 }
