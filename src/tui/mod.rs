@@ -274,7 +274,11 @@ fn run_loop<R: Runtime>(
                 if let Some(ref pane) = task.tmux_pane
                     && let Some(output) = service.capture_pane(pane)
                 {
-                    let is_idle = output.lines().rev().take(5).any(|l| l.trim() == "❯");
+                    let is_idle = output
+                        .lines()
+                        .rev()
+                        .take(5)
+                        .any(|l| l.trim().trim_end_matches('\u{a0}') == "❯");
                     if !is_idle {
                         app.fresh_tasks.remove(task.id.as_str());
                     }
