@@ -306,6 +306,10 @@ fn run_loop<R: Runtime>(
 ) -> Result<()> {
     let mut last_tick = Instant::now();
     let mut perm_id_counter: u64 = 0;
+    // Perm IDs that were sent to Telegram and are still pending.
+    // Used to detect permissions resolved in-pane (disappeared from
+    // pending_permissions without an explicit dashboard resolution).
+    let mut tg_perm_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
 
     // Seed last_message_times from the DB before first render.
     if let Ok(times) = service.last_message_times() {
@@ -1606,6 +1610,7 @@ fn run_loop<R: Runtime>(
                     tool_name: req.tool_name.clone(),
                     tool_input_summary: req.tool_input_summary.clone(),
                 });
+                tg_perm_ids.insert(perm_id);
             }
             let perm = ActivePermission {
                 perm_id,
@@ -1669,6 +1674,28 @@ fn run_loop<R: Runtime>(
                         exo_session.send_message(&text, exo.session_id.as_deref());
                     }
                 }
+            }
+        }
+
+        // Detect permissions that disappeared from pending_permissions
+        // without an explicit dashboard/Telegram resolution.  This catches
+        // in-pane approvals where the PostToolUse hook didn't fire.
+        // Sending a duplicate Resolved is safe — the bot thread's msg_map
+        // deduplicates via remove().
+        if !tg_perm_ids.is_empty() {
+            let still_pending: std::collections::HashSet<u64> = app
+                .pending_permissions
+                .values()
+                .flat_map(|q| q.iter().map(|p| p.perm_id))
+                .collect();
+            let vanished: Vec<u64> = tg_perm_ids
+                .iter()
+                .filter(|id| !still_pending.contains(id))
+                .copied()
+                .collect();
+            for id in &vanished {
+                notify_tg_resolved(tg_tx, *id, "✅ Resolved in pane");
+                tg_perm_ids.remove(id);
             }
         }
 
