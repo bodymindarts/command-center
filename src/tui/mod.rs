@@ -352,6 +352,10 @@ fn run_loop<R: Runtime>(
                     if exo.streaming {
                         exo.append_text(&text);
                         app.chat_scroll = 0;
+                        if let Some(tx) = tg_tx {
+                            let _ =
+                                tx.send(telegram::TgOutbound::ExoTextDelta { text: text.clone() });
+                        }
                     }
                 }
                 ExoEvent::ToolStart(name) => {
@@ -372,6 +376,9 @@ fn run_loop<R: Runtime>(
                     {
                         let _ =
                             service.insert_exo_message(MessageRole::Assistant, &msg.text_content());
+                    }
+                    if let Some(tx) = tg_tx {
+                        let _ = tx.send(telegram::TgOutbound::ExoTurnDone);
                     }
                 }
                 ExoEvent::ProcessExited => {
@@ -1643,33 +1650,56 @@ fn run_loop<R: Runtime>(
             app.add_permission(perm);
         }
 
-        // Handle Telegram callback decisions (remote approve/deny).
+        // Handle Telegram inbound messages (permissions + ExO chat).
         if let Some(rx) = tg_rx {
-            while let Ok(telegram::TgInbound::PermissionDecision { perm_id, action }) =
-                rx.try_recv()
-            {
-                // Find which task this perm_id belongs to.
-                let task_name = app
-                    .pending_permissions
-                    .iter()
-                    .find(|(_, queue)| queue.iter().any(|p| p.perm_id == perm_id))
-                    .map(|(name, _)| name.clone());
-                if let Some(name) = task_name
-                    // Only resolve if this perm_id is at the front of the queue
-                    // (same FIFO contract as the local Ctrl+Y/N flow).
-                    && app
-                        .peek_permission(&name)
-                        .is_some_and(|front| front.perm_id == perm_id)
-                    && let Some(perm) = app.take_permission(&name)
-                {
-                    let (allow, suggestions) = match action {
-                        telegram::PermAction::Approve => (true, None),
-                        telegram::PermAction::Trust => {
-                            (true, Some(perm.permission_suggestions.clone()))
+            while let Ok(tg_msg) = rx.try_recv() {
+                match tg_msg {
+                    telegram::TgInbound::PermissionDecision { perm_id, action } => {
+                        // Find which task this perm_id belongs to.
+                        let task_name = app
+                            .pending_permissions
+                            .iter()
+                            .find(|(_, queue)| queue.iter().any(|p| p.perm_id == perm_id))
+                            .map(|(name, _)| name.clone());
+                        if let Some(name) = task_name
+                            && app
+                                .peek_permission(&name)
+                                .is_some_and(|front| front.perm_id == perm_id)
+                            && let Some(perm) = app.take_permission(&name)
+                        {
+                            let (allow, suggestions) = match action {
+                                telegram::PermAction::Approve => (true, None),
+                                telegram::PermAction::Trust => {
+                                    (true, Some(perm.permission_suggestions.clone()))
+                                }
+                                telegram::PermAction::Deny => (false, None),
+                            };
+                            let _ = write_response_to_stream(
+                                perm.stream,
+                                allow,
+                                suggestions.as_deref(),
+                            );
                         }
-                        telegram::PermAction::Deny => (false, None),
-                    };
-                    let _ = write_response_to_stream(perm.stream, allow, suggestions.as_deref());
+                    }
+                    telegram::TgInbound::ExoMessage { text } => {
+                        // Same flow as Enter-key ExO chat submission.
+                        app.chat_scroll = 0;
+                        if exo.streaming {
+                            exo.finish_streaming();
+                            if let Some(msg) = exo.messages.last()
+                                && matches!(msg.role, MessageRole::Assistant)
+                                && msg.has_text()
+                            {
+                                let _ = service.insert_exo_message(
+                                    MessageRole::Assistant,
+                                    &msg.text_content(),
+                                );
+                            }
+                        }
+                        let _ = service.insert_exo_message(MessageRole::User, &text);
+                        exo.add_user_message(text.clone());
+                        exo_session.send_message(&text, exo.session_id.as_deref());
+                    }
                 }
             }
         }

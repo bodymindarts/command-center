@@ -31,6 +31,10 @@ pub enum TgOutbound {
     /// A permission was resolved; edit the Telegram message to reflect the
     /// outcome (e.g. "Approved locally", "Denied via Telegram", …).
     Resolved { perm_id: u64, outcome: String },
+    /// Stream an ExO response chunk (accumulate in the bot thread).
+    ExoTextDelta { text: String },
+    /// ExO finished responding — send the accumulated message.
+    ExoTurnDone,
 }
 
 /// How the user responded to a permission request via Telegram.
@@ -45,6 +49,8 @@ pub enum PermAction {
 pub enum TgInbound {
     /// The user tapped an inline button in Telegram.
     PermissionDecision { perm_id: u64, action: PermAction },
+    /// The user sent a text message in Telegram (route to ExO).
+    ExoMessage { text: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -94,11 +100,14 @@ fn run_bot(
     // perm_id → Telegram message_id so we can edit messages later.
     let mut msg_map: HashMap<u64, i64> = HashMap::new();
 
+    // Buffer for accumulating streamed ExO response text.
+    let mut exo_buf = String::new();
+
     while !cancel.load(Ordering::Relaxed) {
         // 1. Drain outbound messages from the TUI (non-blocking).
-        drain_outbound(&agent, &base, chat_id, &out_rx, &mut msg_map);
+        drain_outbound(&agent, &base, chat_id, &out_rx, &mut msg_map, &mut exo_buf);
 
-        // 2. Long-poll Telegram for callback queries.
+        // 2. Long-poll Telegram for updates.
         poll_updates(&agent, &base, chat_id, &mut offset, &in_tx, &mut msg_map);
     }
 }
@@ -110,6 +119,7 @@ fn drain_outbound(
     chat_id: &str,
     out_rx: &mpsc::Receiver<TgOutbound>,
     msg_map: &mut HashMap<u64, i64>,
+    exo_buf: &mut String,
 ) {
     while let Ok(msg) = out_rx.try_recv() {
         match msg {
@@ -149,6 +159,19 @@ fn drain_outbound(
                     tg_post(agent, &format!("{base}/editMessageText"), &body);
                 }
             }
+            TgOutbound::ExoTextDelta { text } => {
+                exo_buf.push_str(&text);
+            }
+            TgOutbound::ExoTurnDone => {
+                if !exo_buf.is_empty() {
+                    let body = serde_json::json!({
+                        "chat_id": chat_id,
+                        "text": exo_buf.as_str(),
+                    });
+                    tg_post(agent, &format!("{base}/sendMessage"), &body);
+                    exo_buf.clear();
+                }
+            }
         }
     }
 }
@@ -165,7 +188,7 @@ fn poll_updates(
     let body = serde_json::json!({
         "offset": *offset,
         "timeout": 2,
-        "allowed_updates": ["callback_query"],
+        "allowed_updates": ["callback_query", "message"],
     });
     let Some(resp) = tg_post(agent, &format!("{base}/getUpdates"), &body) else {
         return;
@@ -177,34 +200,46 @@ fn poll_updates(
         if let Some(uid) = update["update_id"].as_i64() {
             *offset = uid + 1;
         }
-        let Some(cb) = update.get("callback_query") else {
-            continue;
-        };
-        // Answer the callback query to dismiss Telegram's loading spinner.
-        if let Some(cb_id) = cb["id"].as_str() {
-            let answer = serde_json::json!({"callback_query_id": cb_id});
-            tg_post(agent, &format!("{base}/answerCallbackQuery"), &answer);
-        }
-        // Parse the decision and forward to the TUI.
-        if let Some(data) = cb["data"].as_str()
-            && let Some((perm_id, action)) = parse_callback(data)
-        {
-            let label = match &action {
-                PermAction::Approve => "✅ <b>Approved</b> via Telegram",
-                PermAction::Trust => "🔓 <b>Trusted</b> via Telegram",
-                PermAction::Deny => "❌ <b>Denied</b> via Telegram",
-            };
-            let _ = in_tx.send(TgInbound::PermissionDecision { perm_id, action });
-            // Edit the message to show the result immediately.
-            if let Some(msg_id) = msg_map.remove(&perm_id) {
-                let body = serde_json::json!({
-                    "chat_id": chat_id,
-                    "message_id": msg_id,
-                    "text": label,
-                    "parse_mode": "HTML",
-                });
-                tg_post(agent, &format!("{base}/editMessageText"), &body);
+        // Handle callback queries (permission buttons).
+        if let Some(cb) = update.get("callback_query") {
+            // Answer the callback query to dismiss Telegram's loading spinner.
+            if let Some(cb_id) = cb["id"].as_str() {
+                let answer = serde_json::json!({"callback_query_id": cb_id});
+                tg_post(agent, &format!("{base}/answerCallbackQuery"), &answer);
             }
+            // Parse the decision and forward to the TUI.
+            if let Some(data) = cb["data"].as_str()
+                && let Some((perm_id, action)) = parse_callback(data)
+            {
+                let label = match &action {
+                    PermAction::Approve => "✅ <b>Approved</b> via Telegram",
+                    PermAction::Trust => "🔓 <b>Trusted</b> via Telegram",
+                    PermAction::Deny => "❌ <b>Denied</b> via Telegram",
+                };
+                let _ = in_tx.send(TgInbound::PermissionDecision { perm_id, action });
+                // Edit the message to show the result immediately.
+                if let Some(msg_id) = msg_map.remove(&perm_id) {
+                    let body = serde_json::json!({
+                        "chat_id": chat_id,
+                        "message_id": msg_id,
+                        "text": label,
+                        "parse_mode": "HTML",
+                    });
+                    tg_post(agent, &format!("{base}/editMessageText"), &body);
+                }
+            }
+        }
+
+        // Handle regular text messages → route to ExO.
+        if let Some(msg) = update.get("message")
+            && let Some(msg_chat_id) = msg["chat"]["id"].as_i64()
+            && msg_chat_id.to_string() == chat_id
+            && let Some(text) = msg["text"].as_str()
+        {
+            tg_log(&format!("Incoming message for ExO: {text}"));
+            let _ = in_tx.send(TgInbound::ExoMessage {
+                text: text.to_string(),
+            });
         }
     }
 }
