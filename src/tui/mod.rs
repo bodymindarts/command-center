@@ -1,6 +1,7 @@
 mod app;
 mod chat;
 mod claude;
+mod telegram;
 mod widgets;
 
 use std::collections::HashMap;
@@ -185,6 +186,17 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
         }
     });
 
+    // Optional Telegram bot for remote permission approval.
+    let (tg_tx, tg_rx) = if let (Ok(token), Ok(chat_id)) = (
+        std::env::var("TELEGRAM_BOT_TOKEN"),
+        std::env::var("TELEGRAM_CHAT_ID"),
+    ) {
+        let (tx, rx) = telegram::start(token, chat_id, Arc::clone(&cancel));
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+
     let result = run_loop(
         &mut terminal,
         &mut app,
@@ -198,6 +210,8 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
         &perm_rx,
         &resolved_rx,
         &idle_rx,
+        tg_tx.as_ref(),
+        tg_rx.as_ref(),
     );
 
     cancel.store(true, Ordering::Relaxed);
@@ -208,6 +222,12 @@ pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -
     // Deny all pending permissions on exit
     for (_, mut queue) in app.pending_permissions.drain() {
         for perm in queue.drain(..) {
+            if let Some(tx) = tg_tx.as_ref() {
+                let _ = tx.send(telegram::TgOutbound::Resolved {
+                    perm_id: perm.perm_id,
+                    outcome: "⚪ Denied (dashboard closed)".to_string(),
+                });
+            }
             let _ = write_response_to_stream(perm.stream, false, None);
         }
     }
@@ -237,14 +257,34 @@ fn write_response_to_stream(
 }
 
 /// Resolve and consume the active permission request, returning the
-/// stream and permission suggestions so the caller can send the response.
+/// stream, permission suggestions, and perm_id so the caller can send
+/// the response and notify Telegram.
 fn resolve_permission(
     app: &mut App,
     allow: bool,
-) -> Option<(UnixStream, bool, Vec<serde_json::Value>)> {
+) -> Option<(UnixStream, bool, Vec<serde_json::Value>, u64)> {
     let perm_key = app.active_permission_key()?;
     let perm = app.take_permission(&perm_key)?;
-    Some((perm.stream, allow, perm.permission_suggestions))
+    Some((
+        perm.stream,
+        allow,
+        perm.permission_suggestions,
+        perm.perm_id,
+    ))
+}
+
+/// Notify Telegram that a permission was resolved (if the bot is active).
+fn notify_tg_resolved(
+    tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
+    perm_id: u64,
+    outcome: &str,
+) {
+    if let Some(tx) = tg_tx {
+        let _ = tx.send(telegram::TgOutbound::Resolved {
+            perm_id,
+            outcome: outcome.to_string(),
+        });
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -261,8 +301,11 @@ fn run_loop<R: Runtime>(
     perm_rx: &mpsc::Receiver<(UnixStream, PermissionRequest)>,
     resolved_rx: &mpsc::Receiver<String>,
     idle_rx: &mpsc::Receiver<String>,
+    tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
+    tg_rx: Option<&mpsc::Receiver<telegram::TgInbound>>,
 ) -> Result<()> {
     let mut last_tick = Instant::now();
+    let mut perm_id_counter: u64 = 0;
 
     // Before first render, assume all running agents are idle, then
     // remove any that are actually active (no `❯` prompt).
@@ -559,8 +602,11 @@ fn run_loop<R: Runtime>(
                         && app.show_detail
                         && app.peek_permission(&app.focused_perm_key()).is_some()
                     {
-                        if let Some((stream, allow, _suggestions)) = resolve_permission(app, true) {
+                        if let Some((stream, allow, _suggestions, perm_id)) =
+                            resolve_permission(app, true)
+                        {
                             let _ = write_response_to_stream(stream, allow, None);
+                            notify_tg_resolved(tg_tx, perm_id, "✅ Approved locally");
                         }
                     // Ctrl+T trust / always-allow (with updatedPermissions)
                     } else if key.modifiers.contains(KeyModifiers::CONTROL)
@@ -568,8 +614,11 @@ fn run_loop<R: Runtime>(
                         && app.show_detail
                         && app.peek_permission(&app.focused_perm_key()).is_some()
                     {
-                        if let Some((stream, allow, suggestions)) = resolve_permission(app, true) {
+                        if let Some((stream, allow, suggestions, perm_id)) =
+                            resolve_permission(app, true)
+                        {
                             let _ = write_response_to_stream(stream, allow, Some(&suggestions));
+                            notify_tg_resolved(tg_tx, perm_id, "✅ Trusted locally");
                         }
                     // Ctrl+N denies permission (only when focused task has one)
                     } else if key.modifiers.contains(KeyModifiers::CONTROL)
@@ -577,9 +626,11 @@ fn run_loop<R: Runtime>(
                         && app.show_detail
                         && app.peek_permission(&app.focused_perm_key()).is_some()
                     {
-                        if let Some((stream, allow, _suggestions)) = resolve_permission(app, false)
+                        if let Some((stream, allow, _suggestions, perm_id)) =
+                            resolve_permission(app, false)
                         {
                             let _ = write_response_to_stream(stream, allow, None);
+                            notify_tg_resolved(tg_tx, perm_id, "❌ Denied locally");
                         }
                     // Global: Ctrl+O returns to ExO chat
                     } else if key.modifiers.contains(KeyModifiers::CONTROL)
@@ -1490,6 +1541,7 @@ fn run_loop<R: Runtime>(
                 .filter_map(|t| t.work_dir.as_ref().map(|wd| (t.name.clone(), wd.clone())))
                 .collect();
             for perm in app.drain_stale_permissions(&all_running_names) {
+                notify_tg_resolved(tg_tx, perm.perm_id, "⚪ Expired (task ended)");
                 let _ = write_response_to_stream(perm.stream, false, None);
             }
             app.window_numbers = crate::runtime::tmux_window_numbers();
@@ -1532,6 +1584,7 @@ fn run_loop<R: Runtime>(
                 // Drain ALL pending permissions for this task — respond with allow
                 // so the PermissionRequest hook processes can exit cleanly.
                 while let Some(perm) = app.take_permission(&name) {
+                    notify_tg_resolved(tg_tx, perm.perm_id, "✅ Resolved (tool executed)");
                     let _ = write_response_to_stream(perm.stream, true, None);
                 }
                 // Agent is actively working — clear idle indicator
@@ -1562,7 +1615,18 @@ fn run_loop<R: Runtime>(
                 .unwrap_or_else(|_| std::path::PathBuf::from(&req.cwd));
             let task_name = find_task_name_by_cwd(&app.global_task_work_dirs, &req_cwd)
                 .unwrap_or_else(|| EXO_PERM_KEY.to_string());
+            perm_id_counter += 1;
+            let perm_id = perm_id_counter;
+            if let Some(tx) = tg_tx {
+                let _ = tx.send(telegram::TgOutbound::NewPermission {
+                    perm_id,
+                    task_name: task_name.clone(),
+                    tool_name: req.tool_name.clone(),
+                    tool_input_summary: req.tool_input_summary.clone(),
+                });
+            }
             let perm = ActivePermission {
+                perm_id,
                 stream,
                 task_name: task_name.clone(),
                 tool_name: req.tool_name,
@@ -1570,6 +1634,29 @@ fn run_loop<R: Runtime>(
                 permission_suggestions: req.permission_suggestions,
             };
             app.add_permission(perm);
+        }
+
+        // Handle Telegram callback decisions (remote approve/deny).
+        if let Some(rx) = tg_rx {
+            while let Ok(telegram::TgInbound::PermissionDecision { perm_id, allow }) = rx.try_recv()
+            {
+                // Find which task this perm_id belongs to.
+                let task_name = app
+                    .pending_permissions
+                    .iter()
+                    .find(|(_, queue)| queue.iter().any(|p| p.perm_id == perm_id))
+                    .map(|(name, _)| name.clone());
+                if let Some(name) = task_name
+                    // Only resolve if this perm_id is at the front of the queue
+                    // (same FIFO contract as the local Ctrl+Y/N flow).
+                    && app
+                        .peek_permission(&name)
+                        .is_some_and(|front| front.perm_id == perm_id)
+                    && let Some(perm) = app.take_permission(&name)
+                {
+                    let _ = write_response_to_stream(perm.stream, allow, None);
+                }
+            }
         }
 
         if app.should_quit {

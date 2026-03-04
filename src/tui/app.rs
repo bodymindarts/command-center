@@ -21,6 +21,7 @@ pub enum Focus {
 }
 
 pub struct ActivePermission {
+    pub perm_id: u64,
     pub stream: UnixStream,
     pub task_name: String,
     pub tool_name: String,
