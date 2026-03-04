@@ -428,54 +428,8 @@ fn render_chat(
             }
         }
     } else if app.active_project.is_some() {
-        // Render PM chat from PmState (streaming-aware)
-        for msg in &pm.messages {
-            let (label, label_color) = match msg.role {
-                MessageRole::User => ("You", Color::Green),
-                MessageRole::Assistant => ("PM", Color::Cyan),
-                MessageRole::System => ("System", Color::DarkGray),
-            };
-
-            lines.push(Line::from(Span::styled(
-                format!("{label}:"),
-                Style::default()
-                    .fg(label_color)
-                    .add_modifier(Modifier::BOLD),
-            )));
-
-            if msg.blocks.is_empty() && matches!(msg.role, MessageRole::Assistant) && pm.streaming {
-                lines.push(Line::from(Span::styled(
-                    "...",
-                    Style::default().fg(Color::DarkGray),
-                )));
-            } else {
-                let mut tool_spans: Vec<Span> = Vec::new();
-                for block in &msg.blocks {
-                    match block {
-                        ContentBlock::Text(text) => {
-                            if !tool_spans.is_empty() {
-                                lines.push(Line::from(std::mem::take(&mut tool_spans)));
-                            }
-                            for l in text.trim_start_matches('\n').lines() {
-                                lines.push(Line::from(l.to_string()));
-                            }
-                        }
-                        ContentBlock::ToolUse(name) => {
-                            tool_spans.push(Span::styled(
-                                format!("[{name}] "),
-                                Style::default().fg(Color::Yellow),
-                            ));
-                        }
-                    }
-                }
-                if !tool_spans.is_empty() {
-                    lines.push(Line::from(tool_spans));
-                }
-            }
-
-            lines.push(Line::from(""));
-        }
-
+        // Render PM chat
+        render_chat_messages(&mut lines, &pm.messages, "PM", pm.streaming);
         if lines.is_empty() {
             lines.push(Line::from(Span::styled(
                 "Chat with PM to plan and coordinate project work",
@@ -484,58 +438,7 @@ fn render_chat(
         }
     } else {
         // Render ExO chat
-        for msg in &exo.messages {
-            let (label, label_color) = match msg.role {
-                MessageRole::User => ("You", Color::Green),
-                MessageRole::Assistant => ("ExO", Color::Cyan),
-                MessageRole::System => ("System", Color::DarkGray),
-            };
-
-            lines.push(Line::from(Span::styled(
-                format!("{label}:"),
-                Style::default()
-                    .fg(label_color)
-                    .add_modifier(Modifier::BOLD),
-            )));
-
-            if msg.blocks.is_empty() && matches!(msg.role, MessageRole::Assistant) && exo.streaming
-            {
-                lines.push(Line::from(Span::styled(
-                    "...",
-                    Style::default().fg(Color::DarkGray),
-                )));
-            } else {
-                // Render content blocks in order, collecting consecutive
-                // tool_use badges onto a single line.
-                let mut tool_spans: Vec<Span> = Vec::new();
-                for block in &msg.blocks {
-                    match block {
-                        ContentBlock::Text(text) => {
-                            // Flush any pending tool badges first
-                            if !tool_spans.is_empty() {
-                                lines.push(Line::from(std::mem::take(&mut tool_spans)));
-                            }
-                            for l in text.trim_start_matches('\n').lines() {
-                                lines.push(Line::from(l.to_string()));
-                            }
-                        }
-                        ContentBlock::ToolUse(name) => {
-                            tool_spans.push(Span::styled(
-                                format!("[{name}] "),
-                                Style::default().fg(Color::Yellow),
-                            ));
-                        }
-                    }
-                }
-                // Flush any remaining tool badges
-                if !tool_spans.is_empty() {
-                    lines.push(Line::from(tool_spans));
-                }
-            }
-
-            lines.push(Line::from(""));
-        }
-
+        render_chat_messages(&mut lines, &exo.messages, "ExO", exo.streaming);
         if lines.is_empty() {
             lines.push(Line::from(Span::styled(
                 "Press Tab to chat with ExO",
@@ -570,6 +473,61 @@ fn render_chat(
         .scroll((scroll, 0));
 
     frame.render_widget(chat, inner);
+}
+
+/// Render streaming chat messages (used for both ExO and PM chats).
+fn render_chat_messages(
+    lines: &mut Vec<Line<'static>>,
+    messages: &[super::chat::ChatMessage],
+    assistant_label: &str,
+    streaming: bool,
+) {
+    for msg in messages {
+        let (label, label_color) = match msg.role {
+            MessageRole::User => ("You", Color::Green),
+            MessageRole::Assistant => (assistant_label, Color::Cyan),
+            MessageRole::System => ("System", Color::DarkGray),
+        };
+
+        lines.push(Line::from(Span::styled(
+            format!("{label}:"),
+            Style::default()
+                .fg(label_color)
+                .add_modifier(Modifier::BOLD),
+        )));
+
+        if msg.blocks.is_empty() && matches!(msg.role, MessageRole::Assistant) && streaming {
+            lines.push(Line::from(Span::styled(
+                "...",
+                Style::default().fg(Color::DarkGray),
+            )));
+        } else {
+            let mut tool_spans: Vec<Span> = Vec::new();
+            for block in &msg.blocks {
+                match block {
+                    ContentBlock::Text(text) => {
+                        if !tool_spans.is_empty() {
+                            lines.push(Line::from(std::mem::take(&mut tool_spans)));
+                        }
+                        for l in text.trim_start_matches('\n').lines() {
+                            lines.push(Line::from(l.to_string()));
+                        }
+                    }
+                    ContentBlock::ToolUse(name) => {
+                        tool_spans.push(Span::styled(
+                            format!("[{name}] "),
+                            Style::default().fg(Color::Yellow),
+                        ));
+                    }
+                }
+            }
+            if !tool_spans.is_empty() {
+                lines.push(Line::from(tool_spans));
+            }
+        }
+
+        lines.push(Line::from(""));
+    }
 }
 
 fn render_permission_panel(frame: &mut ratatui::Frame, app: &App, area: Rect) {

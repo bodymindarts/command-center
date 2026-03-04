@@ -21,7 +21,7 @@ use crate::permission::PermissionRequest;
 use crate::primitives::MessageRole;
 use crate::runtime::Runtime;
 use crate::service::TaskService;
-use app::{ActivePermission, App, Focus, SavedProjectState};
+use app::{ActivePermission, App, Focus};
 
 const EXO_PERM_KEY: &str = "exo";
 
@@ -39,6 +39,35 @@ fn find_task_name_by_cwd(work_dirs: &[(String, String)], cwd: &std::path::Path) 
 }
 use chat::ExoState;
 use claude::{EXO_SYSTEM_PROMPT, ExoEvent, ExoSession, pm_system_prompt};
+
+/// Cancel the active PM session and reset chat state.
+fn cancel_pm(
+    pm: &mut ExoState,
+    pm_session: &mut Option<ExoSession>,
+    pm_cancel: &mut Arc<AtomicBool>,
+) {
+    pm_cancel.store(true, Ordering::Relaxed);
+    *pm_cancel = Arc::new(AtomicBool::new(false));
+    *pm_session = None;
+    *pm = ExoState::new();
+}
+
+/// Load PM history from the database into chat state for a project.
+fn activate_pm<R: Runtime>(
+    pm: &mut ExoState,
+    app: &mut App,
+    service: &TaskService<R>,
+    project_id: &str,
+) {
+    pm.session_id = service.read_pm_session_id(project_id);
+    if let Ok(messages) = service.pm_messages(project_id) {
+        let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
+        pm.load_history(recent.into_iter().rev().collect());
+    }
+    if let Ok(msgs) = service.pm_messages(project_id) {
+        app.pm_messages = msgs;
+    }
+}
 
 pub fn run<R: Runtime>(service: &TaskService<R>, resume_session: Option<&str>) -> Result<()> {
     terminal::enable_raw_mode()?;
@@ -389,22 +418,8 @@ fn run_loop<R: Runtime>(
                             if name == EXO_PERM_KEY {
                                 // Navigate to ExO view
                                 if app.active_project_id.is_some() {
-                                    let selected_task_name =
-                                        app.selected_task().map(|t| t.name.clone());
-                                    if let (Some(pname), Some(pid)) =
-                                        (app.active_project.take(), app.active_project_id.take())
-                                    {
-                                        app.last_project = Some(SavedProjectState {
-                                            name: pname,
-                                            id: pid,
-                                            show_detail: app.show_detail,
-                                            selected_task_name,
-                                        });
-                                    }
-                                    pm_cancel.store(true, Ordering::Relaxed);
-                                    *pm_cancel = Arc::new(AtomicBool::new(false));
-                                    *pm_session = None;
-                                    *pm = ExoState::new();
+                                    app.save_project_state();
+                                    cancel_pm(pm, pm_session, pm_cancel);
                                     app.pm_messages.clear();
                                     if let Ok(tasks) = service.list_visible(None) {
                                         app.refresh_tasks(tasks);
@@ -422,18 +437,7 @@ fn run_loop<R: Runtime>(
                                 let target_pid =
                                     app.global_task_projects.get(&name).cloned().flatten();
                                 // Save current project state before switching
-                                let selected_task_name =
-                                    app.selected_task().map(|t| t.name.clone());
-                                if let (Some(pname), Some(cur_pid)) =
-                                    (app.active_project.take(), app.active_project_id.take())
-                                {
-                                    app.last_project = Some(SavedProjectState {
-                                        name: pname,
-                                        id: cur_pid,
-                                        show_detail: app.show_detail,
-                                        selected_task_name,
-                                    });
-                                }
+                                app.save_project_state();
                                 if let Some(pid) = target_pid {
                                     // Switch to the target project
                                     let proj_name = app
@@ -455,29 +459,15 @@ fn run_loop<R: Runtime>(
                                         app.detail_scroll = 0;
                                     }
                                     // Set up PM session for the target project
-                                    pm_cancel.store(true, Ordering::Relaxed);
-                                    *pm_cancel = Arc::new(AtomicBool::new(false));
-                                    *pm_session = None;
-                                    *pm = ExoState::new();
-                                    pm.session_id = service.read_pm_session_id(&pid);
-                                    if let Ok(messages) = service.pm_messages(&pid) {
-                                        let recent: Vec<_> =
-                                            messages.into_iter().rev().take(20).collect();
-                                        pm.load_history(recent.into_iter().rev().collect());
-                                    }
-                                    if let Ok(msgs) = service.pm_messages(&pid) {
-                                        app.pm_messages = msgs;
-                                    }
+                                    cancel_pm(pm, pm_session, pm_cancel);
+                                    activate_pm(pm, app, service, &pid);
                                 } else {
                                     // Target is the default (ExO) view
                                     app.active_project = None;
                                     app.active_project_id = None;
                                     app.show_projects = false;
                                     app.pm_messages.clear();
-                                    pm_cancel.store(true, Ordering::Relaxed);
-                                    *pm_cancel = Arc::new(AtomicBool::new(false));
-                                    *pm_session = None;
-                                    *pm = ExoState::new();
+                                    cancel_pm(pm, pm_session, pm_cancel);
                                     if let Ok(tasks) = service.list_visible(None) {
                                         app.refresh_tasks(tasks);
                                     }
@@ -534,25 +524,11 @@ fn run_loop<R: Runtime>(
                     {
                         app.save_current_input();
                         // Remember last project + view state so Ctrl+R can restore it
-                        if let (Some(name), Some(id)) =
-                            (app.active_project.take(), app.active_project_id.take())
-                        {
-                            let selected_task_name = app.selected_task().map(|t| t.name.clone());
-                            app.last_project = Some(SavedProjectState {
-                                name,
-                                id,
-                                show_detail: app.show_detail,
-                                selected_task_name,
-                            });
-                        }
+                        app.save_project_state();
                         app.show_detail = false;
                         app.show_projects = false;
                         app.pm_messages.clear();
-                        // Clear PM session state
-                        pm_cancel.store(true, Ordering::Relaxed);
-                        *pm_cancel = Arc::new(AtomicBool::new(false));
-                        *pm_session = None;
-                        *pm = ExoState::new();
+                        cancel_pm(pm, pm_session, pm_cancel);
                         if let Ok(tasks) = service.list_visible(None) {
                             app.refresh_tasks(tasks);
                         }
@@ -591,9 +567,6 @@ fn run_loop<R: Runtime>(
                                 app.active_project = Some(name);
                                 app.active_project_id = Some(id.clone());
                                 app.show_projects = false;
-                                if let Ok(msgs) = service.pm_messages(&id) {
-                                    app.pm_messages = msgs;
-                                }
                                 if let Ok(tasks) = service.list_visible(Some(&id)) {
                                     app.refresh_tasks(tasks);
                                 }
@@ -613,16 +586,8 @@ fn run_loop<R: Runtime>(
                                     app.show_detail = false;
                                 }
                                 // Restore PM state
-                                pm_cancel.store(true, Ordering::Relaxed);
-                                *pm_cancel = Arc::new(AtomicBool::new(false));
-                                *pm_session = None;
-                                *pm = ExoState::new();
-                                pm.session_id = service.read_pm_session_id(&id);
-                                if let Ok(messages) = service.pm_messages(&id) {
-                                    let recent: Vec<_> =
-                                        messages.into_iter().rev().take(20).collect();
-                                    pm.load_history(recent.into_iter().rev().collect());
-                                }
+                                cancel_pm(pm, pm_session, pm_cancel);
+                                activate_pm(pm, app, service, &id);
                                 app.focus = Focus::ChatInput;
                                 app.chat_scroll = 0;
                                 app.restore_input();
@@ -647,22 +612,11 @@ fn run_loop<R: Runtime>(
                                 app.active_project_id = Some(next_id.clone());
                                 app.show_detail = false;
                                 app.show_projects = false;
-                                if let Ok(msgs) = service.pm_messages(&next_id) {
-                                    app.pm_messages = msgs;
-                                }
                                 if let Ok(tasks) = service.list_visible(Some(&next_id)) {
                                     app.refresh_tasks(tasks);
                                 }
-                                pm_cancel.store(true, Ordering::Relaxed);
-                                *pm_cancel = Arc::new(AtomicBool::new(false));
-                                *pm_session = None;
-                                *pm = ExoState::new();
-                                pm.session_id = service.read_pm_session_id(&next_id);
-                                if let Ok(messages) = service.pm_messages(&next_id) {
-                                    let recent: Vec<_> =
-                                        messages.into_iter().rev().take(20).collect();
-                                    pm.load_history(recent.into_iter().rev().collect());
-                                }
+                                cancel_pm(pm, pm_session, pm_cancel);
+                                activate_pm(pm, app, service, &next_id);
                                 app.focus = Focus::ChatInput;
                                 app.chat_scroll = 0;
                                 app.restore_input();
@@ -958,16 +912,8 @@ fn run_loop<R: Runtime>(
                                             app.refresh_tasks(tasks);
                                         }
                                         // Set up PM state for this project
-                                        pm_cancel.store(true, Ordering::Relaxed);
-                                        *pm_cancel = Arc::new(AtomicBool::new(false));
-                                        *pm_session = None;
-                                        *pm = ExoState::new();
-                                        pm.session_id = service.read_pm_session_id(&project_id);
-                                        if let Ok(messages) = service.pm_messages(&project_id) {
-                                            let recent: Vec<_> =
-                                                messages.into_iter().rev().take(20).collect();
-                                            pm.load_history(recent.into_iter().rev().collect());
-                                        }
+                                        cancel_pm(pm, pm_session, pm_cancel);
+                                        activate_pm(pm, app, service, &project_id);
                                         app.restore_input();
                                     }
                                 }
@@ -1059,10 +1005,7 @@ fn run_loop<R: Runtime>(
                                                         app.refresh_tasks(tasks);
                                                     }
                                                     // Set up PM state
-                                                    pm_cancel.store(true, Ordering::Relaxed);
-                                                    *pm_cancel = Arc::new(AtomicBool::new(false));
-                                                    *pm_session = None;
-                                                    *pm = ExoState::new();
+                                                    cancel_pm(pm, pm_session, pm_cancel);
                                                     app.focus = Focus::ChatInput;
                                                     app.restore_input();
                                                 }
@@ -1424,11 +1367,7 @@ fn run_loop<R: Runtime>(
                                     app.active_project = None;
                                     app.active_project_id = None;
                                     app.save_current_input();
-                                    // Clear PM session state
-                                    pm_cancel.store(true, Ordering::Relaxed);
-                                    *pm_cancel = Arc::new(AtomicBool::new(false));
-                                    *pm_session = None;
-                                    *pm = ExoState::new();
+                                    cancel_pm(pm, pm_session, pm_cancel);
                                     app.focus = Focus::TaskList;
                                     if let Ok(tasks) = service.list_visible(None) {
                                         app.refresh_tasks(tasks);

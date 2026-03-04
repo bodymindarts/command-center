@@ -479,6 +479,21 @@ impl App {
         self.input.set(&text);
     }
 
+    /// Save the current project's UI state so it can be restored later (e.g. Ctrl+R).
+    /// Takes ownership of `active_project` and `active_project_id`, leaving them `None`.
+    pub fn save_project_state(&mut self) {
+        let selected_task_name = self.selected_task().map(|t| t.name.clone());
+        if let (Some(name), Some(id)) = (self.active_project.take(), self.active_project_id.take())
+        {
+            self.last_project = Some(SavedProjectState {
+                name,
+                id,
+                show_detail: self.show_detail,
+                selected_task_name,
+            });
+        }
+    }
+
     /// Returns the permission key for the currently visible pane.
     /// Task name if viewing a task's detail, "exo" otherwise.
     pub fn focused_perm_key(&self) -> String {
