@@ -28,6 +28,14 @@ pub enum TgOutbound {
         tool_name: String,
         tool_input_summary: String,
     },
+    /// Forward an AskUserQuestion prompt with inline buttons for each option.
+    NewQuestion {
+        perm_id: u64,
+        task_name: String,
+        question: String,
+        /// (label, description) pairs for each option.
+        options: Vec<(String, String)>,
+    },
     /// A permission was resolved; edit the Telegram message to reflect the
     /// outcome (e.g. "Approved locally", "Denied via Telegram", …).
     Resolved { perm_id: u64, outcome: String },
@@ -49,6 +57,8 @@ pub enum PermAction {
 pub enum TgInbound {
     /// The user tapped an inline button in Telegram.
     PermissionDecision { perm_id: u64, action: PermAction },
+    /// The user selected an option from an AskUserQuestion prompt.
+    QuestionAnswer { perm_id: u64, answer: String },
     /// The user sent a text message in Telegram (route to ExO).
     ExoMessage { text: String },
 }
@@ -91,6 +101,12 @@ struct BotCtx {
     whisper_model: String,
 }
 
+/// Tracks state for AskUserQuestion messages so callbacks can resolve labels.
+struct QuestionState {
+    /// perm_id → list of option labels (index matches callback data).
+    labels: HashMap<u64, Vec<String>>,
+}
+
 fn run_bot(
     token: &str,
     chat_id: &str,
@@ -120,12 +136,17 @@ fn run_bot(
     // Buffer for accumulating streamed ExO response text.
     let mut exo_buf = String::new();
 
+    // Track AskUserQuestion option labels for callback resolution.
+    let mut questions = QuestionState {
+        labels: HashMap::new(),
+    };
+
     while !cancel.load(Ordering::Relaxed) {
         // 1. Drain outbound messages from the TUI (non-blocking).
-        drain_outbound(&ctx, &out_rx, &mut msg_map, &mut exo_buf);
+        drain_outbound(&ctx, &out_rx, &mut msg_map, &mut exo_buf, &mut questions);
 
         // 2. Long-poll Telegram for updates.
-        poll_updates(&ctx, &mut offset, &in_tx, &mut msg_map);
+        poll_updates(&ctx, &mut offset, &in_tx, &mut msg_map, &mut questions);
     }
 }
 
@@ -135,6 +156,7 @@ fn drain_outbound(
     out_rx: &mpsc::Receiver<TgOutbound>,
     msg_map: &mut HashMap<u64, i64>,
     exo_buf: &mut String,
+    questions: &mut QuestionState,
 ) {
     while let Ok(msg) = out_rx.try_recv() {
         match msg {
@@ -163,6 +185,41 @@ fn drain_outbound(
                     msg_map.insert(perm_id, id);
                 }
             }
+            TgOutbound::NewQuestion {
+                perm_id,
+                task_name,
+                question,
+                options,
+            } => {
+                let text = format_question_text(&task_name, &question, &options);
+                let buttons: Vec<Value> = options
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (label, _))| {
+                        serde_json::json!({
+                            "text": label,
+                            "callback_data": format!("q:{perm_id}:{i}"),
+                        })
+                    })
+                    .collect();
+                // Store labels for callback resolution.
+                questions
+                    .labels
+                    .insert(perm_id, options.iter().map(|(l, _)| l.clone()).collect());
+                let body = serde_json::json!({
+                    "chat_id": ctx.chat_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "reply_markup": {
+                        "inline_keyboard": buttons.iter().map(|b| vec![b.clone()]).collect::<Vec<_>>(),
+                    },
+                });
+                if let Some(resp) = tg_post(&ctx.agent, &format!("{}/sendMessage", ctx.base), &body)
+                    && let Some(id) = resp["result"]["message_id"].as_i64()
+                {
+                    msg_map.insert(perm_id, id);
+                }
+            }
             TgOutbound::Resolved { perm_id, outcome } => {
                 if let Some(msg_id) = msg_map.remove(&perm_id) {
                     let body = serde_json::json!({
@@ -173,6 +230,7 @@ fn drain_outbound(
                     });
                     tg_post(&ctx.agent, &format!("{}/editMessageText", ctx.base), &body);
                 }
+                questions.labels.remove(&perm_id);
             }
             TgOutbound::ExoTextDelta { text } => {
                 exo_buf.push_str(&text);
@@ -197,6 +255,7 @@ fn poll_updates(
     offset: &mut i64,
     in_tx: &mpsc::Sender<TgInbound>,
     msg_map: &mut HashMap<u64, i64>,
+    questions: &mut QuestionState,
 ) {
     let body = serde_json::json!({
         "offset": *offset,
@@ -213,7 +272,7 @@ fn poll_updates(
         if let Some(uid) = update["update_id"].as_i64() {
             *offset = uid + 1;
         }
-        // Handle callback queries (permission buttons).
+        // Handle callback queries (permission buttons + question answers).
         if let Some(cb) = update.get("callback_query") {
             // Answer the callback query to dismiss Telegram's loading spinner.
             if let Some(cb_id) = cb["id"].as_str() {
@@ -224,25 +283,47 @@ fn poll_updates(
                     &answer,
                 );
             }
-            // Parse the decision and forward to the TUI.
-            if let Some(data) = cb["data"].as_str()
-                && let Some((perm_id, action)) = parse_callback(data)
-            {
-                let label = match &action {
-                    PermAction::Approve => "✅ <b>Approved</b> via Telegram",
-                    PermAction::Trust => "🔓 <b>Trusted</b> via Telegram",
-                    PermAction::Deny => "❌ <b>Denied</b> via Telegram",
-                };
-                let _ = in_tx.send(TgInbound::PermissionDecision { perm_id, action });
-                // Edit the message to show the result immediately.
-                if let Some(msg_id) = msg_map.remove(&perm_id) {
-                    let body = serde_json::json!({
-                        "chat_id": ctx.chat_id,
-                        "message_id": msg_id,
-                        "text": label,
-                        "parse_mode": "HTML",
+            if let Some(data) = cb["data"].as_str() {
+                // Try permission callback first (a:/t:/d: prefixes).
+                if let Some((perm_id, action)) = parse_callback(data) {
+                    let label = match &action {
+                        PermAction::Approve => "✅ <b>Approved</b> via Telegram",
+                        PermAction::Trust => "🔓 <b>Trusted</b> via Telegram",
+                        PermAction::Deny => "❌ <b>Denied</b> via Telegram",
+                    };
+                    let _ = in_tx.send(TgInbound::PermissionDecision { perm_id, action });
+                    if let Some(msg_id) = msg_map.remove(&perm_id) {
+                        let body = serde_json::json!({
+                            "chat_id": ctx.chat_id,
+                            "message_id": msg_id,
+                            "text": label,
+                            "parse_mode": "HTML",
+                        });
+                        tg_post(&ctx.agent, &format!("{}/editMessageText", ctx.base), &body);
+                    }
+                // Try question callback (q: prefix).
+                } else if let Some((perm_id, idx)) = parse_question_callback(data) {
+                    let answer = questions
+                        .labels
+                        .get(&perm_id)
+                        .and_then(|labels| labels.get(idx))
+                        .cloned()
+                        .unwrap_or_else(|| format!("Option {idx}"));
+                    let _ = in_tx.send(TgInbound::QuestionAnswer {
+                        perm_id,
+                        answer: answer.clone(),
                     });
-                    tg_post(&ctx.agent, &format!("{}/editMessageText", ctx.base), &body);
+                    // Edit message to show the selected answer.
+                    if let Some(msg_id) = msg_map.remove(&perm_id) {
+                        let body = serde_json::json!({
+                            "chat_id": ctx.chat_id,
+                            "message_id": msg_id,
+                            "text": format!("✅ Selected: <b>{answer}</b>"),
+                            "parse_mode": "HTML",
+                        });
+                        tg_post(&ctx.agent, &format!("{}/editMessageText", ctx.base), &body);
+                    }
+                    questions.labels.remove(&perm_id);
                 }
             }
         }
@@ -513,6 +594,18 @@ fn tg_send(ctx: &BotCtx, text: &str) {
 // Formatting
 // ---------------------------------------------------------------------------
 
+fn format_question_text(task_name: &str, question: &str, options: &[(String, String)]) -> String {
+    let mut text = format!("❓ <b>Question</b>\n\nTask: <code>{task_name}</code>\n\n{question}\n");
+    for (label, desc) in options {
+        if desc.is_empty() {
+            text.push_str(&format!("\n• <b>{label}</b>"));
+        } else {
+            text.push_str(&format!("\n• <b>{label}</b> — {desc}"));
+        }
+    }
+    text
+}
+
 fn format_perm_text(task_name: &str, tool_name: &str, summary: &str) -> String {
     let detail = if summary.is_empty() {
         format!("<code>{tool_name}</code>")
@@ -531,6 +624,15 @@ fn parse_callback(data: &str) -> Option<(u64, PermAction)> {
         "d" => Some((perm_id, PermAction::Deny)),
         _ => None,
     }
+}
+
+/// Parse a question answer callback: `q:<perm_id>:<option_index>`.
+fn parse_question_callback(data: &str) -> Option<(u64, usize)> {
+    let rest = data.strip_prefix("q:")?;
+    let (id_str, idx_str) = rest.split_once(':')?;
+    let perm_id: u64 = id_str.parse().ok()?;
+    let idx: usize = idx_str.parse().ok()?;
+    Some((perm_id, idx))
 }
 
 // ---------------------------------------------------------------------------
@@ -569,6 +671,42 @@ mod tests {
     #[test]
     fn parse_callback_no_colon() {
         assert_eq!(parse_callback("nocolon"), None);
+    }
+
+    #[test]
+    fn parse_question_callback_valid() {
+        assert_eq!(parse_question_callback("q:42:0"), Some((42, 0)));
+        assert_eq!(parse_question_callback("q:1:3"), Some((1, 3)));
+    }
+
+    #[test]
+    fn parse_question_callback_invalid() {
+        assert_eq!(parse_question_callback("a:42"), None);
+        assert_eq!(parse_question_callback("q:42"), None);
+        assert_eq!(parse_question_callback("q:abc:0"), None);
+        assert_eq!(parse_question_callback("q:1:xyz"), None);
+    }
+
+    #[test]
+    fn format_question_text_with_descriptions() {
+        let options = vec![
+            ("React".to_string(), "Popular UI library".to_string()),
+            ("Vue".to_string(), "Progressive framework".to_string()),
+        ];
+        let text = format_question_text("my-task", "Which library?", &options);
+        assert!(text.contains("Question"));
+        assert!(text.contains("my-task"));
+        assert!(text.contains("Which library?"));
+        assert!(text.contains("<b>React</b> — Popular UI library"));
+        assert!(text.contains("<b>Vue</b> — Progressive framework"));
+    }
+
+    #[test]
+    fn format_question_text_empty_description() {
+        let options = vec![("Yes".to_string(), String::new())];
+        let text = format_question_text("task", "Proceed?", &options);
+        assert!(text.contains("<b>Yes</b>"));
+        assert!(!text.contains("—"));
     }
 
     #[test]

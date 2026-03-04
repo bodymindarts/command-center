@@ -293,6 +293,45 @@ fn write_response_to_stream(
     stream.flush()
 }
 
+fn write_response_with_message(
+    mut stream: UnixStream,
+    allow: bool,
+    message: &str,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let response = crate::permission::make_response_json(allow, Some(message), None);
+    stream.write_all(response.as_bytes())?;
+    stream.flush()
+}
+
+/// Extract the first question and its options from an AskUserQuestion tool_input.
+/// Returns `(question_text, [(label, description)])`.
+fn parse_ask_user_options(
+    tool_input: Option<&serde_json::Value>,
+) -> Option<(String, Vec<(String, String)>)> {
+    let input = tool_input?;
+    let questions = input.get("questions")?.as_array()?;
+    let first = questions.first()?;
+    let question = first.get("question")?.as_str()?.to_string();
+    let options = first.get("options")?.as_array()?;
+    let parsed: Vec<(String, String)> = options
+        .iter()
+        .filter_map(|opt| {
+            let label = opt.get("label")?.as_str()?.to_string();
+            let desc = opt
+                .get("description")
+                .and_then(|d| d.as_str())
+                .unwrap_or("")
+                .to_string();
+            Some((label, desc))
+        })
+        .collect();
+    if parsed.is_empty() {
+        return None;
+    }
+    Some((question, parsed))
+}
+
 /// Resolve and consume the active permission request, returning the
 /// stream, permission suggestions, and perm_id so the caller can send
 /// the response and notify Telegram.
@@ -1637,12 +1676,25 @@ fn run_loop<R: Runtime>(
             perm_id_counter += 1;
             let perm_id = perm_id_counter;
             if let Some(tx) = tg_tx {
-                let _ = tx.send(telegram::TgOutbound::NewPermission {
-                    perm_id,
-                    task_name: task_name.clone(),
-                    tool_name: req.tool_name.clone(),
-                    tool_input_summary: req.tool_input_summary.clone(),
-                });
+                // AskUserQuestion: send inline buttons for each option.
+                if req.tool_name == "AskUserQuestion"
+                    && let Some((question, options)) =
+                        parse_ask_user_options(req.tool_input.as_ref())
+                {
+                    let _ = tx.send(telegram::TgOutbound::NewQuestion {
+                        perm_id,
+                        task_name: task_name.clone(),
+                        question,
+                        options,
+                    });
+                } else {
+                    let _ = tx.send(telegram::TgOutbound::NewPermission {
+                        perm_id,
+                        task_name: task_name.clone(),
+                        tool_name: req.tool_name.clone(),
+                        tool_input_summary: req.tool_input_summary.clone(),
+                    });
+                }
                 tg_perm_ids.insert(perm_id);
             }
             let perm = ActivePermission {
@@ -1685,6 +1737,22 @@ fn run_loop<R: Runtime>(
                                 allow,
                                 suggestions.as_deref(),
                             );
+                        }
+                    }
+                    telegram::TgInbound::QuestionAnswer { perm_id, answer } => {
+                        // Find which task this perm_id belongs to.
+                        let task_name = app
+                            .pending_permissions
+                            .iter()
+                            .find(|(_, queue)| queue.iter().any(|p| p.perm_id == perm_id))
+                            .map(|(name, _)| name.clone());
+                        if let Some(name) = task_name
+                            && app
+                                .peek_permission(&name)
+                                .is_some_and(|front| front.perm_id == perm_id)
+                            && let Some(perm) = app.take_permission(&name)
+                        {
+                            let _ = write_response_with_message(perm.stream, true, &answer);
                         }
                     }
                     telegram::TgInbound::ExoMessage { text } => {

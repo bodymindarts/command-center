@@ -7,6 +7,7 @@ use serde_json::Value;
 
 pub struct PermissionRequest {
     pub tool_name: String,
+    pub tool_input: Option<Value>,
     pub tool_input_summary: String,
     pub cwd: String,
     pub permission_suggestions: Vec<Value>,
@@ -116,6 +117,7 @@ pub fn parse_request_json(json: &str) -> Option<PermissionRequest> {
 
     Some(PermissionRequest {
         tool_name,
+        tool_input: tool_input.cloned(),
         tool_input_summary,
         cwd,
         permission_suggestions,
