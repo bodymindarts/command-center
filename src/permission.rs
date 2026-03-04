@@ -256,22 +256,55 @@ pub fn start_socket_listener() -> Result<(UnixListener, PathBuf)> {
     Ok((listener, sock))
 }
 
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max])
+    }
+}
+
 pub(crate) fn summarize_tool_input(tool_name: &str, input: Option<&Value>) -> String {
     let Some(input) = input else {
         return String::new();
     };
+
+    let str_field = |key: &str| {
+        input
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+
     match tool_name {
-        "Bash" => input
-            .get("command")
-            .and_then(|c| c.as_str())
-            .unwrap_or("")
-            .to_string(),
-        "Edit" | "Write" | "Read" => input
-            .get("file_path")
-            .and_then(|p| p.as_str())
-            .unwrap_or("")
-            .to_string(),
-        _ => String::new(),
+        "Bash" => str_field("command"),
+        "Edit" | "Write" | "Read" => str_field("file_path"),
+        "NotebookEdit" => str_field("notebook_path"),
+        "WebSearch" => str_field("query"),
+        "WebFetch" => str_field("url"),
+        "Glob" => str_field("pattern"),
+        "Grep" => {
+            let pattern = str_field("pattern");
+            let path = str_field("path");
+            if path.is_empty() {
+                pattern
+            } else {
+                format!("{pattern} in {path}")
+            }
+        }
+        "Agent" => truncate(&str_field("prompt"), 100),
+        _ => {
+            // Show the first string value found so there's always *something*
+            if let Some(obj) = input.as_object() {
+                for val in obj.values() {
+                    if let Some(s) = val.as_str() {
+                        return truncate(s, 100);
+                    }
+                }
+            }
+            String::new()
+        }
     }
 }
 
@@ -295,9 +328,93 @@ mod tests {
     }
 
     #[test]
-    fn summarize_unknown_tool() {
-        let input = serde_json::json!({"something": "else"});
-        assert_eq!(summarize_tool_input("Agent", Some(&input)), "");
+    fn summarize_web_search() {
+        let input = serde_json::json!({"query": "rust async patterns"});
+        assert_eq!(
+            summarize_tool_input("WebSearch", Some(&input)),
+            "rust async patterns"
+        );
+    }
+
+    #[test]
+    fn summarize_web_fetch() {
+        let input = serde_json::json!({"url": "https://example.com/docs", "prompt": "summarize"});
+        assert_eq!(
+            summarize_tool_input("WebFetch", Some(&input)),
+            "https://example.com/docs"
+        );
+    }
+
+    #[test]
+    fn summarize_grep_pattern_only() {
+        let input = serde_json::json!({"pattern": "fn main"});
+        assert_eq!(summarize_tool_input("Grep", Some(&input)), "fn main");
+    }
+
+    #[test]
+    fn summarize_grep_with_path() {
+        let input = serde_json::json!({"pattern": "fn main", "path": "src/"});
+        assert_eq!(
+            summarize_tool_input("Grep", Some(&input)),
+            "fn main in src/"
+        );
+    }
+
+    #[test]
+    fn summarize_glob() {
+        let input = serde_json::json!({"pattern": "**/*.rs"});
+        assert_eq!(summarize_tool_input("Glob", Some(&input)), "**/*.rs");
+    }
+
+    #[test]
+    fn summarize_notebook_edit() {
+        let input = serde_json::json!({"notebook_path": "/tmp/analysis.ipynb", "new_source": "x"});
+        assert_eq!(
+            summarize_tool_input("NotebookEdit", Some(&input)),
+            "/tmp/analysis.ipynb"
+        );
+    }
+
+    #[test]
+    fn summarize_agent_truncates() {
+        let long_prompt = "a".repeat(150);
+        let input = serde_json::json!({"prompt": long_prompt});
+        let result = summarize_tool_input("Agent", Some(&input));
+        assert_eq!(result.len(), 103); // 100 chars + "..."
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn summarize_agent_short_prompt() {
+        let input = serde_json::json!({"prompt": "investigate the bug"});
+        assert_eq!(
+            summarize_tool_input("Agent", Some(&input)),
+            "investigate the bug"
+        );
+    }
+
+    #[test]
+    fn summarize_unknown_tool_uses_first_string() {
+        let input = serde_json::json!({"something": "useful context"});
+        assert_eq!(
+            summarize_tool_input("CustomTool", Some(&input)),
+            "useful context"
+        );
+    }
+
+    #[test]
+    fn summarize_unknown_tool_truncates() {
+        let long_val = "x".repeat(150);
+        let input = serde_json::json!({"key": long_val});
+        let result = summarize_tool_input("CustomTool", Some(&input));
+        assert_eq!(result.len(), 103);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn summarize_unknown_tool_no_strings() {
+        let input = serde_json::json!({"count": 42, "flag": true});
+        assert_eq!(summarize_tool_input("CustomTool", Some(&input)), "");
     }
 
     #[test]
