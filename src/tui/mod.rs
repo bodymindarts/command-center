@@ -758,20 +758,24 @@ fn run_loop<R: Runtime>(
                                     app.detail_scroll = 0;
                                 }
                                 KeyCode::PageDown => {
-                                    app.detail_scroll = app.detail_scroll.saturating_sub(10);
+                                    let half = (app.chat_viewport_height / 2).max(1);
+                                    app.detail_scroll = app.detail_scroll.saturating_sub(half);
                                 }
                                 KeyCode::PageUp => {
-                                    app.detail_scroll = app.detail_scroll.saturating_add(10);
+                                    let half = (app.chat_viewport_height / 2).max(1);
+                                    app.detail_scroll = app.detail_scroll.saturating_add(half);
                                 }
                                 KeyCode::Char('d')
                                     if key.modifiers.contains(KeyModifiers::CONTROL) =>
                                 {
-                                    app.detail_scroll = app.detail_scroll.saturating_sub(10);
+                                    let half = (app.chat_viewport_height / 2).max(1);
+                                    app.detail_scroll = app.detail_scroll.saturating_sub(half);
                                 }
                                 KeyCode::Char('u')
                                     if key.modifiers.contains(KeyModifiers::CONTROL) =>
                                 {
-                                    app.detail_scroll = app.detail_scroll.saturating_add(10);
+                                    let half = (app.chat_viewport_height / 2).max(1);
+                                    app.detail_scroll = app.detail_scroll.saturating_add(half);
                                 }
                                 KeyCode::Char('g')
                                     if key.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -1658,7 +1662,8 @@ fn run_loop<R: Runtime>(
 
         // Handle Telegram callback decisions (remote approve/deny).
         if let Some(rx) = tg_rx {
-            while let Ok(telegram::TgInbound::PermissionDecision { perm_id, allow }) = rx.try_recv()
+            while let Ok(telegram::TgInbound::PermissionDecision { perm_id, action }) =
+                rx.try_recv()
             {
                 // Find which task this perm_id belongs to.
                 let task_name = app
@@ -1674,7 +1679,14 @@ fn run_loop<R: Runtime>(
                         .is_some_and(|front| front.perm_id == perm_id)
                     && let Some(perm) = app.take_permission(&name)
                 {
-                    let _ = write_response_to_stream(perm.stream, allow, None);
+                    let (allow, suggestions) = match action {
+                        telegram::PermAction::Approve => (true, None),
+                        telegram::PermAction::Trust => {
+                            (true, Some(perm.permission_suggestions.clone()))
+                        }
+                        telegram::PermAction::Deny => (false, None),
+                    };
+                    let _ = write_response_to_stream(perm.stream, allow, suggestions.as_deref());
                 }
             }
         }

@@ -33,10 +33,18 @@ pub enum TgOutbound {
     Resolved { perm_id: u64, outcome: String },
 }
 
+/// How the user responded to a permission request via Telegram.
+#[derive(Debug, PartialEq)]
+pub enum PermAction {
+    Approve,
+    Trust,
+    Deny,
+}
+
 /// Message sent from the Telegram thread **to** the TUI event loop.
 pub enum TgInbound {
     /// The user tapped an inline button in Telegram.
-    PermissionDecision { perm_id: u64, allow: bool },
+    PermissionDecision { perm_id: u64, action: PermAction },
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +127,7 @@ fn drain_outbound(
                     "reply_markup": {
                         "inline_keyboard": [[
                             {"text": "✅ Approve", "callback_data": format!("a:{perm_id}")},
+                            {"text": "🔓 Trust",   "callback_data": format!("t:{perm_id}")},
                             {"text": "❌ Deny",    "callback_data": format!("d:{perm_id}")},
                         ]]
                     },
@@ -178,16 +187,16 @@ fn poll_updates(
         }
         // Parse the decision and forward to the TUI.
         if let Some(data) = cb["data"].as_str()
-            && let Some((perm_id, allow)) = parse_callback(data)
+            && let Some((perm_id, action)) = parse_callback(data)
         {
-            let _ = in_tx.send(TgInbound::PermissionDecision { perm_id, allow });
+            let label = match &action {
+                PermAction::Approve => "✅ <b>Approved</b> via Telegram",
+                PermAction::Trust => "🔓 <b>Trusted</b> via Telegram",
+                PermAction::Deny => "❌ <b>Denied</b> via Telegram",
+            };
+            let _ = in_tx.send(TgInbound::PermissionDecision { perm_id, action });
             // Edit the message to show the result immediately.
             if let Some(msg_id) = msg_map.remove(&perm_id) {
-                let label = if allow {
-                    "✅ <b>Approved</b> via Telegram"
-                } else {
-                    "❌ <b>Denied</b> via Telegram"
-                };
                 let body = serde_json::json!({
                     "chat_id": chat_id,
                     "message_id": msg_id,
@@ -256,12 +265,13 @@ fn format_perm_text(task_name: &str, tool_name: &str, summary: &str) -> String {
     format!("🔔 <b>Permission Request</b>\n\nTask: <code>{task_name}</code>\n{detail}")
 }
 
-fn parse_callback(data: &str) -> Option<(u64, bool)> {
+fn parse_callback(data: &str) -> Option<(u64, PermAction)> {
     let (prefix, id_str) = data.split_once(':')?;
     let perm_id: u64 = id_str.parse().ok()?;
     match prefix {
-        "a" => Some((perm_id, true)),
-        "d" => Some((perm_id, false)),
+        "a" => Some((perm_id, PermAction::Approve)),
+        "t" => Some((perm_id, PermAction::Trust)),
+        "d" => Some((perm_id, PermAction::Deny)),
         _ => None,
     }
 }
@@ -276,12 +286,17 @@ mod tests {
 
     #[test]
     fn parse_callback_approve() {
-        assert_eq!(parse_callback("a:42"), Some((42, true)));
+        assert_eq!(parse_callback("a:42"), Some((42, PermAction::Approve)));
+    }
+
+    #[test]
+    fn parse_callback_trust() {
+        assert_eq!(parse_callback("t:5"), Some((5, PermAction::Trust)));
     }
 
     #[test]
     fn parse_callback_deny() {
-        assert_eq!(parse_callback("d:7"), Some((7, false)));
+        assert_eq!(parse_callback("d:7"), Some((7, PermAction::Deny)));
     }
 
     #[test]
