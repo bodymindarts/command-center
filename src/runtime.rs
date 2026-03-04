@@ -380,18 +380,10 @@ fn setup_worktree_config(
         // Hooks route permission requests to the dashboard.
         // Base allowed tools let agents run common safe commands
         // (git, cargo, nix, etc.) without manual approval each time.
-        let source_settings = source_claude_dir.join("settings.local.json");
         let target_settings = target_claude_dir.join("settings.local.json");
-        let mut settings = if source_settings.is_file()
-            && let Ok(content) = std::fs::read_to_string(&source_settings)
-            && let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(&content)
-            && parsed.get("hooks").is_some()
-        {
-            parsed.as_object_mut().unwrap().retain(|k, _| k == "hooks");
-            parsed
-        } else {
-            serde_json::json!({})
-        };
+        let mut settings = serde_json::json!({
+            "hooks": hooks_json()
+        });
         // Merge skill-level tools (Read, Glob, Edit, etc.) with base
         // Bash-pattern tools (nix develop, cargo fmt, etc.) into a single
         // permissions.allow list.  Claude Code reads this key from settings
@@ -487,6 +479,45 @@ fn base_allowed_tools() -> Vec<&'static str> {
         "Bash(which:*)",
         "Bash(pwd)",
     ]
+}
+
+/// Generate the hooks JSON for spawned agent settings.
+///
+/// Hook events:
+/// - `Notification` with matchers for idle/active detection
+/// - `PostToolUse` for in-pane permission clearing
+/// - `PermissionRequest` for routing permissions to the dashboard
+fn hooks_json() -> serde_json::Value {
+    let hook = |script: &str, timeout: u64| -> serde_json::Value {
+        serde_json::json!({
+            "type": "command",
+            "command": format!("\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/{script}"),
+            "timeout": timeout
+        })
+    };
+
+    serde_json::json!({
+        "Notification": [
+            {
+                "matcher": "idle_prompt",
+                "hooks": [hook("notification-idle.sh", 10)]
+            },
+            {
+                "matcher": "permission_prompt",
+                "hooks": [hook("notification-active.sh", 10)]
+            },
+            {
+                "matcher": "elicitation_dialog",
+                "hooks": [hook("notification-active.sh", 10)]
+            }
+        ],
+        "PostToolUse": [
+            { "hooks": [hook("post-tool-resolved.sh", 10)] }
+        ],
+        "PermissionRequest": [
+            { "hooks": [hook("permission-gate.sh", 620)] }
+        ]
+    })
 }
 
 /// Rewrite hook commands in settings JSON to prefix `CC_PERM_SOCKET=<path>`,
