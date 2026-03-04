@@ -387,16 +387,15 @@ fn run_loop<R: Runtime>(
     // pending_permissions without an explicit dashboard resolution).
     let mut tg_perm_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
 
-    // Seed idle pane detection before first render.
-    let running_pane_ids: Vec<String> = app
+    // Start with all running panes assumed idle. Hooks (Stop →
+    // idle, PermissionRequest / message-sent → active) will flip
+    // state on the next tool use — no screen-capture polling needed.
+    app.idle_panes = app
         .tasks
         .iter()
         .filter(|t| t.status.is_running())
         .filter_map(|t| t.tmux_pane.clone())
         .collect();
-    let pane_refs: Vec<&str> = running_pane_ids.iter().map(|s| s.as_str()).collect();
-    app.idle_panes = crate::runtime::idle_panes(&pane_refs);
-    let mut last_activity_check = Instant::now();
 
     loop {
         let any_pm_streaming = pm_contexts.values().any(|ctx| ctx.state.streaming);
@@ -1637,18 +1636,6 @@ fn run_loop<R: Runtime>(
         if last_tick.elapsed() >= tick_rate {
             if let Ok(tasks) = service.list_visible(app.active_project_id.as_deref()) {
                 app.refresh_tasks(tasks);
-            }
-            // Refresh idle pane detection every 2 seconds (single list-panes call).
-            if last_activity_check.elapsed() >= Duration::from_secs(2) {
-                let running_pane_ids: Vec<String> = app
-                    .tasks
-                    .iter()
-                    .filter(|t| t.status.is_running())
-                    .filter_map(|t| t.tmux_pane.clone())
-                    .collect();
-                let pane_refs: Vec<&str> = running_pane_ids.iter().map(|s| s.as_str()).collect();
-                app.idle_panes = crate::runtime::idle_panes(&pane_refs);
-                last_activity_check = Instant::now();
             }
             // Update global task→project mapping and drain stale permissions.
             // Uses the full (unscoped) active task list so permissions for tasks
