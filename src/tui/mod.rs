@@ -372,11 +372,11 @@ fn run_loop<R: Runtime>(
             last_tick = Instant::now();
         }
 
-        // Drain socket events
+        // Drain socket events – permissions first so resolved notifications can find them.
+        handlers::drain_permissions(app, perm_rx, tg_tx, &mut tg_perm_ids, &mut perm_id_counter);
         handlers::drain_resolved(app, resolved_rx, tg_tx, &mut tg_perm_ids);
         handlers::drain_idle(app, idle_rx);
         handlers::drain_active(app, active_rx);
-        handlers::drain_permissions(app, perm_rx, tg_tx, &mut tg_perm_ids, &mut perm_id_counter);
         handlers::drain_telegram(app, exo, exo_session, service, tg_rx);
         handlers::detect_vanished_perms(app, tg_tx, &mut tg_perm_ids);
 
