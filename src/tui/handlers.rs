@@ -6,7 +6,7 @@ use std::sync::mpsc;
 use crossterm::event::KeyEvent;
 use crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::app::{ClatApp, PromptMode, SpawnRequest, WorkDirMode};
+use crate::app::ClatApp;
 use crate::permission::PermissionRequest;
 use crate::primitives::{ChatId, MessageRole, ProjectId, TaskName};
 use crate::runtime::Runtime;
@@ -172,7 +172,7 @@ fn handle_input_editing(input: &mut super::input::InputState, key: &KeyEvent) ->
 // ── Paste handling ──────────────────────────────────────────────────
 
 pub(super) fn handle_paste(app: &mut Dashboard, text: String) {
-    if matches!(app.focus, Focus::ChatInput | Focus::SpawnInput) {
+    if matches!(app.focus, Focus::ChatInput) {
         if text.contains('\n') || text.contains('\r') {
             app.input.set_paste(text);
         } else {
@@ -466,7 +466,6 @@ pub(super) fn handle_focus_key<R: Runtime>(
         Focus::TaskList => handle_task_list_key(app, key, service),
         Focus::TaskSearch => handle_task_search_key(app, key),
         Focus::ProjectList => handle_project_list_key(app, key, service, pm_contexts, pm_tx),
-        Focus::SpawnInput => handle_spawn_input_key(app, key, service),
         Focus::ProjectNameInput => handle_project_name_input_key(app, key, service),
         Focus::ChatInput if app.show_detail => handle_task_chat_input_key(app, key, service),
         Focus::ChatInput => {
@@ -531,10 +530,6 @@ fn handle_task_list_key<R: Runtime>(app: &mut Dashboard, key: KeyEvent, service:
                 let id = task.id.clone();
                 app.focus = Focus::ConfirmCloseTask(id);
             }
-        }
-        KeyCode::Char('n') => {
-            app.input.take();
-            app.focus = Focus::SpawnInput;
         }
         KeyCode::Char('r') => {
             reopen_task(app, service);
@@ -717,41 +712,6 @@ fn handle_project_list_key<R: Runtime>(
             }
         }
         _ => {}
-    }
-}
-
-fn handle_spawn_input_key<R: Runtime>(app: &mut Dashboard, key: KeyEvent, service: &ClatApp<R>) {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    match key.code {
-        KeyCode::Esc => {
-            app.input.take();
-            app.focus = Focus::TaskList;
-        }
-        KeyCode::Enter => {
-            if !app.input.is_empty() {
-                let name = app.input.take();
-                let root = service.project_root().to_path_buf();
-                let _ = service.spawn(SpawnRequest {
-                    task_name: &name,
-                    skill_name: "engineer",
-                    params: vec![("task".to_string(), name.clone())],
-                    work_dir_mode: WorkDirMode::Worktree {
-                        repo: &root,
-                        branch: None,
-                    },
-                    prompt_mode: PromptMode::Full,
-                    project_id: app.active_project_id.clone(),
-                });
-                if let Ok(tasks) = service.list_visible(app.active_project_id.as_ref()) {
-                    app.refresh_tasks(tasks);
-                }
-            }
-            app.focus = Focus::TaskList;
-        }
-        KeyCode::Char('k') if ctrl => app.input.kill_line(),
-        _ => {
-            handle_input_editing(&mut app.input, &key);
-        }
     }
 }
 

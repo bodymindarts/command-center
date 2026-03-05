@@ -26,8 +26,6 @@ pub(in crate::tui) fn render_input(
     let searching = matches!(app.focus, Focus::TaskSearch);
     let prefix = if matches!(app.focus, Focus::ProjectNameInput) {
         "[new project] > ".to_string()
-    } else if matches!(app.focus, Focus::SpawnInput) {
-        "[spawn] > ".to_string()
     } else if !searching && app.show_detail {
         let name = app.selected_task().map(|t| t.name.as_str()).unwrap_or("?");
         format!("[{name}] > ")
@@ -113,12 +111,6 @@ pub(in crate::tui) fn render_prompt_bar(frame: &mut ratatui::Frame, app: &Dashbo
         Focus::ProjectNameInput => vec![
             Span::styled(" Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" create  "),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::raw(" cancel"),
-        ],
-        Focus::SpawnInput => vec![
-            Span::styled(" Enter", Style::default().fg(Color::Yellow)),
-            Span::raw(" send  "),
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::raw(" cancel"),
         ],
@@ -210,8 +202,6 @@ pub(in crate::tui) fn render_prompt_bar(frame: &mut ratatui::Frame, app: &Dashbo
                 Span::raw(" search  "),
                 Span::styled("p", Style::default().fg(Color::Yellow)),
                 Span::raw(" projects  "),
-                Span::styled("n", Style::default().fg(Color::Yellow)),
-                Span::raw(" new  "),
                 Span::styled("x", Style::default().fg(Color::Yellow)),
                 Span::raw(" close  "),
                 Span::styled("q", Style::default().fg(Color::Yellow)),

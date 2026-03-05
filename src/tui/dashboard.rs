@@ -15,7 +15,6 @@ pub enum Focus {
     ProjectNameInput,
     ChatInput,
     ChatHistory,
-    SpawnInput,
     ConfirmDelete(TaskId),
     ConfirmDeleteProject(ProjectName),
     ConfirmCloseTask(TaskId),
