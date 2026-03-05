@@ -7,13 +7,13 @@ use super::super::dashboard::{Dashboard, Focus};
 
 pub(in crate::tui) fn render_input(
     frame: &mut ratatui::Frame,
-    app: &Dashboard,
+    dash: &Dashboard,
     area: Rect,
     focused: bool,
 ) {
-    let front_input_perm = app.permissions.peek(&app.focused_perm_key());
-    let focused_has_perms = app.show_detail && front_input_perm.is_some_and(|p| !p.is_askuser());
-    let focused_has_askuser = app.show_detail && front_input_perm.is_some_and(|p| p.is_askuser());
+    let front_input_perm = dash.permissions.peek(&dash.focused_perm_key());
+    let focused_has_perms = dash.show_detail && front_input_perm.is_some_and(|p| !p.is_askuser());
+    let focused_has_askuser = dash.show_detail && front_input_perm.is_some_and(|p| p.is_askuser());
     let border_color = if focused && focused_has_perms {
         Color::Yellow
     } else if focused && focused_has_askuser {
@@ -23,11 +23,11 @@ pub(in crate::tui) fn render_input(
     } else {
         Color::DarkGray
     };
-    let searching = matches!(app.focus, Focus::TaskSearch);
-    let prefix = if !searching && app.show_detail {
-        let name = app.selected_task().map(|t| t.name.as_str()).unwrap_or("?");
+    let searching = matches!(dash.focus, Focus::TaskSearch);
+    let prefix = if !searching && dash.show_detail {
+        let name = dash.selected_task().map(|t| t.name.as_str()).unwrap_or("?");
         format!("[{name}] > ")
-    } else if let Some(ref name) = app.active_project {
+    } else if let Some(ref name) = dash.active_project {
         format!("[{}] > ", name.as_str())
     } else {
         "[ExO] > ".to_string()
@@ -37,8 +37,8 @@ pub(in crate::tui) fn render_input(
     // Visible width inside borders
     let visible_width = area.width.saturating_sub(2);
 
-    let display_buf = app.input.display_text();
-    let cursor_pos = prefix_len + app.input.display_cursor() as u16;
+    let display_buf = dash.input.display_text();
+    let cursor_pos = prefix_len + dash.input.display_cursor() as u16;
     let scroll = if cursor_pos >= visible_width {
         cursor_pos - visible_width + 1
     } else {
@@ -92,9 +92,9 @@ fn askuser_hint_spans(n_opts: usize) -> Vec<Span<'static>> {
     spans
 }
 
-pub(in crate::tui) fn render_prompt_bar(frame: &mut ratatui::Frame, app: &Dashboard, area: Rect) {
+pub(in crate::tui) fn render_prompt_bar(frame: &mut ratatui::Frame, dash: &Dashboard, area: Rect) {
     // Show transient error in red, replacing normal keybinding hints
-    if let Some(ref err) = app.status_error {
+    if let Some(ref err) = dash.status_error {
         let bar = Paragraph::new(Line::from(vec![Span::styled(
             format!(" {err}"),
             Style::default().fg(Color::Red),
@@ -103,10 +103,10 @@ pub(in crate::tui) fn render_prompt_bar(frame: &mut ratatui::Frame, app: &Dashbo
         return;
     }
 
-    let front_p = app.permissions.peek(&app.focused_perm_key());
-    let has_perms = app.show_detail && front_p.is_some_and(|p| !p.is_askuser());
-    let mut spans = match &app.focus {
-        Focus::ChatInput if app.show_detail => {
+    let front_p = dash.permissions.peek(&dash.focused_perm_key());
+    let has_perms = dash.show_detail && front_p.is_some_and(|p| !p.is_askuser());
+    let mut spans = match &dash.focus {
+        Focus::ChatInput if dash.show_detail => {
             vec![
                 Span::styled(" ^G", Style::default().fg(Color::Yellow)),
                 Span::raw(" goto  "),
@@ -199,7 +199,7 @@ pub(in crate::tui) fn render_prompt_bar(frame: &mut ratatui::Frame, app: &Dashbo
             ]
         }
     };
-    let has_askuser = app.show_detail && front_p.is_some_and(|p| p.is_askuser());
+    let has_askuser = dash.show_detail && front_p.is_some_and(|p| p.is_askuser());
     if has_perms {
         spans.extend(perm_hint_spans());
     } else if has_askuser {

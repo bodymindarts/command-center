@@ -87,11 +87,11 @@ fn parse_ask_user_options(
 
 /// Resolve and consume the active permission request.
 fn resolve_permission(
-    app: &mut Dashboard,
+    dash: &mut Dashboard,
     allow: bool,
 ) -> Option<(UnixStream, bool, Vec<serde_json::Value>, u64)> {
-    let perm_key = app.active_permission_key()?;
-    let perm = app.permissions.take(&perm_key)?;
+    let perm_key = dash.active_permission_key()?;
+    let perm = dash.permissions.take(&perm_key)?;
     Some((
         perm.stream,
         allow,
@@ -171,13 +171,13 @@ fn handle_input_editing(input: &mut super::input::InputState, key: &KeyEvent) ->
 
 // ── Paste handling ──────────────────────────────────────────────────
 
-pub(super) fn handle_paste(app: &mut Dashboard, text: String) {
-    if matches!(app.focus, Focus::ChatInput) {
+pub(super) fn handle_paste(dash: &mut Dashboard, text: String) {
+    if matches!(dash.focus, Focus::ChatInput) {
         if text.contains('\n') || text.contains('\r') {
-            app.input.set_paste(text);
+            dash.input.set_paste(text);
         } else {
             for c in text.chars() {
-                app.input.insert(c);
+                dash.input.insert(c);
             }
         }
     }
@@ -188,9 +188,9 @@ pub(super) fn handle_paste(app: &mut Dashboard, text: String) {
 /// Handle global key shortcuts (Ctrl+C, Ctrl+P, Ctrl+Y/T/N, number keys, Ctrl+O, Ctrl+R).
 /// Returns true if the key was consumed.
 pub(super) fn handle_global_keys<R: Runtime>(
-    app: &mut Dashboard,
+    dash: &mut Dashboard,
     key: KeyEvent,
-    service: &ClatApp<R>,
+    app: &ClatApp<R>,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
@@ -199,22 +199,22 @@ pub(super) fn handle_global_keys<R: Runtime>(
 
     // Ctrl+C quits
     if ctrl && key.code == KeyCode::Char('c') {
-        app.should_quit = true;
+        dash.should_quit = true;
         return true;
     }
 
     // Ctrl+P cycles to next task with pending permissions
     if ctrl && key.code == KeyCode::Char('p') {
-        return handle_cycle_permissions(app, service, pm_contexts, pm_tx);
+        return handle_cycle_permissions(dash, app, pm_contexts, pm_tx);
     }
 
     // Ctrl+Y one-time allow
     if ctrl
         && key.code == KeyCode::Char('y')
-        && app.show_detail
-        && app.permissions.peek(&app.focused_perm_key()).is_some()
+        && dash.show_detail
+        && dash.permissions.peek(&dash.focused_perm_key()).is_some()
     {
-        if let Some((stream, allow, _suggestions, perm_id)) = resolve_permission(app, true) {
+        if let Some((stream, allow, _suggestions, perm_id)) = resolve_permission(dash, true) {
             let _ = write_response_to_stream(stream, allow, None);
             notify_tg_resolved(tg_tx, perm_id, "✅ Approved locally");
         }
@@ -224,10 +224,10 @@ pub(super) fn handle_global_keys<R: Runtime>(
     // Ctrl+T trust / always-allow
     if ctrl
         && key.code == KeyCode::Char('t')
-        && app.show_detail
-        && app.permissions.peek(&app.focused_perm_key()).is_some()
+        && dash.show_detail
+        && dash.permissions.peek(&dash.focused_perm_key()).is_some()
     {
-        if let Some((stream, allow, suggestions, perm_id)) = resolve_permission(app, true) {
+        if let Some((stream, allow, suggestions, perm_id)) = resolve_permission(dash, true) {
             let _ = write_response_to_stream(stream, allow, Some(&suggestions));
             notify_tg_resolved(tg_tx, perm_id, "✅ Trusted locally");
         }
@@ -237,10 +237,10 @@ pub(super) fn handle_global_keys<R: Runtime>(
     // Ctrl+N denies permission
     if ctrl
         && key.code == KeyCode::Char('n')
-        && app.show_detail
-        && app.permissions.peek(&app.focused_perm_key()).is_some()
+        && dash.show_detail
+        && dash.permissions.peek(&dash.focused_perm_key()).is_some()
     {
-        if let Some((stream, allow, _suggestions, perm_id)) = resolve_permission(app, false) {
+        if let Some((stream, allow, _suggestions, perm_id)) = resolve_permission(dash, false) {
             let _ = write_response_to_stream(stream, allow, None);
             notify_tg_resolved(tg_tx, perm_id, "❌ Denied locally");
         }
@@ -250,29 +250,29 @@ pub(super) fn handle_global_keys<R: Runtime>(
     // Number keys 1-4 answer an AskUser prompt
     if matches!(key.code, KeyCode::Char('1'..='4'))
         && key.modifiers.is_empty()
-        && app.show_detail
-        && app
+        && dash.show_detail
+        && dash
             .permissions
-            .peek(&app.focused_perm_key())
+            .peek(&dash.focused_perm_key())
             .is_some_and(|p| p.is_askuser())
     {
-        handle_askuser_select(app, key, tg_tx);
+        handle_askuser_select(dash, key, tg_tx);
         return true;
     }
 
     // Ctrl+O returns to ExO chat
     if ctrl && key.code == KeyCode::Char('o') {
-        app.save_project_state();
-        app.switch_to_project(None);
-        if let Ok(tasks) = service.list_visible(None) {
-            app.finish_project_switch(tasks);
+        dash.save_project_state();
+        dash.switch_to_project(None);
+        if let Ok(tasks) = app.list_visible(None) {
+            dash.finish_project_switch(tasks);
         }
         return true;
     }
 
     // Ctrl+R returns to PM (or last active project from ExO)
     if ctrl && key.code == KeyCode::Char('r') {
-        handle_goto_pm(app, service, pm_contexts, pm_tx);
+        handle_goto_pm(dash, app, pm_contexts, pm_tx);
         return true;
     }
 
@@ -280,14 +280,14 @@ pub(super) fn handle_global_keys<R: Runtime>(
 }
 
 fn handle_cycle_permissions<R: Runtime>(
-    app: &mut Dashboard,
-    service: &ClatApp<R>,
+    dash: &mut Dashboard,
+    app: &ClatApp<R>,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
 ) -> bool {
-    let names = app.permissions.task_names_with_pending();
+    let names = dash.permissions.task_names_with_pending();
     if !names.is_empty() {
-        let current = app.focused_perm_key();
+        let current = dash.focused_perm_key();
         let idx = names
             .iter()
             .position(|n| n == &current)
@@ -296,33 +296,33 @@ fn handle_cycle_permissions<R: Runtime>(
         let name = names[idx].clone();
         if name == EXO_PERM_KEY {
             // Navigate to ExO view
-            if app.active_project_id.is_some() {
-                app.save_project_state();
-                app.switch_to_project(None);
-                if let Ok(tasks) = service.list_visible(None) {
-                    app.finish_project_switch(tasks);
+            if dash.active_project_id.is_some() {
+                dash.save_project_state();
+                dash.switch_to_project(None);
+                if let Ok(tasks) = app.list_visible(None) {
+                    dash.finish_project_switch(tasks);
                 }
             } else {
-                app.show_detail = false;
+                dash.show_detail = false;
             }
-        } else if let Some(pos) = app.tasks.iter().position(|t| t.name == name) {
+        } else if let Some(pos) = dash.tasks.iter().position(|t| t.name == name) {
             // Task is in the current project view
-            app.save_current_input();
-            app.list_state.select(Some(pos));
-            app.show_detail = true;
-            app.detail_scroll = 0;
-            app.focus = Focus::ChatInput;
-            app.chat_scroll = 0;
-            app.restore_input();
+            dash.save_current_input();
+            dash.list_state.select(Some(pos));
+            dash.show_detail = true;
+            dash.detail_scroll = 0;
+            dash.focus = Focus::ChatInput;
+            dash.chat_scroll = 0;
+            dash.restore_input();
         } else {
             // Task is in a different project — switch to it
-            let target_pid = app.global_task_projects.get(&name).cloned().flatten();
-            app.save_project_state();
+            let target_pid = dash.global_task_projects.get(&name).cloned().flatten();
+            dash.save_project_state();
             if let Some(pid) = target_pid {
-                if let Ok(projects) = service.list_projects() {
-                    app.projects = projects;
+                if let Ok(projects) = app.list_projects() {
+                    dash.projects = projects;
                 }
-                let proj_name = app
+                let proj_name = dash
                     .projects
                     .iter()
                     .find(|p| p.id == pid)
@@ -330,41 +330,41 @@ fn handle_cycle_permissions<R: Runtime>(
                     .unwrap_or_else(|| {
                         crate::primitives::ProjectName::from(pid.as_str().to_string())
                     });
-                app.switch_to_project(Some((proj_name, pid.clone())));
-                if let Ok(tasks) = service.list_visible(Some(&pid)) {
-                    app.finish_project_switch(tasks);
+                dash.switch_to_project(Some((proj_name, pid.clone())));
+                if let Ok(tasks) = app.list_visible(Some(&pid)) {
+                    dash.finish_project_switch(tasks);
                 }
-                if let Some(pos) = app.tasks.iter().position(|t| t.name == name) {
-                    app.list_state.select(Some(pos));
-                    app.show_detail = true;
-                    app.detail_scroll = 0;
+                if let Some(pos) = dash.tasks.iter().position(|t| t.name == name) {
+                    dash.list_state.select(Some(pos));
+                    dash.show_detail = true;
+                    dash.detail_scroll = 0;
                 }
-                super::ensure_pm_context(pm_contexts, app, service, &pid, pm_tx);
+                super::ensure_pm_context(pm_contexts, dash, app, &pid, pm_tx);
             } else {
-                app.switch_to_project(None);
-                if let Ok(tasks) = service.list_visible(None) {
-                    app.finish_project_switch(tasks);
+                dash.switch_to_project(None);
+                if let Ok(tasks) = app.list_visible(None) {
+                    dash.finish_project_switch(tasks);
                 }
-                if let Some(pos) = app.tasks.iter().position(|t| t.name == name) {
-                    app.list_state.select(Some(pos));
-                    app.show_detail = true;
-                    app.detail_scroll = 0;
+                if let Some(pos) = dash.tasks.iter().position(|t| t.name == name) {
+                    dash.list_state.select(Some(pos));
+                    dash.show_detail = true;
+                    dash.detail_scroll = 0;
                 }
             }
         }
-    } else if app.list_state.selected().is_some() {
-        app.save_current_input();
-        app.show_detail = true;
-        app.detail_scroll = 0;
-        app.focus = Focus::ChatInput;
-        app.chat_scroll = 0;
-        app.restore_input();
+    } else if dash.list_state.selected().is_some() {
+        dash.save_current_input();
+        dash.show_detail = true;
+        dash.detail_scroll = 0;
+        dash.focus = Focus::ChatInput;
+        dash.chat_scroll = 0;
+        dash.restore_input();
     }
     true
 }
 
 fn handle_askuser_select(
-    app: &mut Dashboard,
+    dash: &mut Dashboard,
     key: KeyEvent,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
 ) {
@@ -372,13 +372,13 @@ fn handle_askuser_select(
         KeyCode::Char(c) => c.to_digit(10).unwrap_or(1) as usize,
         _ => 1,
     };
-    let perm_key = app.focused_perm_key();
-    if let Some(perm) = app.permissions.peek(&perm_key) {
+    let perm_key = dash.focused_perm_key();
+    if let Some(perm) = dash.permissions.peek(&perm_key) {
         let idx = digit - 1;
         if idx < perm.askuser_options.len() {
             let label = perm.askuser_options[idx].0.clone();
             let perm_id = perm.perm_id;
-            if let Some(perm) = app.permissions.take(&perm_key) {
+            if let Some(perm) = dash.permissions.take(&perm_key) {
                 let _ = write_response_with_message(perm.stream, true, &label);
                 notify_tg_resolved(tg_tx, perm_id, &format!("✅ Selected: {label}"));
             }
@@ -387,66 +387,66 @@ fn handle_askuser_select(
 }
 
 fn handle_goto_pm<R: Runtime>(
-    app: &mut Dashboard,
-    service: &ClatApp<R>,
+    dash: &mut Dashboard,
+    app: &ClatApp<R>,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
 ) {
     // If in a project's task detail, go back to PM chat
-    if app.show_detail && app.active_project_id.is_some() {
-        app.save_current_input();
-        app.show_detail = false;
-        app.focus = Focus::ChatInput;
-        app.chat_scroll = 0;
-        app.restore_input();
+    if dash.show_detail && dash.active_project_id.is_some() {
+        dash.save_current_input();
+        dash.show_detail = false;
+        dash.focus = Focus::ChatInput;
+        dash.chat_scroll = 0;
+        dash.restore_input();
     // If in ExO view, restore last active project (or first project)
-    } else if app.active_project_id.is_none() {
-        if let Ok(projects) = service.list_projects() {
-            app.projects = projects;
+    } else if dash.active_project_id.is_none() {
+        if let Ok(projects) = app.list_projects() {
+            dash.projects = projects;
         }
-        let target = app
+        let target = dash
             .last_project
             .take()
             .map(|s| (s.name, s.id, s.show_detail, s.selected_task_name))
             .or_else(|| {
-                app.projects
+                dash.projects
                     .first()
                     .map(|p| (p.name.clone(), p.id.clone(), false, None))
             });
         if let Some((name, id, saved_show_detail, saved_task_name)) = target {
-            app.switch_to_project(Some((name, id.clone())));
-            if let Ok(tasks) = service.list_visible(Some(&id)) {
-                app.finish_project_switch(tasks);
+            dash.switch_to_project(Some((name, id.clone())));
+            if let Ok(tasks) = app.list_visible(Some(&id)) {
+                dash.finish_project_switch(tasks);
             }
             if saved_show_detail
                 && let Some(ref task_name) = saved_task_name
-                && let Some(idx) = app.tasks.iter().position(|t| &t.name == task_name)
+                && let Some(idx) = dash.tasks.iter().position(|t| &t.name == task_name)
             {
-                app.list_state.select(Some(idx));
-                app.show_detail = true;
-                app.detail_scroll = 0;
+                dash.list_state.select(Some(idx));
+                dash.show_detail = true;
+                dash.detail_scroll = 0;
             }
-            super::ensure_pm_context(pm_contexts, app, service, &id, pm_tx);
+            super::ensure_pm_context(pm_contexts, dash, app, &id, pm_tx);
         }
     // If in a project PM view, cycle to next project
-    } else if app.active_project_id.is_some() && !app.show_detail {
-        if let Ok(projects) = service.list_projects() {
-            app.projects = projects;
+    } else if dash.active_project_id.is_some() && !dash.show_detail {
+        if let Ok(projects) = app.list_projects() {
+            dash.projects = projects;
         }
-        let cur_idx = app
+        let cur_idx = dash
             .active_project_id
             .as_ref()
-            .and_then(|pid| app.projects.iter().position(|p| p.id == *pid));
+            .and_then(|pid| dash.projects.iter().position(|p| p.id == *pid));
         if let Some(ci) = cur_idx {
-            let next_idx = (ci + 1) % app.projects.len();
-            let next = &app.projects[next_idx];
+            let next_idx = (ci + 1) % dash.projects.len();
+            let next = &dash.projects[next_idx];
             let next_id = next.id.clone();
             let next_name = next.name.clone();
-            app.switch_to_project(Some((next_name, next_id.clone())));
-            if let Ok(tasks) = service.list_visible(Some(&next_id)) {
-                app.finish_project_switch(tasks);
+            dash.switch_to_project(Some((next_name, next_id.clone())));
+            if let Ok(tasks) = app.list_visible(Some(&next_id)) {
+                dash.finish_project_switch(tasks);
             }
-            super::ensure_pm_context(pm_contexts, app, service, &next_id, pm_tx);
+            super::ensure_pm_context(pm_contexts, dash, app, &next_id, pm_tx);
         }
     }
 }
@@ -454,346 +454,340 @@ fn handle_goto_pm<R: Runtime>(
 // ── Per-focus key handlers ──────────────────────────────────────────
 
 pub(super) fn handle_focus_key<R: Runtime>(
-    app: &mut Dashboard,
+    dash: &mut Dashboard,
     key: KeyEvent,
-    service: &ClatApp<R>,
+    app: &ClatApp<R>,
     exo: &mut ExoState,
     exo_session: &mut ExoSession,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
 ) {
-    match &app.focus {
-        Focus::TaskList => handle_task_list_key(app, key, service),
-        Focus::TaskSearch => handle_task_search_key(app, key),
-        Focus::ProjectList => handle_project_list_key(app, key, service, pm_contexts, pm_tx),
-        Focus::ChatInput if app.show_detail => handle_task_chat_input_key(app, key, service),
+    match &dash.focus {
+        Focus::TaskList => handle_task_list_key(dash, key, app),
+        Focus::TaskSearch => handle_task_search_key(dash, key),
+        Focus::ProjectList => handle_project_list_key(dash, key, app, pm_contexts, pm_tx),
+        Focus::ChatInput if dash.show_detail => handle_task_chat_input_key(dash, key, app),
         Focus::ChatInput => {
-            handle_chat_input_key(app, key, service, exo, exo_session, pm_contexts, pm_tx)
+            handle_chat_input_key(dash, key, app, exo, exo_session, pm_contexts, pm_tx)
         }
-        Focus::ChatHistory => handle_chat_history_key(app, key),
-        Focus::ConfirmDelete(_) => handle_confirm_delete_key(app, key, service),
-        Focus::ConfirmCloseTask(_) => handle_confirm_close_task_key(app, key, service),
-        Focus::ConfirmDeleteProject(_) => handle_confirm_delete_project_key(app, key, service),
-        Focus::ConfirmCloseProject => {
-            handle_confirm_close_project_key(app, key, service, pm_contexts)
-        }
+        Focus::ChatHistory => handle_chat_history_key(dash, key),
+        Focus::ConfirmDelete(_) => handle_confirm_delete_key(dash, key, app),
+        Focus::ConfirmCloseTask(_) => handle_confirm_close_task_key(dash, key, app),
+        Focus::ConfirmDeleteProject(_) => handle_confirm_delete_project_key(dash, key, app),
+        Focus::ConfirmCloseProject => handle_confirm_close_project_key(dash, key, app, pm_contexts),
     }
 }
 
-fn handle_task_list_key<R: Runtime>(app: &mut Dashboard, key: KeyEvent, service: &ClatApp<R>) {
+fn handle_task_list_key<R: Runtime>(dash: &mut Dashboard, key: KeyEvent, app: &ClatApp<R>) {
     match key.code {
-        KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Char('q') => dash.should_quit = true,
         KeyCode::Esc => {
-            app.show_detail = false;
-            app.focus = Focus::ChatInput;
-            app.restore_input();
+            dash.show_detail = false;
+            dash.focus = Focus::ChatInput;
+            dash.restore_input();
         }
         KeyCode::Char('j') | KeyCode::Down => {
-            app.next();
-            app.show_detail = true;
-            app.detail_scroll = 0;
+            dash.next();
+            dash.show_detail = true;
+            dash.detail_scroll = 0;
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            app.previous();
-            app.show_detail = true;
-            app.detail_scroll = 0;
+            dash.previous();
+            dash.show_detail = true;
+            dash.detail_scroll = 0;
         }
         KeyCode::PageDown => {
-            app.detail_scroll = app.detail_scroll.saturating_add(10);
+            dash.detail_scroll = dash.detail_scroll.saturating_add(10);
         }
         KeyCode::PageUp => {
-            app.detail_scroll = app.detail_scroll.saturating_sub(10);
+            dash.detail_scroll = dash.detail_scroll.saturating_sub(10);
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.detail_scroll = app.detail_scroll.saturating_add(10);
+            dash.detail_scroll = dash.detail_scroll.saturating_add(10);
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.detail_scroll = app.detail_scroll.saturating_sub(10);
+            dash.detail_scroll = dash.detail_scroll.saturating_sub(10);
         }
         KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            goto_task_window(app, service);
+            goto_task_window(dash, app);
         }
         KeyCode::Enter => {
-            if app.selected_task().is_some() {
-                app.show_detail = true;
-                app.detail_scroll = 0;
-                app.focus = Focus::ChatInput;
-                app.chat_scroll = 0;
-                app.restore_input();
+            if dash.selected_task().is_some() {
+                dash.show_detail = true;
+                dash.detail_scroll = 0;
+                dash.focus = Focus::ChatInput;
+                dash.chat_scroll = 0;
+                dash.restore_input();
             }
         }
         KeyCode::Char('x') => {
-            if let Some(task) = app.selected_task()
+            if let Some(task) = dash.selected_task()
                 && task.status.is_running()
             {
                 let id = task.id.clone();
-                app.focus = Focus::ConfirmCloseTask(id);
+                dash.focus = Focus::ConfirmCloseTask(id);
             }
         }
         KeyCode::Char('r') => {
-            reopen_task(app, service);
+            reopen_task(dash, app);
         }
         KeyCode::Backspace => {
-            if let Some(task) = app.selected_task() {
+            if let Some(task) = dash.selected_task() {
                 let id = task.id.clone();
-                app.focus = Focus::ConfirmDelete(id);
+                dash.focus = Focus::ConfirmDelete(id);
             }
         }
         KeyCode::Char('/') => {
-            app.search_input.take();
-            app.update_search_filter();
-            app.focus = Focus::TaskSearch;
+            dash.search_input.take();
+            dash.update_search_filter();
+            dash.focus = Focus::TaskSearch;
         }
         KeyCode::Tab => {
-            app.focus = Focus::ChatInput;
-            app.restore_input();
+            dash.focus = Focus::ChatInput;
+            dash.restore_input();
         }
         KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.focus = Focus::ChatInput;
-            app.restore_input();
+            dash.focus = Focus::ChatInput;
+            dash.restore_input();
         }
         KeyCode::Char('p') => {
-            if let Ok(projects) = service.list_projects() {
-                app.projects = projects;
-                if !app.projects.is_empty() {
-                    app.project_list_state.select(Some(0));
+            if let Ok(projects) = app.list_projects() {
+                dash.projects = projects;
+                if !dash.projects.is_empty() {
+                    dash.project_list_state.select(Some(0));
                 }
             }
-            app.show_projects = true;
-            app.focus = Focus::ProjectList;
+            dash.show_projects = true;
+            dash.focus = Focus::ProjectList;
         }
         _ => {}
     }
 }
 
-fn handle_task_search_key(app: &mut Dashboard, key: KeyEvent) {
+fn handle_task_search_key(dash: &mut Dashboard, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let searching_projects = app.show_projects;
-    let do_filter = |app: &mut Dashboard| {
-        if app.show_projects {
-            app.update_project_search_filter();
+    let searching_projects = dash.show_projects;
+    let do_filter = |dash: &mut Dashboard| {
+        if dash.show_projects {
+            dash.update_project_search_filter();
         } else {
-            app.update_search_filter();
+            dash.update_search_filter();
         }
     };
     match key.code {
         KeyCode::Esc => {
-            app.search_input.take();
+            dash.search_input.take();
             if searching_projects {
-                app.filtered_project_indices.clear();
-                if !app.projects.is_empty() {
-                    let sel = app
+                dash.filtered_project_indices.clear();
+                if !dash.projects.is_empty() {
+                    let sel = dash
                         .project_list_state
                         .selected()
                         .unwrap_or(0)
-                        .min(app.projects.len() - 1);
-                    app.project_list_state.select(Some(sel));
+                        .min(dash.projects.len() - 1);
+                    dash.project_list_state.select(Some(sel));
                 }
-                app.focus = Focus::ProjectList;
+                dash.focus = Focus::ProjectList;
             } else {
-                app.filtered_indices.clear();
-                if !app.tasks.is_empty() {
-                    let sel = app
+                dash.filtered_indices.clear();
+                if !dash.tasks.is_empty() {
+                    let sel = dash
                         .list_state
                         .selected()
                         .unwrap_or(0)
-                        .min(app.tasks.len() - 1);
-                    app.list_state.select(Some(sel));
+                        .min(dash.tasks.len() - 1);
+                    dash.list_state.select(Some(sel));
                 }
-                app.focus = Focus::TaskList;
+                dash.focus = Focus::TaskList;
             }
         }
         KeyCode::Enter => {
             if searching_projects {
-                if let Some(real_idx) = app.selected_filtered_project_index() {
-                    app.project_list_state.select(Some(real_idx));
+                if let Some(real_idx) = dash.selected_filtered_project_index() {
+                    dash.project_list_state.select(Some(real_idx));
                 }
-                app.search_input.take();
-                app.filtered_project_indices.clear();
-                app.focus = Focus::ProjectList;
+                dash.search_input.take();
+                dash.filtered_project_indices.clear();
+                dash.focus = Focus::ProjectList;
             } else {
-                if let Some(real_idx) = app.selected_filtered_task_index() {
-                    app.list_state.select(Some(real_idx));
-                    app.show_detail = true;
-                    app.detail_scroll = 0;
-                    app.focus = Focus::ChatInput;
-                    app.chat_scroll = 0;
-                    app.restore_input();
+                if let Some(real_idx) = dash.selected_filtered_task_index() {
+                    dash.list_state.select(Some(real_idx));
+                    dash.show_detail = true;
+                    dash.detail_scroll = 0;
+                    dash.focus = Focus::ChatInput;
+                    dash.chat_scroll = 0;
+                    dash.restore_input();
                 } else {
-                    app.focus = Focus::TaskList;
+                    dash.focus = Focus::TaskList;
                 }
-                app.search_input.take();
-                app.filtered_indices.clear();
+                dash.search_input.take();
+                dash.filtered_indices.clear();
             }
         }
         KeyCode::Down | KeyCode::Tab => {
             if searching_projects {
-                app.search_next_project();
+                dash.search_next_project();
             } else {
-                app.search_next();
+                dash.search_next();
             }
         }
         KeyCode::Up | KeyCode::BackTab => {
             if searching_projects {
-                app.search_prev_project();
+                dash.search_prev_project();
             } else {
-                app.search_prev();
+                dash.search_prev();
             }
         }
         KeyCode::Char('n') if ctrl => {
             if searching_projects {
-                app.search_next_project();
+                dash.search_next_project();
             } else {
-                app.search_next();
+                dash.search_next();
             }
         }
         KeyCode::Char('p') if ctrl => {
             if searching_projects {
-                app.search_prev_project();
+                dash.search_prev_project();
             } else {
-                app.search_prev();
+                dash.search_prev();
             }
         }
         KeyCode::Char('k') if ctrl => {
-            app.search_input.kill_line();
-            do_filter(app);
+            dash.search_input.kill_line();
+            do_filter(dash);
         }
         _ => {
-            if handle_input_editing(&mut app.search_input, &key) {
-                do_filter(app);
+            if handle_input_editing(&mut dash.search_input, &key) {
+                do_filter(dash);
             }
         }
     }
 }
 
 fn handle_project_list_key<R: Runtime>(
-    app: &mut Dashboard,
+    dash: &mut Dashboard,
     key: KeyEvent,
-    service: &ClatApp<R>,
+    app: &ClatApp<R>,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
 ) {
     match key.code {
-        KeyCode::Char('q') => app.should_quit = true,
-        KeyCode::Char('j') | KeyCode::Down => app.next_project(),
-        KeyCode::Char('k') | KeyCode::Up => app.previous_project(),
+        KeyCode::Char('q') => dash.should_quit = true,
+        KeyCode::Char('j') | KeyCode::Down => dash.next_project(),
+        KeyCode::Char('k') | KeyCode::Up => dash.previous_project(),
         KeyCode::Char('/') => {
-            app.search_input.take();
-            app.update_project_search_filter();
-            app.focus = Focus::TaskSearch;
+            dash.search_input.take();
+            dash.update_project_search_filter();
+            dash.focus = Focus::TaskSearch;
         }
         KeyCode::Enter => {
-            if let Some(project) = app.selected_project() {
+            if let Some(project) = dash.selected_project() {
                 let project_id = project.id.clone();
                 let project_name = project.name.clone();
-                app.switch_to_project(Some((project_name, project_id.clone())));
-                if let Ok(tasks) = service.list_visible(Some(&project_id)) {
-                    app.finish_project_switch(tasks);
+                dash.switch_to_project(Some((project_name, project_id.clone())));
+                if let Ok(tasks) = app.list_visible(Some(&project_id)) {
+                    dash.finish_project_switch(tasks);
                 }
-                super::ensure_pm_context(pm_contexts, app, service, &project_id, pm_tx);
+                super::ensure_pm_context(pm_contexts, dash, app, &project_id, pm_tx);
             }
         }
         KeyCode::Backspace => {
-            if let Some(project) = app.selected_project() {
+            if let Some(project) = dash.selected_project() {
                 let name = project.name.clone();
-                app.focus = Focus::ConfirmDeleteProject(name);
+                dash.focus = Focus::ConfirmDeleteProject(name);
             }
         }
         KeyCode::Char('p') | KeyCode::Esc => {
-            app.switch_to_project(None);
-            app.focus = Focus::TaskList;
-            if let Ok(tasks) = service.list_visible(None) {
-                app.finish_project_switch(tasks);
+            dash.switch_to_project(None);
+            dash.focus = Focus::TaskList;
+            if let Ok(tasks) = app.list_visible(None) {
+                dash.finish_project_switch(tasks);
             }
         }
         _ => {}
     }
 }
 
-fn handle_task_chat_input_key<R: Runtime>(
-    app: &mut Dashboard,
-    key: KeyEvent,
-    service: &ClatApp<R>,
-) {
+fn handle_task_chat_input_key<R: Runtime>(dash: &mut Dashboard, key: KeyEvent, app: &ClatApp<R>) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Esc => {
-            app.save_current_input();
-            app.show_detail = false;
-            app.chat_scroll = 0;
-            app.restore_input();
+            dash.save_current_input();
+            dash.show_detail = false;
+            dash.chat_scroll = 0;
+            dash.restore_input();
         }
         KeyCode::Tab => {
-            app.save_current_input();
-            app.chat_scroll = 0;
-            let current = app.list_state.selected().unwrap_or(0);
-            if current + 1 < app.tasks.len() {
-                app.list_state.select(Some(current + 1));
-                app.detail_scroll = 0;
+            dash.save_current_input();
+            dash.chat_scroll = 0;
+            let current = dash.list_state.selected().unwrap_or(0);
+            if current + 1 < dash.tasks.len() {
+                dash.list_state.select(Some(current + 1));
+                dash.detail_scroll = 0;
             } else {
-                app.show_detail = false;
+                dash.show_detail = false;
             }
-            app.restore_input();
+            dash.restore_input();
         }
         KeyCode::BackTab => {
-            app.save_current_input();
-            app.chat_scroll = 0;
-            let current = app.list_state.selected().unwrap_or(0);
+            dash.save_current_input();
+            dash.chat_scroll = 0;
+            let current = dash.list_state.selected().unwrap_or(0);
             if current > 0 {
-                app.list_state.select(Some(current - 1));
-                app.detail_scroll = 0;
+                dash.list_state.select(Some(current - 1));
+                dash.detail_scroll = 0;
             } else {
-                app.show_detail = false;
+                dash.show_detail = false;
             }
-            app.restore_input();
+            dash.restore_input();
         }
         KeyCode::Char('k') if ctrl => {
-            app.focus = Focus::ChatHistory;
+            dash.focus = Focus::ChatHistory;
         }
         KeyCode::Char('x') if ctrl => {
-            if let Some(task) = app.selected_task()
+            if let Some(task) = dash.selected_task()
                 && task.status.is_running()
             {
                 let id = task.id.clone();
-                app.focus = Focus::ConfirmCloseTask(id);
+                dash.focus = Focus::ConfirmCloseTask(id);
             }
         }
         KeyCode::Char('l') if ctrl => {
-            app.save_current_input();
-            app.focus = Focus::TaskList;
+            dash.save_current_input();
+            dash.focus = Focus::TaskList;
         }
         KeyCode::Char('g') if ctrl => {
-            goto_task_window(app, service);
+            goto_task_window(dash, app);
         }
         KeyCode::Enter => {
-            if !app.input.is_empty() {
-                let msg = app.input.take();
-                if let Some(task) = app.selected_task() {
+            if !dash.input.is_empty() {
+                let msg = dash.input.take();
+                if let Some(task) = dash.selected_task() {
                     let task_id = task.id.as_str().to_string();
                     let pane = task.tmux_pane.clone();
-                    match service.send(&task_id, &msg) {
+                    match app.send(&task_id, &msg) {
                         Ok(_) => {
                             if let Some(pane) = pane {
-                                app.idle_panes.remove(&pane);
+                                dash.idle_panes.remove(&pane);
                             }
                         }
                         Err(e) => {
-                            app.status_error = Some(format!("send: {e}"));
+                            dash.status_error = Some(format!("send: {e}"));
                         }
                     }
                 }
             }
         }
         _ => {
-            handle_input_editing(&mut app.input, &key);
+            handle_input_editing(&mut dash.input, &key);
         }
     }
 }
 
 fn handle_chat_input_key<R: Runtime>(
-    app: &mut Dashboard,
+    dash: &mut Dashboard,
     key: KeyEvent,
-    service: &ClatApp<R>,
+    app: &ClatApp<R>,
     exo: &mut ExoState,
     exo_session: &mut ExoSession,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
@@ -805,70 +799,70 @@ fn handle_chat_input_key<R: Runtime>(
             if exo.streaming {
                 exo.finish_streaming();
             }
-            if let Some(ref pid) = app.active_project_id
+            if let Some(ref pid) = dash.active_project_id
                 && let Some(ctx) = pm_contexts.get_mut(pid)
                 && ctx.state.streaming
             {
                 ctx.state.finish_streaming();
             }
-            app.chat_scroll = 0;
+            dash.chat_scroll = 0;
         }
         KeyCode::Tab => {
-            app.save_current_input();
-            app.chat_scroll = 0;
-            if !app.tasks.is_empty() {
-                app.list_state.select(Some(0));
-                app.show_detail = true;
-                app.detail_scroll = 0;
+            dash.save_current_input();
+            dash.chat_scroll = 0;
+            if !dash.tasks.is_empty() {
+                dash.list_state.select(Some(0));
+                dash.show_detail = true;
+                dash.detail_scroll = 0;
             }
-            app.restore_input();
+            dash.restore_input();
         }
         KeyCode::BackTab => {
-            app.save_current_input();
-            app.chat_scroll = 0;
-            if !app.tasks.is_empty() {
-                app.list_state.select(Some(app.tasks.len() - 1));
-                app.show_detail = true;
-                app.detail_scroll = 0;
+            dash.save_current_input();
+            dash.chat_scroll = 0;
+            if !dash.tasks.is_empty() {
+                dash.list_state.select(Some(dash.tasks.len() - 1));
+                dash.show_detail = true;
+                dash.detail_scroll = 0;
             }
-            app.restore_input();
+            dash.restore_input();
         }
         KeyCode::Char('k') if ctrl => {
-            app.focus = Focus::ChatHistory;
+            dash.focus = Focus::ChatHistory;
         }
-        KeyCode::Char('x') if ctrl && app.active_project.is_some() => {
-            app.focus = Focus::ConfirmCloseProject;
+        KeyCode::Char('x') if ctrl && dash.active_project.is_some() => {
+            dash.focus = Focus::ConfirmCloseProject;
         }
         KeyCode::Char('l') if ctrl => {
-            app.save_current_input();
-            app.focus = Focus::TaskList;
-            if app.list_state.selected().is_some() {
-                app.show_detail = true;
-                app.detail_scroll = 0;
+            dash.save_current_input();
+            dash.focus = Focus::TaskList;
+            if dash.list_state.selected().is_some() {
+                dash.show_detail = true;
+                dash.detail_scroll = 0;
             }
         }
         KeyCode::Enter => {
-            handle_chat_enter(app, service, exo, exo_session, pm_contexts, pm_tx);
+            handle_chat_enter(dash, app, exo, exo_session, pm_contexts, pm_tx);
         }
         _ => {
-            handle_input_editing(&mut app.input, &key);
+            handle_input_editing(&mut dash.input, &key);
         }
     }
 }
 
 fn handle_chat_enter<R: Runtime>(
-    app: &mut Dashboard,
-    service: &ClatApp<R>,
+    dash: &mut Dashboard,
+    app: &ClatApp<R>,
     exo: &mut ExoState,
     exo_session: &mut ExoSession,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
 ) {
-    app.chat_scroll = 0;
-    if app.input.is_empty() {
+    dash.chat_scroll = 0;
+    if dash.input.is_empty() {
         return;
     }
-    if let Some(ref pid) = app.active_project_id {
+    if let Some(ref pid) = dash.active_project_id {
         if !pm_contexts.contains_key(pid) {
             pm_contexts.insert(pid.clone(), PmContext::new(pid, pm_tx));
         }
@@ -879,17 +873,17 @@ fn handle_chat_enter<R: Runtime>(
                 && matches!(msg.role, MessageRole::Assistant)
                 && msg.has_text()
             {
-                let _ = service.insert_pm_message(pid, MessageRole::Assistant, &msg.text_content());
+                let _ = app.insert_pm_message(pid, MessageRole::Assistant, &msg.text_content());
             }
         }
-        let msg = app.input.take();
-        let _ = service.insert_pm_message(pid, MessageRole::User, &msg);
+        let msg = dash.input.take();
+        let _ = app.insert_pm_message(pid, MessageRole::User, &msg);
         ctx.state.add_user_message(msg.clone());
         if ctx.session.is_none() {
-            let sid = service
+            let sid = app
                 .read_pm_session_id(pid)
                 .or_else(|| ctx.state.session_id.clone());
-            let proj_name = app
+            let proj_name = dash
                 .active_project
                 .as_ref()
                 .map(|p| p.as_str())
@@ -907,7 +901,7 @@ fn handle_chat_enter<R: Runtime>(
         }
         if let Some(sess) = &mut ctx.session {
             sess.send_message(&msg, ctx.state.session_id.as_deref());
-            app.chat_scroll = 0;
+            dash.chat_scroll = 0;
         }
     } else {
         if exo.streaming {
@@ -916,83 +910,83 @@ fn handle_chat_enter<R: Runtime>(
                 && matches!(msg.role, MessageRole::Assistant)
                 && msg.has_text()
             {
-                let _ = service.insert_exo_message(MessageRole::Assistant, &msg.text_content());
+                let _ = app.insert_exo_message(MessageRole::Assistant, &msg.text_content());
             }
         }
-        let msg = app.input.take();
-        let _ = service.insert_exo_message(MessageRole::User, &msg);
+        let msg = dash.input.take();
+        let _ = app.insert_exo_message(MessageRole::User, &msg);
         exo.add_user_message(msg.clone());
         exo_session.send_message(&msg, exo.session_id.as_deref());
-        app.chat_scroll = 0;
+        dash.chat_scroll = 0;
     }
 }
 
-fn handle_chat_history_key(app: &mut Dashboard, key: KeyEvent) {
+fn handle_chat_history_key(dash: &mut Dashboard, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Char('j') if ctrl => {
-            app.focus = Focus::ChatInput;
+            dash.focus = Focus::ChatInput;
         }
         KeyCode::Char('u') if ctrl => {
-            let half = (app.chat_viewport_height / 2).max(1);
-            app.chat_scroll = app.chat_scroll.saturating_add(half);
+            let half = (dash.chat_viewport_height / 2).max(1);
+            dash.chat_scroll = dash.chat_scroll.saturating_add(half);
         }
         KeyCode::Char('d') if ctrl => {
-            let half = (app.chat_viewport_height / 2).max(1);
-            app.chat_scroll = app.chat_scroll.saturating_sub(half);
+            let half = (dash.chat_viewport_height / 2).max(1);
+            dash.chat_scroll = dash.chat_scroll.saturating_sub(half);
         }
         KeyCode::Char('l') if ctrl => {
-            app.focus = Focus::TaskList;
+            dash.focus = Focus::TaskList;
         }
         KeyCode::Esc => {
-            app.focus = Focus::ChatInput;
-            app.chat_scroll = 0;
+            dash.focus = Focus::ChatInput;
+            dash.chat_scroll = 0;
         }
         _ => {}
     }
 }
 
-fn handle_confirm_delete_key<R: Runtime>(app: &mut Dashboard, key: KeyEvent, service: &ClatApp<R>) {
-    let task_id = match &app.focus {
+fn handle_confirm_delete_key<R: Runtime>(dash: &mut Dashboard, key: KeyEvent, app: &ClatApp<R>) {
+    let task_id = match &dash.focus {
         Focus::ConfirmDelete(id) => id.clone(),
         _ => return,
     };
     match key.code {
         KeyCode::Char('y') => {
-            let _ = service.delete(task_id.as_str());
-            if let Ok(tasks) = service.list_visible(app.active_project_id.as_ref()) {
-                app.refresh_tasks(tasks);
+            let _ = app.delete(task_id.as_str());
+            if let Ok(tasks) = app.list_visible(dash.active_project_id.as_ref()) {
+                dash.refresh_tasks(tasks);
             }
-            app.focus = Focus::TaskList;
+            dash.focus = Focus::TaskList;
         }
         KeyCode::Char('n') | KeyCode::Esc => {
-            app.focus = Focus::TaskList;
+            dash.focus = Focus::TaskList;
         }
         _ => {}
     }
 }
 
 fn handle_confirm_close_task_key<R: Runtime>(
-    app: &mut Dashboard,
+    dash: &mut Dashboard,
     key: KeyEvent,
-    service: &ClatApp<R>,
+    app: &ClatApp<R>,
 ) {
-    let task_id = match &app.focus {
+    let task_id = match &dash.focus {
         Focus::ConfirmCloseTask(id) => id.clone(),
         _ => return,
     };
     match key.code {
         KeyCode::Char('y') => {
-            let _ = service.close(task_id.as_str());
-            if let Ok(tasks) = service.list_visible(app.active_project_id.as_ref()) {
-                app.refresh_tasks(tasks);
+            let _ = app.close(task_id.as_str());
+            if let Ok(tasks) = app.list_visible(dash.active_project_id.as_ref()) {
+                dash.refresh_tasks(tasks);
             }
-            app.show_detail = false;
-            app.focus = Focus::ChatInput;
-            app.restore_input();
+            dash.show_detail = false;
+            dash.focus = Focus::ChatInput;
+            dash.restore_input();
         }
         KeyCode::Char('n') | KeyCode::Esc => {
-            app.focus = if app.show_detail {
+            dash.focus = if dash.show_detail {
                 Focus::ChatInput
             } else {
                 Focus::TaskList
@@ -1003,82 +997,82 @@ fn handle_confirm_close_task_key<R: Runtime>(
 }
 
 fn handle_confirm_delete_project_key<R: Runtime>(
-    app: &mut Dashboard,
+    dash: &mut Dashboard,
     key: KeyEvent,
-    service: &ClatApp<R>,
+    app: &ClatApp<R>,
 ) {
-    let project_name = match &app.focus {
+    let project_name = match &dash.focus {
         Focus::ConfirmDeleteProject(name) => name.clone(),
         _ => return,
     };
     match key.code {
         KeyCode::Char('y') => {
-            let _ = service.delete_project(project_name.as_str());
-            if let Ok(projects) = service.list_projects() {
-                app.projects = projects;
-                if app.projects.is_empty() {
-                    app.project_list_state.select(None);
+            let _ = app.delete_project(project_name.as_str());
+            if let Ok(projects) = app.list_projects() {
+                dash.projects = projects;
+                if dash.projects.is_empty() {
+                    dash.project_list_state.select(None);
                 } else {
-                    let sel = app
+                    let sel = dash
                         .project_list_state
                         .selected()
                         .unwrap_or(0)
-                        .min(app.projects.len().saturating_sub(1));
-                    app.project_list_state.select(Some(sel));
+                        .min(dash.projects.len().saturating_sub(1));
+                    dash.project_list_state.select(Some(sel));
                 }
             }
-            app.focus = Focus::ProjectList;
+            dash.focus = Focus::ProjectList;
         }
         KeyCode::Char('n') | KeyCode::Esc => {
-            app.focus = Focus::ProjectList;
+            dash.focus = Focus::ProjectList;
         }
         _ => {}
     }
 }
 
 fn handle_confirm_close_project_key<R: Runtime>(
-    app: &mut Dashboard,
+    dash: &mut Dashboard,
     key: KeyEvent,
-    service: &ClatApp<R>,
+    app: &ClatApp<R>,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
 ) {
     match key.code {
         KeyCode::Char('y') => {
-            let closed_pid = app.active_project_id.clone();
-            app.switch_to_project(None);
-            app.focus = Focus::TaskList;
+            let closed_pid = dash.active_project_id.clone();
+            dash.switch_to_project(None);
+            dash.focus = Focus::TaskList;
             if let Some(pid) = closed_pid {
                 super::cancel_pm_context(pm_contexts, &pid);
             }
-            if let Ok(tasks) = service.list_visible(None) {
-                app.finish_project_switch(tasks);
+            if let Ok(tasks) = app.list_visible(None) {
+                dash.finish_project_switch(tasks);
             }
         }
         KeyCode::Char('n') | KeyCode::Esc => {
-            app.focus = Focus::ChatInput;
+            dash.focus = Focus::ChatInput;
         }
         _ => {}
     }
 }
 
 /// Shared: go to the selected task's tmux window (or reopen if closed).
-fn goto_task_window<R: Runtime>(app: &mut Dashboard, service: &ClatApp<R>) {
-    if let Some(task) = app.selected_task() {
+fn goto_task_window<R: Runtime>(dash: &mut Dashboard, app: &ClatApp<R>) {
+    if let Some(task) = dash.selected_task() {
         if task.status.is_running() {
             if let Some(window_id) = &task.tmux_window {
-                service.goto_window(window_id);
+                app.goto_window(window_id);
             }
         } else {
             let id = task.id.as_str().to_string();
-            match service.reopen(&id) {
+            match app.reopen(&id) {
                 Ok(window_id) => {
-                    if let Ok(tasks) = service.list_visible(app.active_project_id.as_ref()) {
-                        app.refresh_tasks(tasks);
+                    if let Ok(tasks) = app.list_visible(dash.active_project_id.as_ref()) {
+                        dash.refresh_tasks(tasks);
                     }
-                    service.goto_window(&window_id);
+                    app.goto_window(&window_id);
                 }
                 Err(e) => {
-                    app.status_error = Some(format!("reopen: {e}"));
+                    dash.status_error = Some(format!("reopen: {e}"));
                 }
             }
         }
@@ -1086,19 +1080,19 @@ fn goto_task_window<R: Runtime>(app: &mut Dashboard, service: &ClatApp<R>) {
 }
 
 /// Shared: reopen a closed task.
-fn reopen_task<R: Runtime>(app: &mut Dashboard, service: &ClatApp<R>) {
-    if let Some(task) = app.selected_task()
+fn reopen_task<R: Runtime>(dash: &mut Dashboard, app: &ClatApp<R>) {
+    if let Some(task) = dash.selected_task()
         && !task.status.is_running()
     {
         let id = task.id.as_str().to_string();
-        match service.reopen(&id) {
+        match app.reopen(&id) {
             Ok(_) => {
-                if let Ok(tasks) = service.list_visible(app.active_project_id.as_ref()) {
-                    app.refresh_tasks(tasks);
+                if let Ok(tasks) = app.list_visible(dash.active_project_id.as_ref()) {
+                    dash.refresh_tasks(tasks);
                 }
             }
             Err(e) => {
-                app.status_error = Some(format!("reopen: {e}"));
+                dash.status_error = Some(format!("reopen: {e}"));
             }
         }
     }
@@ -1109,9 +1103,9 @@ fn reopen_task<R: Runtime>(app: &mut Dashboard, service: &ClatApp<R>) {
 pub(super) fn drain_exo_events<R: Runtime>(
     exo: &mut ExoState,
     exo_session: &mut ExoSession,
-    service: &ClatApp<R>,
+    app: &ClatApp<R>,
     rx: &mpsc::Receiver<ExoEvent>,
-    app: &mut Dashboard,
+    dash: &mut Dashboard,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
 ) {
     while let Ok(ev) = rx.try_recv() {
@@ -1119,7 +1113,7 @@ pub(super) fn drain_exo_events<R: Runtime>(
             ExoEvent::TextDelta(text) => {
                 if exo.streaming {
                     exo.append_text(&text);
-                    app.chat_scroll = 0;
+                    dash.chat_scroll = 0;
                     if let Some(tx) = tg_tx {
                         let _ = tx.send(telegram::TgOutbound::ExoTextDelta { text: text.clone() });
                     }
@@ -1131,7 +1125,7 @@ pub(super) fn drain_exo_events<R: Runtime>(
                 }
             }
             ExoEvent::SessionId(id) => {
-                service.write_exo_session_id(&id);
+                app.write_exo_session_id(&id);
                 exo.session_id = Some(id.clone());
                 exo_session.set_session_id(id);
             }
@@ -1141,7 +1135,7 @@ pub(super) fn drain_exo_events<R: Runtime>(
                     && matches!(msg.role, MessageRole::Assistant)
                     && msg.has_text()
                 {
-                    let _ = service.insert_exo_message(MessageRole::Assistant, &msg.text_content());
+                    let _ = app.insert_exo_message(MessageRole::Assistant, &msg.text_content());
                 }
                 if let Some(tx) = tg_tx {
                     let _ = tx.send(telegram::TgOutbound::ExoTurnDone);
@@ -1161,7 +1155,7 @@ pub(super) fn drain_exo_events<R: Runtime>(
                     && matches!(msg.role, MessageRole::Assistant)
                     && msg.has_text()
                 {
-                    let _ = service.insert_exo_message(MessageRole::Assistant, &msg.text_content());
+                    let _ = app.insert_exo_message(MessageRole::Assistant, &msg.text_content());
                 }
             }
         }
@@ -1170,22 +1164,22 @@ pub(super) fn drain_exo_events<R: Runtime>(
 
 pub(super) fn drain_pm_events<R: Runtime>(
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
-    service: &ClatApp<R>,
+    app: &ClatApp<R>,
     pm_rx: &mpsc::Receiver<PmEvent>,
-    app: &mut Dashboard,
+    dash: &mut Dashboard,
 ) {
     while let Ok(pm_ev) = pm_rx.try_recv() {
         let project_id = pm_ev.project_id;
         let Some(ctx) = pm_contexts.get_mut(&project_id) else {
             continue;
         };
-        let is_active_pm = app.active_project_id.as_ref() == Some(&project_id);
+        let is_active_pm = dash.active_project_id.as_ref() == Some(&project_id);
         match pm_ev.inner {
             ExoEvent::TextDelta(text) => {
                 if ctx.state.streaming {
                     ctx.state.append_text(&text);
                     if is_active_pm {
-                        app.chat_scroll = 0;
+                        dash.chat_scroll = 0;
                     }
                 }
             }
@@ -1195,7 +1189,7 @@ pub(super) fn drain_pm_events<R: Runtime>(
                 }
             }
             ExoEvent::SessionId(id) => {
-                service.write_pm_session_id(&project_id, &id);
+                app.write_pm_session_id(&project_id, &id);
                 ctx.state.session_id = Some(id.clone());
                 if let Some(sess) = &mut ctx.session {
                     sess.set_session_id(id);
@@ -1207,7 +1201,7 @@ pub(super) fn drain_pm_events<R: Runtime>(
                     && matches!(msg.role, MessageRole::Assistant)
                     && msg.has_text()
                 {
-                    let _ = service.insert_pm_message(
+                    let _ = app.insert_pm_message(
                         &project_id,
                         MessageRole::Assistant,
                         &msg.text_content(),
@@ -1230,7 +1224,7 @@ pub(super) fn drain_pm_events<R: Runtime>(
                     && matches!(msg.role, MessageRole::Assistant)
                     && msg.has_text()
                 {
-                    let _ = service.insert_pm_message(
+                    let _ = app.insert_pm_message(
                         &project_id,
                         MessageRole::Assistant,
                         &msg.text_content(),
@@ -1242,7 +1236,7 @@ pub(super) fn drain_pm_events<R: Runtime>(
 }
 
 pub(super) fn drain_resolved(
-    app: &mut Dashboard,
+    dash: &mut Dashboard,
     resolved_rx: &mpsc::Receiver<String>,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
     tg_perm_ids: &mut HashSet<u64>,
@@ -1250,17 +1244,17 @@ pub(super) fn drain_resolved(
     while let Ok(cwd) = resolved_rx.try_recv() {
         let resolved_cwd =
             std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
-        let task_name = find_task_name_by_cwd(&app.global_task_work_dirs, &resolved_cwd);
+        let task_name = find_task_name_by_cwd(&dash.global_task_work_dirs, &resolved_cwd);
         if let Some(ref name) = task_name {
-            if let Some(pane_id) = app
+            if let Some(pane_id) = dash
                 .tasks
                 .iter()
                 .find(|t| t.name == *name)
                 .and_then(|t| t.tmux_pane.as_ref())
             {
-                app.idle_panes.remove(pane_id);
+                dash.idle_panes.remove(pane_id);
             }
-            if let Some(perm) = app.permissions.take(name) {
+            if let Some(perm) = dash.permissions.take(name) {
                 let _ = write_response_to_stream(perm.stream, false, None);
                 if tg_perm_ids.remove(&perm.perm_id) {
                     notify_tg_resolved(tg_tx, perm.perm_id, "✅ Resolved in pane");
@@ -1270,41 +1264,41 @@ pub(super) fn drain_resolved(
     }
 }
 
-pub(super) fn drain_idle(app: &mut Dashboard, idle_rx: &mpsc::Receiver<String>) {
+pub(super) fn drain_idle(dash: &mut Dashboard, idle_rx: &mpsc::Receiver<String>) {
     while let Ok(cwd) = idle_rx.try_recv() {
         let cwd_path =
             std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
-        if let Some(task_name) = find_task_name_by_cwd(&app.global_task_work_dirs, &cwd_path)
-            && let Some(pane_id) = app
+        if let Some(task_name) = find_task_name_by_cwd(&dash.global_task_work_dirs, &cwd_path)
+            && let Some(pane_id) = dash
                 .tasks
                 .iter()
                 .find(|t| t.name == task_name)
                 .and_then(|t| t.tmux_pane.as_ref())
         {
-            app.idle_panes.insert(pane_id.clone());
+            dash.idle_panes.insert(pane_id.clone());
         }
     }
 }
 
 /// Drain active notifications from Notification hooks — mark pane as not idle.
-pub(super) fn drain_active(app: &mut Dashboard, active_rx: &mpsc::Receiver<String>) {
+pub(super) fn drain_active(dash: &mut Dashboard, active_rx: &mpsc::Receiver<String>) {
     while let Ok(cwd) = active_rx.try_recv() {
         let cwd_path =
             std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
-        if let Some(task_name) = find_task_name_by_cwd(&app.global_task_work_dirs, &cwd_path)
-            && let Some(pane_id) = app
+        if let Some(task_name) = find_task_name_by_cwd(&dash.global_task_work_dirs, &cwd_path)
+            && let Some(pane_id) = dash
                 .tasks
                 .iter()
                 .find(|t| t.name == task_name)
                 .and_then(|t| t.tmux_pane.as_ref())
         {
-            app.idle_panes.remove(pane_id);
+            dash.idle_panes.remove(pane_id);
         }
     }
 }
 
 pub(super) fn drain_permissions(
-    app: &mut Dashboard,
+    dash: &mut Dashboard,
     perm_rx: &mpsc::Receiver<(UnixStream, PermissionRequest)>,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
     tg_perm_ids: &mut HashSet<u64>,
@@ -1313,15 +1307,15 @@ pub(super) fn drain_permissions(
     while let Ok((stream, req)) = perm_rx.try_recv() {
         let req_cwd =
             std::fs::canonicalize(&req.cwd).unwrap_or_else(|_| std::path::PathBuf::from(&req.cwd));
-        let task_name = find_task_name_by_cwd(&app.global_task_work_dirs, &req_cwd)
+        let task_name = find_task_name_by_cwd(&dash.global_task_work_dirs, &req_cwd)
             .unwrap_or_else(|| TaskName::from(EXO_PERM_KEY.to_string()));
-        if let Some(pane_id) = app
+        if let Some(pane_id) = dash
             .tasks
             .iter()
             .find(|t| t.name == task_name)
             .and_then(|t| t.tmux_pane.as_ref())
         {
-            app.idle_panes.remove(pane_id);
+            dash.idle_panes.remove(pane_id);
         }
         *perm_id_counter += 1;
         let perm_id = *perm_id_counter;
@@ -1362,32 +1356,32 @@ pub(super) fn drain_permissions(
             askuser_question,
             askuser_options,
         };
-        app.permissions.add(perm);
+        dash.permissions.add(perm);
     }
 }
 
 pub(super) fn drain_telegram<R: Runtime>(
-    app: &mut Dashboard,
+    dash: &mut Dashboard,
     exo: &mut ExoState,
     exo_session: &mut ExoSession,
-    service: &ClatApp<R>,
+    app: &ClatApp<R>,
     tg_rx: Option<&mpsc::Receiver<telegram::TgInbound>>,
 ) {
     let Some(rx) = tg_rx else { return };
     while let Ok(tg_msg) = rx.try_recv() {
         match tg_msg {
             telegram::TgInbound::PermissionDecision { perm_id, action } => {
-                let task_name = app
+                let task_name = dash
                     .permissions
                     .iter()
                     .find(|(_, queue)| queue.iter().any(|p| p.perm_id == perm_id))
                     .map(|(name, _)| name.clone());
                 if let Some(name) = task_name
-                    && app
+                    && dash
                         .permissions
                         .peek(&name)
                         .is_some_and(|front| front.perm_id == perm_id)
-                    && let Some(perm) = app.permissions.take(&name)
+                    && let Some(perm) = dash.permissions.take(&name)
                 {
                     let (allow, suggestions) = match action {
                         telegram::PermAction::Approve => (true, None),
@@ -1400,34 +1394,33 @@ pub(super) fn drain_telegram<R: Runtime>(
                 }
             }
             telegram::TgInbound::QuestionAnswer { perm_id, answer } => {
-                let task_name = app
+                let task_name = dash
                     .permissions
                     .iter()
                     .find(|(_, queue)| queue.iter().any(|p| p.perm_id == perm_id))
                     .map(|(name, _)| name.clone());
                 if let Some(name) = task_name
-                    && app
+                    && dash
                         .permissions
                         .peek(&name)
                         .is_some_and(|front| front.perm_id == perm_id)
-                    && let Some(perm) = app.permissions.take(&name)
+                    && let Some(perm) = dash.permissions.take(&name)
                 {
                     let _ = write_response_with_message(perm.stream, true, &answer);
                 }
             }
             telegram::TgInbound::ExoMessage { text } => {
-                app.chat_scroll = 0;
+                dash.chat_scroll = 0;
                 if exo.streaming {
                     exo.finish_streaming();
                     if let Some(msg) = exo.messages.last()
                         && matches!(msg.role, MessageRole::Assistant)
                         && msg.has_text()
                     {
-                        let _ =
-                            service.insert_exo_message(MessageRole::Assistant, &msg.text_content());
+                        let _ = app.insert_exo_message(MessageRole::Assistant, &msg.text_content());
                     }
                 }
-                let _ = service.insert_exo_message(MessageRole::User, &text);
+                let _ = app.insert_exo_message(MessageRole::User, &text);
                 exo.add_user_message(text.clone());
                 exo_session.send_message(&text, exo.session_id.as_deref());
             }
@@ -1436,68 +1429,68 @@ pub(super) fn drain_telegram<R: Runtime>(
 }
 
 pub(super) fn tick_refresh<R: Runtime>(
-    app: &mut Dashboard,
-    service: &ClatApp<R>,
+    dash: &mut Dashboard,
+    app: &ClatApp<R>,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
 ) {
-    if let Ok(tasks) = service.list_visible(app.active_project_id.as_ref()) {
-        app.refresh_tasks(tasks);
+    if let Ok(tasks) = app.list_visible(dash.active_project_id.as_ref()) {
+        dash.refresh_tasks(tasks);
     }
     // Update global task→project mapping and drain stale permissions.
-    let all_active = service.list_active().unwrap_or_default();
+    let all_active = app.list_active().unwrap_or_default();
     let all_running_names: HashSet<TaskName> = all_active.iter().map(|t| t.name.clone()).collect();
-    app.global_task_projects = all_active
+    dash.global_task_projects = all_active
         .iter()
         .map(|t| (t.name.clone(), t.project_id.clone()))
         .collect();
-    app.global_task_work_dirs = all_active
+    dash.global_task_work_dirs = all_active
         .iter()
         .filter_map(|t| t.work_dir.as_ref().map(|wd| (t.name.clone(), wd.clone())))
         .collect();
-    for perm in app.permissions.drain_stale(&all_running_names) {
+    for perm in dash.permissions.drain_stale(&all_running_names) {
         notify_tg_resolved(tg_tx, perm.perm_id, "⚪ Expired (task ended)");
         let _ = write_response_to_stream(perm.stream, false, None);
     }
-    app.window_numbers = service.window_numbers();
+    dash.window_numbers = app.window_numbers();
     // Update selected messages and live output for detail view
-    if let Some(task) = app.selected_task() {
+    if let Some(task) = dash.selected_task() {
         let chat = ChatId::Task(task.id.clone());
         let is_running = task.status.is_running();
         let pane = task.tmux_pane.clone();
-        if let Ok(messages) = service.messages(&chat) {
-            app.selected_messages = messages;
+        if let Ok(messages) = app.messages(&chat) {
+            dash.selected_messages = messages;
         }
         if is_running {
-            app.detail_live_output = pane
+            dash.detail_live_output = pane
                 .as_ref()
                 .map(|p| p.as_str())
-                .and_then(|p| service.capture_pane(p));
+                .and_then(|p| app.capture_pane(p));
         } else {
-            app.detail_live_output = None;
+            dash.detail_live_output = None;
         }
     } else {
-        app.selected_messages.clear();
-        app.detail_live_output = None;
+        dash.selected_messages.clear();
+        dash.detail_live_output = None;
     }
     // Refresh PM messages for active project
-    if let Some(ref pid) = app.active_project_id {
-        if let Ok(messages) = service.pm_messages(pid) {
-            app.pm_messages = messages;
+    if let Some(ref pid) = dash.active_project_id {
+        if let Ok(messages) = app.pm_messages(pid) {
+            dash.pm_messages = messages;
         }
     } else {
-        app.pm_messages.clear();
+        dash.pm_messages.clear();
     }
 }
 
 pub(super) fn detect_vanished_perms(
-    app: &Dashboard,
+    dash: &Dashboard,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
     tg_perm_ids: &mut HashSet<u64>,
 ) {
     if tg_perm_ids.is_empty() {
         return;
     }
-    let still_pending = app.permissions.all_perm_ids();
+    let still_pending = dash.permissions.all_perm_ids();
     let vanished: Vec<u64> = tg_perm_ids
         .iter()
         .filter(|id| !still_pending.contains(id))

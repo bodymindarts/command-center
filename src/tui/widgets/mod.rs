@@ -10,7 +10,7 @@ use super::dashboard::{Dashboard, Focus};
 
 pub(in crate::tui) fn ui(
     frame: &mut ratatui::Frame,
-    app: &mut Dashboard,
+    dash: &mut Dashboard,
     exo: &ExoState,
     pm: Option<&ExoState>,
 ) {
@@ -20,16 +20,16 @@ pub(in crate::tui) fn ui(
         .split(frame.area());
 
     // Left side: chat + (optional mid-panel) + input + prompt bar
-    let searching = matches!(app.focus, Focus::TaskSearch);
-    let in_task_chat = !searching && app.show_detail && app.selected_task().is_some();
-    let focused_perm_key = app.focused_perm_key();
-    let front_perm = app.permissions.peek(&focused_perm_key);
+    let searching = matches!(dash.focus, Focus::TaskSearch);
+    let in_task_chat = !searching && dash.show_detail && dash.selected_task().is_some();
+    let focused_perm_key = dash.focused_perm_key();
+    let front_perm = dash.permissions.peek(&focused_perm_key);
     let show_perm = in_task_chat && front_perm.is_some_and(|p| !p.is_askuser());
     let show_askuser = in_task_chat && front_perm.is_some_and(|p| p.is_askuser());
-    let show_delete = matches!(app.focus, Focus::ConfirmDelete(_));
-    let show_delete_project = matches!(app.focus, Focus::ConfirmDeleteProject(_));
-    let show_close_task = matches!(app.focus, Focus::ConfirmCloseTask(_));
-    let show_close_project = matches!(app.focus, Focus::ConfirmCloseProject);
+    let show_delete = matches!(dash.focus, Focus::ConfirmDelete(_));
+    let show_delete_project = matches!(dash.focus, Focus::ConfirmDeleteProject(_));
+    let show_close_task = matches!(dash.focus, Focus::ConfirmCloseTask(_));
+    let show_close_project = matches!(dash.focus, Focus::ConfirmCloseProject);
     let show_mid_panel = show_perm
         || show_askuser
         || show_delete
@@ -65,29 +65,29 @@ pub(in crate::tui) fn ui(
             .split(outer[0])
     };
 
-    chat_panel::render_chat(frame, app, exo, pm, left[0]);
+    chat_panel::render_chat(frame, dash, exo, pm, left[0]);
     if show_close_task {
-        confirm::render_close_task_panel(frame, app, left[1]);
+        confirm::render_close_task_panel(frame, dash, left[1]);
     } else if show_close_project {
-        confirm::render_close_project_panel(frame, app, left[1]);
+        confirm::render_close_project_panel(frame, dash, left[1]);
     } else if show_delete_project {
-        confirm::render_delete_project_panel(frame, app, left[1]);
+        confirm::render_delete_project_panel(frame, dash, left[1]);
     } else if show_delete {
-        confirm::render_delete_confirm_panel(frame, app, left[1]);
+        confirm::render_delete_confirm_panel(frame, dash, left[1]);
     } else if show_perm {
-        confirm::render_permission_panel(frame, app, left[1]);
+        confirm::render_permission_panel(frame, dash, left[1]);
     } else if show_askuser {
-        confirm::render_askuser_panel(frame, app, left[1]);
+        confirm::render_askuser_panel(frame, dash, left[1]);
     }
 
-    let focused_input = matches!(app.focus, Focus::ChatInput);
-    input_panel::render_input(frame, app, left[2], focused_input);
-    input_panel::render_prompt_bar(frame, app, left[3]);
+    let focused_input = matches!(dash.focus, Focus::ChatInput);
+    input_panel::render_input(frame, dash, left[2], focused_input);
+    input_panel::render_prompt_bar(frame, dash, left[3]);
 
     // Right side: task list or project list
     let focused_task_list = matches!(
-        app.focus,
+        dash.focus,
         Focus::TaskList | Focus::TaskSearch | Focus::ProjectList
     );
-    task_panel::render_task_list(frame, app, outer[1], focused_task_list);
+    task_panel::render_task_list(frame, dash, outer[1], focused_task_list);
 }

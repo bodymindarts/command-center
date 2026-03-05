@@ -7,8 +7,8 @@ use crate::task::{DisplayStatus, Project};
 
 use super::super::dashboard::{Dashboard, Focus};
 
-fn task_list_item(app: &Dashboard, task: &crate::task::Task) -> ListItem<'static> {
-    let ds = task.display_status(&app.idle_panes);
+fn task_list_item(dash: &Dashboard, task: &crate::task::Task) -> ListItem<'static> {
+    let ds = task.display_status(&dash.idle_panes);
     let status_char = ds.indicator();
     let color = display_status_color(&ds);
     let dim = if ds.is_dim() {
@@ -25,7 +25,7 @@ fn task_list_item(app: &Dashboard, task: &crate::task::Task) -> ListItem<'static
     let win_num = task
         .tmux_window
         .as_ref()
-        .and_then(|w| app.window_numbers.get(w))
+        .and_then(|w| dash.window_numbers.get(w))
         .map(|s| s.as_str())
         .unwrap_or("-");
     let main_line = Line::from(vec![
@@ -55,7 +55,7 @@ fn task_list_item(app: &Dashboard, task: &crate::task::Task) -> ListItem<'static
     ]);
 
     // Permission sub-line if this task has pending permissions
-    if let Some(queue) = app.permissions.get(&task.name)
+    if let Some(queue) = dash.permissions.get(&task.name)
         && let Some(front) = queue.front()
     {
         let extra = queue.len().saturating_sub(1);
@@ -75,7 +75,7 @@ fn task_list_item(app: &Dashboard, task: &crate::task::Task) -> ListItem<'static
     }
 
     // AskUser sub-line if the front permission for this task is an AskUser question (green)
-    if let Some(queue) = app.permissions.get(&task.name)
+    if let Some(queue) = dash.permissions.get(&task.name)
         && let Some(front) = queue.front()
         && front.is_askuser()
     {
@@ -93,16 +93,16 @@ fn task_list_item(app: &Dashboard, task: &crate::task::Task) -> ListItem<'static
 
 pub(in crate::tui) fn render_task_list(
     frame: &mut ratatui::Frame,
-    app: &mut Dashboard,
+    dash: &mut Dashboard,
     area: Rect,
     focused: bool,
 ) {
-    if app.show_projects {
-        render_project_list(frame, app, area, focused);
+    if dash.show_projects {
+        render_project_list(frame, dash, area, focused);
         return;
     }
 
-    let searching = matches!(app.focus, Focus::TaskSearch);
+    let searching = matches!(dash.focus, Focus::TaskSearch);
 
     let (list_area, search_area) = if searching {
         let chunks = Layout::default()
@@ -115,15 +115,15 @@ pub(in crate::tui) fn render_task_list(
     };
 
     let items: Vec<ListItem> = if searching {
-        app.filtered_indices
+        dash.filtered_indices
             .iter()
-            .filter_map(|&i| app.tasks.get(i))
-            .map(|task| task_list_item(app, task))
+            .filter_map(|&i| dash.tasks.get(i))
+            .map(|task| task_list_item(dash, task))
             .collect()
     } else {
-        app.tasks
+        dash.tasks
             .iter()
-            .map(|task| task_list_item(app, task))
+            .map(|task| task_list_item(dash, task))
             .collect()
     };
 
@@ -133,19 +133,19 @@ pub(in crate::tui) fn render_task_list(
         Color::DarkGray
     };
 
-    let total_askuser = app.current_project_askuser_count();
-    let total_perm = app
+    let total_askuser = dash.current_project_askuser_count();
+    let total_perm = dash
         .current_project_perm_count()
         .saturating_sub(total_askuser);
-    let other_perms = app.other_project_perm_counts();
+    let other_perms = dash.other_project_perm_counts();
     let mut title_spans: Vec<Span> = Vec::new();
     if searching {
         title_spans.push(Span::raw(format!(
             " Tasks ({}/{}) ",
-            app.filtered_indices.len(),
-            app.tasks.len()
+            dash.filtered_indices.len(),
+            dash.tasks.len()
         )));
-    } else if let Some(ref name) = app.active_project {
+    } else if let Some(ref name) = dash.active_project {
         let name = name.as_str();
         let mut badges = Vec::new();
         if total_perm > 0 {
@@ -186,7 +186,7 @@ pub(in crate::tui) fn render_task_list(
     }
     let title = Line::from(title_spans);
 
-    let show_highlight = app.show_detail || focused;
+    let show_highlight = dash.show_detail || focused;
 
     let list = List::new(items)
         .block(
@@ -208,15 +208,20 @@ pub(in crate::tui) fn render_task_list(
             "  "
         });
 
-    frame.render_stateful_widget(list, list_area, &mut app.list_state);
+    frame.render_stateful_widget(list, list_area, &mut dash.list_state);
 
     if let Some(search_area) = search_area {
-        render_search_bar(frame, &app.search_input.buffer(), search_area);
+        render_search_bar(frame, &dash.search_input.buffer(), search_area);
     }
 }
 
-fn render_project_list(frame: &mut ratatui::Frame, app: &mut Dashboard, area: Rect, focused: bool) {
-    let searching = matches!(app.focus, Focus::TaskSearch) && app.show_projects;
+fn render_project_list(
+    frame: &mut ratatui::Frame,
+    dash: &mut Dashboard,
+    area: Rect,
+    focused: bool,
+) {
+    let searching = matches!(dash.focus, Focus::TaskSearch) && dash.show_projects;
 
     let (list_area, search_area) = if searching {
         let chunks = Layout::default()
@@ -249,20 +254,20 @@ fn render_project_list(frame: &mut ratatui::Frame, app: &mut Dashboard, area: Re
     };
 
     let items: Vec<ListItem> = if searching {
-        app.filtered_project_indices
+        dash.filtered_project_indices
             .iter()
-            .filter_map(|&i| app.projects.get(i))
+            .filter_map(|&i| dash.projects.get(i))
             .map(project_item)
             .collect()
     } else {
-        app.projects.iter().map(project_item).collect()
+        dash.projects.iter().map(project_item).collect()
     };
 
     let title = if searching {
         format!(
             " Projects ({}/{}) ",
-            app.filtered_project_indices.len(),
-            app.projects.len()
+            dash.filtered_project_indices.len(),
+            dash.projects.len()
         )
     } else {
         " Projects ".to_string()
@@ -282,10 +287,10 @@ fn render_project_list(frame: &mut ratatui::Frame, app: &mut Dashboard, area: Re
         )
         .highlight_symbol("> ");
 
-    frame.render_stateful_widget(list, list_area, &mut app.project_list_state);
+    frame.render_stateful_widget(list, list_area, &mut dash.project_list_state);
 
     if let Some(search_area) = search_area {
-        render_search_bar(frame, &app.search_input.buffer(), search_area);
+        render_search_bar(frame, &dash.search_input.buffer(), search_area);
     }
 }
 

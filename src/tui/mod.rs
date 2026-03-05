@@ -76,22 +76,22 @@ fn cancel_pm_context(pm_contexts: &mut HashMap<ProjectId, PmContext>, project_id
 /// Ensure a PmContext exists for the project, creating and loading history if needed.
 fn ensure_pm_context<R: Runtime>(
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
-    app: &mut Dashboard,
-    service: &ClatApp<R>,
+    dash: &mut Dashboard,
+    app: &ClatApp<R>,
     project_id: &ProjectId,
     pm_tx: &mpsc::Sender<PmEvent>,
 ) {
     if !pm_contexts.contains_key(project_id) {
         let mut ctx = PmContext::new(project_id, pm_tx);
-        ctx.state.session_id = service.read_pm_session_id(project_id);
-        if let Ok(messages) = service.pm_messages(project_id) {
+        ctx.state.session_id = app.read_pm_session_id(project_id);
+        if let Ok(messages) = app.pm_messages(project_id) {
             let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
             ctx.state.load_history(recent.into_iter().rev().collect());
         }
         pm_contexts.insert(project_id.clone(), ctx);
     }
-    if let Ok(msgs) = service.pm_messages(project_id) {
-        app.pm_messages = msgs;
+    if let Ok(msgs) = app.pm_messages(project_id) {
+        dash.pm_messages = msgs;
     }
 }
 
@@ -113,7 +113,7 @@ fn spawn_caffeinate() -> Option<std::process::Child> {
 }
 
 pub fn run<R: Runtime>(
-    service: ClatApp<R>,
+    app: ClatApp<R>,
     resume_session: Option<&str>,
     caffeinate: bool,
 ) -> anyhow::Result<()> {
@@ -125,15 +125,15 @@ pub fn run<R: Runtime>(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let tasks = service.list_visible(None)?;
-    let mut app = Dashboard::new(tasks);
+    let tasks = app.list_visible(None)?;
+    let mut dash = Dashboard::new(tasks);
     let mut exo = ExoState::new();
     if let Some(sid) = resume_session {
         exo.session_id = Some(sid.to_string());
-    } else if let Some(sid) = service.read_exo_session_id() {
+    } else if let Some(sid) = app.read_exo_session_id() {
         exo.session_id = Some(sid);
     }
-    if let Ok(messages) = service.exo_messages() {
+    if let Ok(messages) = app.exo_messages() {
         let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
         exo.load_history(recent.into_iter().rev().collect());
     }
@@ -161,9 +161,9 @@ pub fn run<R: Runtime>(
     unsafe {
         std::env::set_var(crate::permission::SOCKET_ENV, &socket_path);
     }
-    crate::permission::write_socket_breadcrumb(service.project_root(), &socket_path);
+    crate::permission::write_socket_breadcrumb(app.project_root(), &socket_path);
     {
-        let work_dirs: Vec<String> = app
+        let work_dirs: Vec<String> = dash
             .tasks
             .iter()
             .filter_map(|t| t.work_dir.clone())
@@ -222,12 +222,12 @@ pub fn run<R: Runtime>(
 
     let result = run_loop(
         &mut terminal,
-        &mut app,
+        &mut dash,
         &mut exo,
         &mut exo_session,
         &mut pm_contexts,
         &pm_tx,
-        &service,
+        &app,
         &rx,
         &pm_rx,
         &perm_rx,
@@ -244,7 +244,7 @@ pub fn run<R: Runtime>(
     }
 
     // Deny all pending permissions on exit
-    for (_, mut queue) in app.permissions.drain_all() {
+    for (_, mut queue) in dash.permissions.drain_all() {
         for perm in queue.drain(..) {
             if let Some(tx) = tg_tx.as_ref() {
                 let _ = tx.send(telegram::TgOutbound::Resolved {
@@ -256,7 +256,7 @@ pub fn run<R: Runtime>(
         }
     }
     let _ = std::fs::remove_file(&socket_path);
-    crate::permission::remove_socket_breadcrumb(service.project_root());
+    crate::permission::remove_socket_breadcrumb(app.project_root());
 
     if let Some(ref mut child) = caffeinate_child {
         let _ = child.kill();
@@ -277,12 +277,12 @@ pub fn run<R: Runtime>(
 #[allow(clippy::too_many_arguments)]
 fn run_loop<R: Runtime>(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    app: &mut Dashboard,
+    dash: &mut Dashboard,
     exo: &mut ExoState,
     exo_session: &mut ExoSession,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
-    service: &ClatApp<R>, // borrowed from run() which owns it
+    app: &ClatApp<R>, // borrowed from run() which owns it
     rx: &mpsc::Receiver<ExoEvent>,
     pm_rx: &mpsc::Receiver<PmEvent>,
     perm_rx: &mpsc::Receiver<(UnixStream, PermissionRequest)>,
@@ -299,7 +299,7 @@ fn run_loop<R: Runtime>(
     // Start with all running panes assumed idle. Notification hooks
     // (idle_prompt → idle, permission_prompt/elicitation_dialog → active)
     // and message-sent will flip state — no screen-capture polling needed.
-    app.idle_panes = app
+    dash.idle_panes = dash
         .tasks
         .iter()
         .filter(|t| t.status.is_running())
@@ -314,24 +314,24 @@ fn run_loop<R: Runtime>(
             Duration::from_millis(500)
         };
 
-        let active_pm_state = app
+        let active_pm_state = dash
             .active_project_id
             .as_ref()
             .and_then(|pid| pm_contexts.get(pid))
             .map(|ctx| &ctx.state);
-        terminal.draw(|frame| widgets::ui(frame, app, exo, active_pm_state))?;
+        terminal.draw(|frame| widgets::ui(frame, dash, exo, active_pm_state))?;
 
         // Drain channel events
-        handlers::drain_exo_events(exo, exo_session, service, rx, app, tg_tx);
-        handlers::drain_pm_events(pm_contexts, service, pm_rx, app);
+        handlers::drain_exo_events(exo, exo_session, app, rx, dash, tg_tx);
+        handlers::drain_pm_events(pm_contexts, app, pm_rx, dash);
 
         // Poll terminal input
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if event::poll(timeout)? {
             match event::read()? {
-                Event::Paste(text) => handlers::handle_paste(app, text),
+                Event::Paste(text) => handlers::handle_paste(dash, text),
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    app.status_error = None;
+                    dash.status_error = None;
                     // Ctrl+Z suspends — needs terminal access, handled inline
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('z')
@@ -355,17 +355,17 @@ fn run_loop<R: Runtime>(
                         terminal.hide_cursor()?;
                         terminal.clear()?;
                     } else if !handlers::handle_global_keys(
-                        app,
+                        dash,
                         key,
-                        service,
+                        app,
                         pm_contexts,
                         pm_tx,
                         tg_tx,
                     ) {
                         handlers::handle_focus_key(
-                            app,
+                            dash,
                             key,
-                            service,
+                            app,
                             exo,
                             exo_session,
                             pm_contexts,
@@ -379,19 +379,19 @@ fn run_loop<R: Runtime>(
 
         // Periodic refresh
         if last_tick.elapsed() >= tick_rate {
-            handlers::tick_refresh(app, service, tg_tx);
+            handlers::tick_refresh(dash, app, tg_tx);
             last_tick = Instant::now();
         }
 
         // Drain socket events – permissions first so resolved notifications can find them.
-        handlers::drain_permissions(app, perm_rx, tg_tx, &mut tg_perm_ids, &mut perm_id_counter);
-        handlers::drain_resolved(app, resolved_rx, tg_tx, &mut tg_perm_ids);
-        handlers::drain_idle(app, idle_rx);
-        handlers::drain_active(app, active_rx);
-        handlers::drain_telegram(app, exo, exo_session, service, tg_rx);
-        handlers::detect_vanished_perms(app, tg_tx, &mut tg_perm_ids);
+        handlers::drain_permissions(dash, perm_rx, tg_tx, &mut tg_perm_ids, &mut perm_id_counter);
+        handlers::drain_resolved(dash, resolved_rx, tg_tx, &mut tg_perm_ids);
+        handlers::drain_idle(dash, idle_rx);
+        handlers::drain_active(dash, active_rx);
+        handlers::drain_telegram(dash, exo, exo_session, app, tg_rx);
+        handlers::detect_vanished_perms(dash, tg_tx, &mut tg_perm_ids);
 
-        if app.should_quit {
+        if dash.should_quit {
             return Ok(());
         }
     }

@@ -7,14 +7,14 @@ use super::super::dashboard::{Dashboard, Focus};
 
 pub(in crate::tui) fn render_permission_panel(
     frame: &mut ratatui::Frame,
-    app: &Dashboard,
+    dash: &Dashboard,
     area: Rect,
 ) {
-    let perm_key = app.focused_perm_key();
-    let Some(req) = app.permissions.peek(&perm_key) else {
+    let perm_key = dash.focused_perm_key();
+    let Some(req) = dash.permissions.peek(&perm_key) else {
         return;
     };
-    let extra = app
+    let extra = dash
         .permissions
         .get(&perm_key)
         .map(|q| q.len().saturating_sub(1))
@@ -73,18 +73,18 @@ pub(in crate::tui) fn render_permission_panel(
 
 pub(in crate::tui) fn render_askuser_panel(
     frame: &mut ratatui::Frame,
-    app: &Dashboard,
+    dash: &Dashboard,
     area: Rect,
 ) {
-    let perm_key = app.focused_perm_key();
-    let Some(perm) = app.permissions.peek(&perm_key) else {
+    let perm_key = dash.focused_perm_key();
+    let Some(perm) = dash.permissions.peek(&perm_key) else {
         return;
     };
     if !perm.is_askuser() {
         return;
     }
     let question = perm.askuser_question.as_deref().unwrap_or("?");
-    let extra = app
+    let extra = dash
         .permissions
         .get(&perm_key)
         .map(|q| q.len().saturating_sub(1))
@@ -134,13 +134,13 @@ pub(in crate::tui) fn render_askuser_panel(
 
 pub(in crate::tui) fn render_delete_confirm_panel(
     frame: &mut ratatui::Frame,
-    app: &Dashboard,
+    dash: &Dashboard,
     area: Rect,
 ) {
-    let Focus::ConfirmDelete(ref id) = app.focus else {
+    let Focus::ConfirmDelete(ref id) = dash.focus else {
         return;
     };
-    let name = app
+    let name = dash
         .tasks
         .iter()
         .find(|t| t.id == *id)
@@ -183,13 +183,13 @@ pub(in crate::tui) fn render_delete_confirm_panel(
 
 pub(in crate::tui) fn render_close_task_panel(
     frame: &mut ratatui::Frame,
-    app: &Dashboard,
+    dash: &Dashboard,
     area: Rect,
 ) {
-    let Focus::ConfirmCloseTask(ref id) = app.focus else {
+    let Focus::ConfirmCloseTask(ref id) = dash.focus else {
         return;
     };
-    let name = app
+    let name = dash
         .tasks
         .iter()
         .find(|t| t.id == *id)
@@ -232,10 +232,10 @@ pub(in crate::tui) fn render_close_task_panel(
 
 pub(in crate::tui) fn render_close_project_panel(
     frame: &mut ratatui::Frame,
-    app: &Dashboard,
+    dash: &Dashboard,
     area: Rect,
 ) {
-    let name = app
+    let name = dash
         .active_project
         .as_ref()
         .map(|n| n.as_str())
@@ -277,10 +277,10 @@ pub(in crate::tui) fn render_close_project_panel(
 
 pub(in crate::tui) fn render_delete_project_panel(
     frame: &mut ratatui::Frame,
-    app: &Dashboard,
+    dash: &Dashboard,
     area: Rect,
 ) {
-    let Focus::ConfirmDeleteProject(ref name) = app.focus else {
+    let Focus::ConfirmDeleteProject(ref name) = dash.focus else {
         return;
     };
     let lines = vec![
