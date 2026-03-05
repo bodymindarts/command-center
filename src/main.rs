@@ -20,7 +20,7 @@ use crate::runtime::{Runtime, TmuxRuntime};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let service = ClatApp::try_new(TmuxRuntime)?;
+    let app = ClatApp::try_new(TmuxRuntime)?;
 
     let command = cli.command.unwrap_or(Command::Dash {
         resume: None,
@@ -38,7 +38,7 @@ fn main() -> Result<()> {
             scratch,
             project,
         } => cmd_spawn(
-            &service,
+            &app,
             SpawnOpts {
                 name,
                 skill,
@@ -54,18 +54,18 @@ fn main() -> Result<()> {
             all,
             project,
             filter,
-        } => cmd_list(&service, all, project, filter)?,
-        Command::History => cmd_list(&service, true, None, None)?,
-        Command::Log { id } => cmd_log(&service, &id)?,
-        Command::Close { id } => cmd_close(&service, &id)?,
-        Command::Reopen { id } => cmd_reopen(&service, &id)?,
-        Command::Delete { id } => cmd_delete(&service, &id)?,
-        Command::Dash { resume, caffeinate } => tui::run(&service, resume.as_deref(), caffeinate)?,
+        } => cmd_list(&app, all, project, filter)?,
+        Command::History => cmd_list(&app, true, None, None)?,
+        Command::Log { id } => cmd_log(&app, &id)?,
+        Command::Close { id } => cmd_close(&app, &id)?,
+        Command::Reopen { id } => cmd_reopen(&app, &id)?,
+        Command::Delete { id } => cmd_delete(&app, &id)?,
+        Command::Dash { resume, caffeinate } => tui::run(&app, resume.as_deref(), caffeinate)?,
         Command::Start { resume, caffeinate } => cmd_start(resume.as_deref(), caffeinate)?,
-        Command::Goto { id } => cmd_goto(&service, &id)?,
-        Command::Send { id, message } => cmd_send(&service, &id, &message)?,
-        Command::Skill { action } => cmd_skill(action, &service)?,
-        Command::Project { action } => cmd_project(action, &service)?,
+        Command::Goto { id } => cmd_goto(&app, &id)?,
+        Command::Send { id, message } => cmd_send(&app, &id, &message)?,
+        Command::Skill { action } => cmd_skill(action, &app)?,
+        Command::Project { action } => cmd_project(action, &app)?,
         Command::Agent { action } => match action {
             AgentCommand::PermissionGate => permission::gate_request()?,
             AgentCommand::PermissionPrompt {
@@ -77,7 +77,7 @@ fn main() -> Result<()> {
                 id,
                 exit_code,
                 output_file,
-            } => cmd_complete(&service, &id, exit_code, output_file.as_deref())?,
+            } => cmd_complete(&app, &id, exit_code, output_file.as_deref())?,
         },
     }
 
@@ -95,16 +95,16 @@ struct SpawnOpts {
     project: Option<String>,
 }
 
-fn cmd_spawn(service: &ClatApp<impl Runtime>, opts: SpawnOpts) -> Result<()> {
+fn cmd_spawn(app: &ClatApp<impl Runtime>, opts: SpawnOpts) -> Result<()> {
     use crate::primitives::ProjectId;
     let project_id: Option<ProjectId> = opts
         .project
         .as_deref()
-        .map(|name| service.resolve_project_id(name))
+        .map(|name| app.resolve_project_id(name))
         .transpose()?;
 
     let repo_path = opts.repo.as_deref();
-    let default_repo = service.project_root().to_path_buf();
+    let default_repo = app.project_root().to_path_buf();
 
     let (work_dir_mode, prompt_mode) = if opts.scratch {
         (WorkDirMode::Scratch, PromptMode::Full)
@@ -122,7 +122,7 @@ fn cmd_spawn(service: &ClatApp<impl Runtime>, opts: SpawnOpts) -> Result<()> {
         )
     };
 
-    let result = service.spawn(SpawnRequest {
+    let result = app.spawn(SpawnRequest {
         task_name: &opts.name,
         skill_name: &opts.skill,
         params: opts.params,
@@ -141,18 +141,18 @@ fn cmd_spawn(service: &ClatApp<impl Runtime>, opts: SpawnOpts) -> Result<()> {
 }
 
 fn cmd_list(
-    service: &ClatApp<impl Runtime>,
+    app: &ClatApp<impl Runtime>,
     all: bool,
     project: Option<String>,
     filter: Option<String>,
 ) -> Result<()> {
     let mut tasks = if all {
-        service.list_all()?
+        app.list_all()?
     } else if let Some(ref name) = project {
-        let pid = service.resolve_project_id(name)?;
-        service.list_visible(Some(&pid))?
+        let pid = app.resolve_project_id(name)?;
+        app.list_visible(Some(&pid))?
     } else {
-        service.list_active()?
+        app.list_active()?
     };
 
     if let Some(ref pattern) = filter {
@@ -246,8 +246,8 @@ fn cmd_list(
     Ok(())
 }
 
-fn cmd_close(service: &ClatApp<impl Runtime>, id: &str) -> Result<()> {
-    let result = service.close(id)?;
+fn cmd_close(app: &ClatApp<impl Runtime>, id: &str) -> Result<()> {
+    let result = app.close(id)?;
     println!(
         "Closed task {} ({})",
         result.task_name,
@@ -256,20 +256,20 @@ fn cmd_close(service: &ClatApp<impl Runtime>, id: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_reopen(service: &ClatApp<impl Runtime>, id: &str) -> Result<()> {
-    let window_id = service.reopen(id)?;
+fn cmd_reopen(app: &ClatApp<impl Runtime>, id: &str) -> Result<()> {
+    let window_id = app.reopen(id)?;
     println!("Reopened task {id} (window: {window_id})");
     Ok(())
 }
 
-fn cmd_delete(service: &ClatApp<impl Runtime>, id: &str) -> Result<()> {
-    service.delete(id)?;
+fn cmd_delete(app: &ClatApp<impl Runtime>, id: &str) -> Result<()> {
+    app.delete(id)?;
     println!("Deleted task {id}");
     Ok(())
 }
 
-fn cmd_log(service: &ClatApp<impl Runtime>, id_prefix: &str) -> Result<()> {
-    let log = service.log(id_prefix)?;
+fn cmd_log(app: &ClatApp<impl Runtime>, id_prefix: &str) -> Result<()> {
+    let log = app.log(id_prefix)?;
 
     if log.messages.is_empty() {
         println!(
@@ -308,8 +308,8 @@ fn cmd_log(service: &ClatApp<impl Runtime>, id_prefix: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_goto(service: &ClatApp<impl Runtime>, id: &str) -> Result<()> {
-    service.goto(id)
+fn cmd_goto(app: &ClatApp<impl Runtime>, id: &str) -> Result<()> {
+    app.goto(id)
 }
 
 fn cmd_start(resume: Option<&str>, caffeinate: bool) -> Result<()> {
@@ -350,8 +350,8 @@ fn cmd_start(resume: Option<&str>, caffeinate: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_send(service: &ClatApp<impl Runtime>, id: &str, message: &str) -> Result<()> {
-    let result = service.send(id, message)?;
+fn cmd_send(app: &ClatApp<impl Runtime>, id: &str, message: &str) -> Result<()> {
+    let result = app.send(id, message)?;
     println!(
         "Sent message to {} ({})",
         result.task_name,
@@ -361,13 +361,13 @@ fn cmd_send(service: &ClatApp<impl Runtime>, id: &str, message: &str) -> Result<
 }
 
 fn cmd_complete(
-    service: &ClatApp<impl Runtime>,
+    app: &ClatApp<impl Runtime>,
     id: &str,
     exit_code: i32,
     output_file: Option<&str>,
 ) -> Result<()> {
     let output = output_file.and_then(|path| std::fs::read_to_string(path).ok());
-    service.complete(id, exit_code, output.as_deref())?;
+    app.complete(id, exit_code, output.as_deref())?;
 
     let status = if exit_code == 0 {
         "completed"
@@ -379,10 +379,10 @@ fn cmd_complete(
     Ok(())
 }
 
-fn cmd_skill(action: SkillAction, service: &ClatApp<impl Runtime>) -> Result<()> {
+fn cmd_skill(action: SkillAction, app: &ClatApp<impl Runtime>) -> Result<()> {
     match action {
         SkillAction::List => {
-            let skills = service.list_skills()?;
+            let skills = app.list_skills()?;
             if skills.is_empty() {
                 println!("No skills found.");
                 return Ok(());
@@ -413,10 +413,10 @@ fn cmd_skill(action: SkillAction, service: &ClatApp<impl Runtime>) -> Result<()>
     Ok(())
 }
 
-fn cmd_project(action: ProjectAction, service: &ClatApp<impl Runtime>) -> Result<()> {
+fn cmd_project(action: ProjectAction, app: &ClatApp<impl Runtime>) -> Result<()> {
     match action {
         ProjectAction::Create { name, description } => {
-            let project = service.create_project(&name, &description)?;
+            let project = app.create_project(&name, &description)?;
             println!(
                 "Created project '{}' ({})",
                 project.name,
@@ -424,7 +424,7 @@ fn cmd_project(action: ProjectAction, service: &ClatApp<impl Runtime>) -> Result
             );
         }
         ProjectAction::List => {
-            let projects = service.list_projects()?;
+            let projects = app.list_projects()?;
             if projects.is_empty() {
                 println!("No projects.");
                 return Ok(());
@@ -455,7 +455,7 @@ fn cmd_project(action: ProjectAction, service: &ClatApp<impl Runtime>) -> Result
             println!("{}", Table::new(rows));
         }
         ProjectAction::Delete { name } => {
-            service.delete_project(&name)?;
+            app.delete_project(&name)?;
             println!("Deleted project '{name}'");
         }
     }
