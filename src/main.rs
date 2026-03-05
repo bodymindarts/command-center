@@ -9,7 +9,7 @@ mod store;
 mod task;
 mod tui;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, bail};
 use clap::Parser;
 use tabled::{Table, Tabled};
 
@@ -18,7 +18,7 @@ use crate::cli::{AgentCommand, Cli, Command, ProjectAction, SkillAction};
 use crate::primitives::MessageRole;
 use crate::runtime::{Runtime, TmuxRuntime};
 
-fn main() -> Result<()> {
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let app = ClatApp::try_new(TmuxRuntime)?;
 
@@ -95,7 +95,7 @@ struct SpawnOpts {
     project: Option<String>,
 }
 
-fn cmd_spawn(app: &ClatApp<impl Runtime>, opts: SpawnOpts) -> Result<()> {
+fn cmd_spawn(app: &ClatApp<impl Runtime>, opts: SpawnOpts) -> anyhow::Result<()> {
     use crate::primitives::ProjectId;
     let project_id: Option<ProjectId> = opts
         .project
@@ -145,7 +145,7 @@ fn cmd_list(
     all: bool,
     project: Option<String>,
     filter: Option<String>,
-) -> Result<()> {
+) -> anyhow::Result<()> {
     let mut tasks = if all {
         app.list_all()?
     } else if let Some(ref name) = project {
@@ -246,7 +246,7 @@ fn cmd_list(
     Ok(())
 }
 
-fn cmd_close(app: &ClatApp<impl Runtime>, id: &str) -> Result<()> {
+fn cmd_close(app: &ClatApp<impl Runtime>, id: &str) -> anyhow::Result<()> {
     let result = app.close(id)?;
     println!(
         "Closed task {} ({})",
@@ -256,19 +256,19 @@ fn cmd_close(app: &ClatApp<impl Runtime>, id: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_reopen(app: &ClatApp<impl Runtime>, id: &str) -> Result<()> {
+fn cmd_reopen(app: &ClatApp<impl Runtime>, id: &str) -> anyhow::Result<()> {
     let window_id = app.reopen(id)?;
     println!("Reopened task {id} (window: {window_id})");
     Ok(())
 }
 
-fn cmd_delete(app: &ClatApp<impl Runtime>, id: &str) -> Result<()> {
+fn cmd_delete(app: &ClatApp<impl Runtime>, id: &str) -> anyhow::Result<()> {
     app.delete(id)?;
     println!("Deleted task {id}");
     Ok(())
 }
 
-fn cmd_log(app: &ClatApp<impl Runtime>, id_prefix: &str) -> Result<()> {
+fn cmd_log(app: &ClatApp<impl Runtime>, id_prefix: &str) -> anyhow::Result<()> {
     let log = app.log(id_prefix)?;
 
     if log.messages.is_empty() {
@@ -308,11 +308,11 @@ fn cmd_log(app: &ClatApp<impl Runtime>, id_prefix: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_goto(app: &ClatApp<impl Runtime>, id: &str) -> Result<()> {
+fn cmd_goto(app: &ClatApp<impl Runtime>, id: &str) -> anyhow::Result<()> {
     app.goto(id)
 }
 
-fn cmd_start(resume: Option<&str>, caffeinate: bool) -> Result<()> {
+fn cmd_start(resume: Option<&str>, caffeinate: bool) -> anyhow::Result<()> {
     let exe = std::env::current_exe()
         .context("failed to resolve current executable")?
         .display()
@@ -350,7 +350,7 @@ fn cmd_start(resume: Option<&str>, caffeinate: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_send(app: &ClatApp<impl Runtime>, id: &str, message: &str) -> Result<()> {
+fn cmd_send(app: &ClatApp<impl Runtime>, id: &str, message: &str) -> anyhow::Result<()> {
     let result = app.send(id, message)?;
     println!(
         "Sent message to {} ({})",
@@ -365,7 +365,7 @@ fn cmd_complete(
     id: &str,
     exit_code: i32,
     output_file: Option<&str>,
-) -> Result<()> {
+) -> anyhow::Result<()> {
     let output = output_file.and_then(|path| std::fs::read_to_string(path).ok());
     app.complete(id, exit_code, output.as_deref())?;
 
@@ -379,7 +379,7 @@ fn cmd_complete(
     Ok(())
 }
 
-fn cmd_skill(action: SkillAction, app: &ClatApp<impl Runtime>) -> Result<()> {
+fn cmd_skill(action: SkillAction, app: &ClatApp<impl Runtime>) -> anyhow::Result<()> {
     match action {
         SkillAction::List => {
             let skills = app.list_skills()?;
@@ -413,7 +413,7 @@ fn cmd_skill(action: SkillAction, app: &ClatApp<impl Runtime>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_project(action: ProjectAction, app: &ClatApp<impl Runtime>) -> Result<()> {
+fn cmd_project(action: ProjectAction, app: &ClatApp<impl Runtime>) -> anyhow::Result<()> {
     match action {
         ProjectAction::Create { name, description } => {
             let project = app.create_project(&name, &description)?;

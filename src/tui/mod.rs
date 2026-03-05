@@ -14,7 +14,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
 use crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
 };
@@ -116,7 +115,7 @@ pub fn run<R: Runtime>(
     service: &ClatApp<R>,
     resume_session: Option<&str>,
     caffeinate: bool,
-) -> Result<()> {
+) -> anyhow::Result<()> {
     let mut caffeinate_child = if caffeinate { spawn_caffeinate() } else { None };
 
     terminal::enable_raw_mode()?;
@@ -291,7 +290,7 @@ fn run_loop<R: Runtime>(
     active_rx: &mpsc::Receiver<String>,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
     tg_rx: Option<&mpsc::Receiver<telegram::TgInbound>>,
-) -> Result<()> {
+) -> anyhow::Result<()> {
     let mut last_tick = Instant::now();
     let mut perm_id_counter: u64 = 0;
     let mut tg_perm_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();

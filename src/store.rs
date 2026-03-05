@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Context;
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, Row};
 use rusqlite_migration::{M, Migrations};
@@ -84,27 +84,27 @@ pub struct Store {
 
 impl Store {
     #[cfg(test)]
-    pub fn open_in_memory() -> Result<Self> {
+    pub fn open_in_memory() -> anyhow::Result<Self> {
         let mut conn = Connection::open_in_memory().context("failed to open in-memory database")?;
         Self::run_migrations(&mut conn)?;
         Ok(Self { conn })
     }
 
-    pub fn open(db_path: &Path) -> Result<Self> {
+    pub fn open(db_path: &Path) -> anyhow::Result<Self> {
         let mut conn = Connection::open(db_path)
             .with_context(|| format!("failed to open database at {}", db_path.display()))?;
         Self::run_migrations(&mut conn)?;
         Ok(Self { conn })
     }
 
-    fn run_migrations(conn: &mut Connection) -> Result<()> {
+    fn run_migrations(conn: &mut Connection) -> anyhow::Result<()> {
         MIGRATIONS
             .to_latest(conn)
             .context("failed to run database migrations")?;
         Ok(())
     }
 
-    pub fn insert_task(&self, task: &Task) -> Result<()> {
+    pub fn insert_task(&self, task: &Task) -> anyhow::Result<()> {
         self.conn.execute(
             "INSERT INTO tasks (id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir, started_at, project_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -124,7 +124,12 @@ impl Store {
         Ok(())
     }
 
-    pub fn complete_task(&self, id: &str, exit_code: i32, output: Option<&str>) -> Result<()> {
+    pub fn complete_task(
+        &self,
+        id: &str,
+        exit_code: i32,
+        output: Option<&str>,
+    ) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
         let status = if exit_code == 0 {
             "completed"
@@ -139,7 +144,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn close_task(&self, id: &str, output: Option<&str>) -> Result<bool> {
+    pub fn close_task(&self, id: &str, output: Option<&str>) -> anyhow::Result<bool> {
         let now = Utc::now().to_rfc3339();
         let rows = self.conn.execute(
             "UPDATE tasks SET status = 'closed', completed_at = ?1, output = ?2
@@ -149,7 +154,7 @@ impl Store {
         Ok(rows > 0)
     }
 
-    pub fn reopen_task(&self, id: &str, pane: &str, window: &str) -> Result<bool> {
+    pub fn reopen_task(&self, id: &str, pane: &str, window: &str) -> anyhow::Result<bool> {
         let rows = self.conn.execute(
             "UPDATE tasks SET status = 'running', tmux_pane = ?1, tmux_window = ?2, completed_at = NULL
              WHERE id = ?3 AND status != 'running'",
@@ -158,14 +163,14 @@ impl Store {
         Ok(rows > 0)
     }
 
-    pub fn delete_task(&self, id: &str) -> Result<()> {
+    pub fn delete_task(&self, id: &str) -> anyhow::Result<()> {
         self.conn
             .execute("DELETE FROM task_messages WHERE task_id = ?1", [id])?;
         self.conn.execute("DELETE FROM tasks WHERE id = ?1", [id])?;
         Ok(())
     }
 
-    pub fn list_tasks(&self) -> Result<Vec<Task>> {
+    pub fn list_tasks(&self) -> anyhow::Result<Vec<Task>> {
         let sql = format!("SELECT {TASK_COLUMNS} FROM tasks ORDER BY started_at DESC");
         let mut stmt = self.conn.prepare(&sql)?;
         let tasks = stmt
@@ -174,7 +179,7 @@ impl Store {
         Ok(tasks)
     }
 
-    pub fn list_active_tasks(&self) -> Result<Vec<Task>> {
+    pub fn list_active_tasks(&self) -> anyhow::Result<Vec<Task>> {
         let sql = format!(
             "SELECT {TASK_COLUMNS} FROM tasks WHERE status = 'running' ORDER BY started_at DESC"
         );
@@ -185,7 +190,7 @@ impl Store {
         Ok(tasks)
     }
 
-    pub fn update_tmux_pane(&self, id: &str, pane_id: &str) -> Result<()> {
+    pub fn update_tmux_pane(&self, id: &str, pane_id: &str) -> anyhow::Result<()> {
         self.conn.execute(
             "UPDATE tasks SET tmux_pane = ?1 WHERE id = ?2",
             (pane_id, id),
@@ -193,7 +198,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn update_tmux_window(&self, id: &str, window_id: &str) -> Result<()> {
+    pub fn update_tmux_window(&self, id: &str, window_id: &str) -> anyhow::Result<()> {
         self.conn.execute(
             "UPDATE tasks SET tmux_window = ?1 WHERE id = ?2",
             (window_id, id),
@@ -201,7 +206,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn update_session_id(&self, id: &str, session_id: &str) -> Result<()> {
+    pub fn update_session_id(&self, id: &str, session_id: &str) -> anyhow::Result<()> {
         self.conn.execute(
             "UPDATE tasks SET session_id = ?1 WHERE id = ?2",
             (session_id, id),
@@ -209,7 +214,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn get_task_by_prefix(&self, prefix: &str) -> Result<Option<Task>> {
+    pub fn get_task_by_prefix(&self, prefix: &str) -> anyhow::Result<Option<Task>> {
         let pattern = format!("{prefix}%");
         let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id LIKE ?1");
         let mut stmt = self.conn.prepare(&sql)?;
@@ -225,7 +230,12 @@ impl Store {
         Ok(tasks.pop())
     }
 
-    pub fn insert_message(&self, task_id: &str, role: MessageRole, content: &str) -> Result<()> {
+    pub fn insert_message(
+        &self,
+        task_id: &str,
+        role: MessageRole,
+        content: &str,
+    ) -> anyhow::Result<()> {
         let id = uuid::Uuid::now_v7().to_string();
         let now = Utc::now().to_rfc3339();
         self.conn.execute(
@@ -236,7 +246,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn list_messages(&self, task_id: &str) -> Result<Vec<TaskMessage>> {
+    pub fn list_messages(&self, task_id: &str) -> anyhow::Result<Vec<TaskMessage>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, task_id, role, content, created_at
              FROM task_messages WHERE task_id = ?1 ORDER BY created_at ASC",
@@ -262,7 +272,7 @@ impl Store {
 
     // -- Project CRUD --
 
-    pub fn insert_project(&self, id: &str, name: &str, description: &str) -> Result<()> {
+    pub fn insert_project(&self, id: &str, name: &str, description: &str) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
         self.conn.execute(
             "INSERT INTO projects (id, name, description, created_at)
@@ -272,7 +282,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn get_project_by_name(&self, name: &str) -> Result<Option<Project>> {
+    pub fn get_project_by_name(&self, name: &str) -> anyhow::Result<Option<Project>> {
         let mut stmt = self
             .conn
             .prepare("SELECT id, name, description, created_at FROM projects WHERE name = ?1")?;
@@ -293,7 +303,7 @@ impl Store {
         }
     }
 
-    pub fn list_projects(&self) -> Result<Vec<Project>> {
+    pub fn list_projects(&self) -> anyhow::Result<Vec<Project>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, description, created_at FROM projects ORDER BY created_at ASC",
         )?;
@@ -313,7 +323,7 @@ impl Store {
         Ok(projects)
     }
 
-    pub fn delete_project(&self, id: &str) -> Result<()> {
+    pub fn delete_project(&self, id: &str) -> anyhow::Result<()> {
         self.conn
             .execute("DELETE FROM projects WHERE id = ?1", [id])?;
         Ok(())
@@ -322,7 +332,10 @@ impl Store {
     /// Returns visible tasks scoped to a project.
     /// When project_id is None, returns tasks with no project (default/ExO scope).
     /// When Some, returns tasks belonging to that project.
-    pub fn list_visible_tasks_for_project(&self, project_id: Option<&str>) -> Result<Vec<Task>> {
+    pub fn list_visible_tasks_for_project(
+        &self,
+        project_id: Option<&str>,
+    ) -> anyhow::Result<Vec<Task>> {
         let sql = match project_id {
             Some(_) => format!(
                 "SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ?1 \

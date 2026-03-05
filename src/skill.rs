@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, bail};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -48,7 +48,7 @@ pub struct TemplateDef {
 }
 
 impl SkillFile {
-    pub fn load(skills_dir: &Path, name: &str) -> Result<Self> {
+    pub fn load(skills_dir: &Path, name: &str) -> anyhow::Result<Self> {
         let path = skills_dir.join(format!("{name}.toml"));
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read skill file: {}", path.display()))?;
@@ -57,7 +57,7 @@ impl SkillFile {
         Ok(skill)
     }
 
-    pub fn validate_params(&self, params: &HashMap<String, String>) -> Result<()> {
+    pub fn validate_params(&self, params: &HashMap<String, String>) -> anyhow::Result<()> {
         for p in &self.skill.params {
             if p.required && !params.contains_key(&p.name) {
                 bail!("missing required parameter: {}", p.name);
@@ -66,14 +66,14 @@ impl SkillFile {
         Ok(())
     }
 
-    pub fn render_system(&self) -> Result<Option<String>> {
+    pub fn render_system(&self) -> anyhow::Result<Option<String>> {
         match &self.template.system {
             Some(system) => Ok(Some(system.trim().to_string())),
             None => Ok(None),
         }
     }
 
-    pub fn render_prompt(&self, params: &HashMap<String, String>) -> Result<String> {
+    pub fn render_prompt(&self, params: &HashMap<String, String>) -> anyhow::Result<String> {
         let mut merged = HashMap::new();
         for p in &self.skill.params {
             if let Some(default) = &p.default {

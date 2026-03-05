@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Context;
 
 pub struct Paths {
     pub root: PathBuf,
@@ -10,7 +10,7 @@ pub struct Paths {
 }
 
 impl Paths {
-    pub fn resolve() -> Result<Self> {
+    pub fn resolve() -> anyhow::Result<Self> {
         let root = find_project_root()?;
         let skills_dir = root.join("skills");
         let data_dir = root.join("data");
@@ -24,7 +24,7 @@ impl Paths {
         })
     }
 
-    pub fn ensure_dirs(&self) -> Result<()> {
+    pub fn ensure_dirs(&self) -> anyhow::Result<()> {
         std::fs::create_dir_all(&self.data_dir).context("failed to create data directory")?;
         Ok(())
     }
@@ -38,7 +38,7 @@ impl Paths {
     }
 }
 
-fn find_project_root() -> Result<PathBuf> {
+fn find_project_root() -> anyhow::Result<PathBuf> {
     let mut dir = std::env::current_dir().context("failed to get current directory")?;
     loop {
         if dir.join("Cargo.toml").exists() && dir.join("skills").exists() {

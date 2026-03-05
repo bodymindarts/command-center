@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, bail};
 
 use crate::primitives::{PaneId, WindowId};
 
@@ -28,39 +28,39 @@ pub trait Runtime {
         skill_tools: &[String],
         branch: Option<&str>,
         hooks_source: &Path,
-    ) -> Result<PathBuf>;
-    fn recreate_worktree(&self, repo_root: &Path, work_dir: &Path) -> Result<()>;
+    ) -> anyhow::Result<PathBuf>;
+    fn recreate_worktree(&self, repo_root: &Path, work_dir: &Path) -> anyhow::Result<()>;
     fn setup_dir_config(
         &self,
         hooks_source: &Path,
         work_dir: &Path,
         skill_tools: &[String],
-    ) -> Result<()>;
-    fn init_scratch_dir(&self, scratch_dir: &Path) -> Result<()>;
-    fn launch_agent(&self, config: LaunchConfig) -> Result<SpawnResult>;
+    ) -> anyhow::Result<()>;
+    fn init_scratch_dir(&self, scratch_dir: &Path) -> anyhow::Result<()>;
+    fn launch_agent(&self, config: LaunchConfig) -> anyhow::Result<SpawnResult>;
     fn resume_agent(
         &self,
         task_name: &str,
         session_id: &str,
         work_dir: &Path,
-    ) -> Result<SpawnResult>;
-    fn relaunch_agent(&self, task_name: &str, work_dir: &Path) -> Result<SpawnResult>;
-    fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> Result<()>;
-    fn forward_key(&self, pane_id: &str, key: &str) -> Result<()>;
-    fn forward_literal(&self, pane_id: &str, text: &str) -> Result<()>;
-    fn capture_pane_output(&self, pane_id: &str) -> Result<String>;
-    fn kill_tmux_window(&self, window_id: &str) -> Result<()>;
-    fn select_window(&self, window_id: &str) -> Result<()>;
+    ) -> anyhow::Result<SpawnResult>;
+    fn relaunch_agent(&self, task_name: &str, work_dir: &Path) -> anyhow::Result<SpawnResult>;
+    fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> anyhow::Result<()>;
+    fn forward_key(&self, pane_id: &str, key: &str) -> anyhow::Result<()>;
+    fn forward_literal(&self, pane_id: &str, text: &str) -> anyhow::Result<()>;
+    fn capture_pane_output(&self, pane_id: &str) -> anyhow::Result<String>;
+    fn kill_tmux_window(&self, window_id: &str) -> anyhow::Result<()>;
+    fn select_window(&self, window_id: &str) -> anyhow::Result<()>;
 }
 
 pub struct TmuxRuntime;
 
 impl TmuxRuntime {
-    fn tmux_cmd(&self, args: &[&str]) -> Result<String> {
+    fn tmux_cmd(&self, args: &[&str]) -> anyhow::Result<String> {
         tmux_cmd(args)
     }
 
-    fn resolve_binary(&self, name: &str) -> Result<String> {
+    fn resolve_binary(&self, name: &str) -> anyhow::Result<String> {
         let output = Command::new("which")
             .arg(name)
             .output()
@@ -78,7 +78,7 @@ impl TmuxRuntime {
         task_name: &str,
         work_dir: &Path,
         claude_cmd: &str,
-    ) -> Result<SpawnResult> {
+    ) -> anyhow::Result<SpawnResult> {
         if std::env::var("TMUX").is_err() {
             bail!("clat spawn must be run inside a tmux session");
         }
@@ -144,11 +144,11 @@ impl Runtime for TmuxRuntime {
         hooks_source: &Path,
         work_dir: &Path,
         skill_tools: &[String],
-    ) -> Result<()> {
+    ) -> anyhow::Result<()> {
         setup_worktree_config(hooks_source, work_dir, skill_tools)
     }
 
-    fn init_scratch_dir(&self, scratch_dir: &Path) -> Result<()> {
+    fn init_scratch_dir(&self, scratch_dir: &Path) -> anyhow::Result<()> {
         std::fs::create_dir_all(scratch_dir)?;
 
         let output = Command::new("git")
@@ -172,7 +172,7 @@ impl Runtime for TmuxRuntime {
         skill_tools: &[String],
         branch: Option<&str>,
         hooks_source: &Path,
-    ) -> Result<PathBuf> {
+    ) -> anyhow::Result<PathBuf> {
         let worktree_dir = repo_root.join(".claude").join("worktrees");
         std::fs::create_dir_all(&worktree_dir)?;
 
@@ -210,7 +210,7 @@ impl Runtime for TmuxRuntime {
         Ok(worktree_path)
     }
 
-    fn recreate_worktree(&self, repo_root: &Path, work_dir: &Path) -> Result<()> {
+    fn recreate_worktree(&self, repo_root: &Path, work_dir: &Path) -> anyhow::Result<()> {
         let name = work_dir
             .file_name()
             .and_then(|n| n.to_str())
@@ -268,7 +268,7 @@ impl Runtime for TmuxRuntime {
         Ok(())
     }
 
-    fn launch_agent(&self, config: LaunchConfig) -> Result<SpawnResult> {
+    fn launch_agent(&self, config: LaunchConfig) -> anyhow::Result<SpawnResult> {
         let claude_bin = self.resolve_binary("claude")?;
 
         let claude_dir = config.work_dir.join(".claude");
@@ -314,18 +314,18 @@ impl Runtime for TmuxRuntime {
         task_name: &str,
         session_id: &str,
         work_dir: &Path,
-    ) -> Result<SpawnResult> {
+    ) -> anyhow::Result<SpawnResult> {
         let claude_bin = self.resolve_binary("claude")?;
         let claude_cmd = format!("env -u CLAUDECODE {claude_bin} --resume {session_id}");
 
         self.launch_agent_window(task_name, work_dir, &claude_cmd)
     }
 
-    fn relaunch_agent(&self, task_name: &str, work_dir: &Path) -> Result<SpawnResult> {
+    fn relaunch_agent(&self, task_name: &str, work_dir: &Path) -> anyhow::Result<SpawnResult> {
         self.launch_agent_window(task_name, work_dir, "sh .claude/launch.sh")
     }
 
-    fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> Result<()> {
+    fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> anyhow::Result<()> {
         self.tmux_cmd(&["send-keys", "-t", pane_id, "-l", message])?;
         // Small delay so Claude Code finishes processing pasted text
         // before the Enter key arrives to submit it.
@@ -334,26 +334,26 @@ impl Runtime for TmuxRuntime {
         Ok(())
     }
 
-    fn forward_key(&self, pane_id: &str, key: &str) -> Result<()> {
+    fn forward_key(&self, pane_id: &str, key: &str) -> anyhow::Result<()> {
         self.tmux_cmd(&["send-keys", "-t", pane_id, key])?;
         Ok(())
     }
 
-    fn forward_literal(&self, pane_id: &str, text: &str) -> Result<()> {
+    fn forward_literal(&self, pane_id: &str, text: &str) -> anyhow::Result<()> {
         self.tmux_cmd(&["send-keys", "-t", pane_id, "-l", text])?;
         Ok(())
     }
 
-    fn capture_pane_output(&self, pane_id: &str) -> Result<String> {
+    fn capture_pane_output(&self, pane_id: &str) -> anyhow::Result<String> {
         self.tmux_cmd(&["capture-pane", "-p", "-S", "-", "-t", pane_id])
     }
 
-    fn kill_tmux_window(&self, window_id: &str) -> Result<()> {
+    fn kill_tmux_window(&self, window_id: &str) -> anyhow::Result<()> {
         self.tmux_cmd(&["kill-window", "-t", window_id])?;
         Ok(())
     }
 
-    fn select_window(&self, window_id: &str) -> Result<()> {
+    fn select_window(&self, window_id: &str) -> anyhow::Result<()> {
         self.tmux_cmd(&["select-window", "-t", window_id])?;
         Ok(())
     }
@@ -365,7 +365,7 @@ fn setup_worktree_config(
     repo_root: &Path,
     worktree_path: &Path,
     skill_tools: &[String],
-) -> Result<()> {
+) -> anyhow::Result<()> {
     let source_claude_dir = repo_root.join(".claude");
     let target_claude_dir = worktree_path.join(".claude");
     if source_claude_dir.is_dir() {
@@ -419,7 +419,7 @@ fn setup_worktree_config(
 /// into the worktree's settings. Keys like `mcpServers` are preserved while
 /// managed keys (`hooks`, `permissions`) already set by [`setup_worktree_config`]
 /// take precedence.
-fn merge_repo_settings(repo_root: &Path, worktree_path: &Path) -> Result<()> {
+fn merge_repo_settings(repo_root: &Path, worktree_path: &Path) -> anyhow::Result<()> {
     let repo_settings_path = repo_root.join(".claude").join("settings.local.json");
     if !repo_settings_path.is_file() {
         return Ok(());
@@ -582,7 +582,7 @@ pub fn reembed_socket_in_worktrees(work_dirs: &[String], sock_path: &str) {
     }
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
@@ -631,7 +631,7 @@ pub fn idle_panes(pane_ids: &[&PaneId]) -> HashSet<PaneId> {
 }
 
 /// Free function for workspace bootstrapping (cmd_start), not a task operation.
-pub fn tmux_cmd(args: &[&str]) -> Result<String> {
+pub fn tmux_cmd(args: &[&str]) -> anyhow::Result<String> {
     let output = Command::new("tmux")
         .args(args)
         .output()

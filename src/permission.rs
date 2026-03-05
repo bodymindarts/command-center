@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Context;
 use serde_json::Value;
 
 pub struct PermissionRequest {
@@ -134,7 +134,7 @@ pub fn parse_request_json(json: &str) -> Option<PermissionRequest> {
     })
 }
 
-pub fn gate_request() -> Result<()> {
+pub fn gate_request() -> anyhow::Result<()> {
     let mut input = String::new();
     std::io::stdin()
         .read_to_string(&mut input)
@@ -167,7 +167,7 @@ pub fn gate_request() -> Result<()> {
     }
 }
 
-fn popup_fallback(request_json: &str) -> Result<()> {
+fn popup_fallback(request_json: &str) -> anyhow::Result<()> {
     let Some(req) = parse_request_json(request_json) else {
         print!(
             "{}",
@@ -219,7 +219,7 @@ fn popup_fallback(request_json: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn prompt_request(tool: &str, input_summary: &str, response_file: &str) -> Result<()> {
+pub fn prompt_request(tool: &str, input_summary: &str, response_file: &str) -> anyhow::Result<()> {
     use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 
     crossterm::terminal::enable_raw_mode().context("failed to enable raw mode")?;
@@ -257,7 +257,7 @@ pub fn prompt_request(tool: &str, input_summary: &str, response_file: &str) -> R
     Ok(())
 }
 
-pub fn start_socket_listener() -> Result<(UnixListener, PathBuf)> {
+pub fn start_socket_listener() -> anyhow::Result<(UnixListener, PathBuf)> {
     let sock = session_socket_path();
     let _ = std::fs::remove_file(&sock);
     let listener =

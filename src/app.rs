@@ -7,7 +7,7 @@ use crate::runtime::{LaunchConfig, Runtime};
 use crate::skill::SkillFile;
 use crate::store::Store;
 use crate::task::{Project, Task, TaskMessage};
-use anyhow::{Result, bail};
+use anyhow::bail;
 
 pub enum WorkDirMode<'a> {
     Worktree {
@@ -77,7 +77,7 @@ pub struct ClatApp<R: Runtime> {
 }
 
 impl<R: Runtime> ClatApp<R> {
-    pub fn try_new(runtime: R) -> Result<Self> {
+    pub fn try_new(runtime: R) -> anyhow::Result<Self> {
         let paths = Paths::resolve()?;
         paths.ensure_dirs()?;
         let store = Store::open(&paths.db_path)?;
@@ -133,7 +133,7 @@ impl<R: Runtime> ClatApp<R> {
         let _ = std::fs::write(self.paths.pm_session_file(project_id), session_id);
     }
 
-    pub fn spawn(&self, req: SpawnRequest) -> Result<SpawnOutput> {
+    pub fn spawn(&self, req: SpawnRequest) -> anyhow::Result<SpawnOutput> {
         // 1. Load skill, validate params
         let skill = SkillFile::load(&self.paths.skills_dir, req.skill_name)?;
 
@@ -223,7 +223,7 @@ impl<R: Runtime> ClatApp<R> {
         })
     }
 
-    pub fn close(&self, id_prefix: &str) -> Result<CloseOutput> {
+    pub fn close(&self, id_prefix: &str) -> anyhow::Result<CloseOutput> {
         let task = self.resolve_task(id_prefix)?;
 
         if !task.status.is_running() {
@@ -255,7 +255,7 @@ impl<R: Runtime> ClatApp<R> {
         })
     }
 
-    pub fn delete(&self, task_id: &str) -> Result<()> {
+    pub fn delete(&self, task_id: &str) -> anyhow::Result<()> {
         let task = self.resolve_task(task_id)?;
 
         if task.status.is_running() {
@@ -268,7 +268,7 @@ impl<R: Runtime> ClatApp<R> {
         self.store.delete_task(task.id.as_str())
     }
 
-    pub fn reopen(&self, task_id: &str) -> Result<WindowId> {
+    pub fn reopen(&self, task_id: &str) -> anyhow::Result<WindowId> {
         let task = self.resolve_task(task_id)?;
 
         if task.status.is_running() {
@@ -310,7 +310,7 @@ impl<R: Runtime> ClatApp<R> {
         Ok(result.window_id)
     }
 
-    pub fn send(&self, id_prefix: &str, message: &str) -> Result<SendOutput> {
+    pub fn send(&self, id_prefix: &str, message: &str) -> anyhow::Result<SendOutput> {
         let task = self.resolve_task(id_prefix)?;
 
         let pane_id = task
@@ -336,7 +336,7 @@ impl<R: Runtime> ClatApp<R> {
         let _ = self.runtime.forward_literal(pane_id, text);
     }
 
-    pub fn goto(&self, id_prefix: &str) -> Result<()> {
+    pub fn goto(&self, id_prefix: &str) -> anyhow::Result<()> {
         let task = self.resolve_task(id_prefix)?;
 
         let window_id = task
@@ -351,7 +351,7 @@ impl<R: Runtime> ClatApp<R> {
         let _ = self.runtime.select_window(window_id.as_str());
     }
 
-    pub fn log(&self, id_prefix: &str) -> Result<LogOutput> {
+    pub fn log(&self, id_prefix: &str) -> anyhow::Result<LogOutput> {
         let task = self.resolve_task(id_prefix)?;
         let messages = self.store.list_messages(task.id.as_str())?;
 
@@ -370,24 +370,24 @@ impl<R: Runtime> ClatApp<R> {
         })
     }
 
-    pub fn list_active(&self) -> Result<Vec<Task>> {
+    pub fn list_active(&self) -> anyhow::Result<Vec<Task>> {
         self.store.list_active_tasks()
     }
 
-    pub fn list_all(&self) -> Result<Vec<Task>> {
+    pub fn list_all(&self) -> anyhow::Result<Vec<Task>> {
         self.store.list_tasks()
     }
 
-    pub fn list_visible(&self, project_id: Option<&ProjectId>) -> Result<Vec<Task>> {
+    pub fn list_visible(&self, project_id: Option<&ProjectId>) -> anyhow::Result<Vec<Task>> {
         self.store
             .list_visible_tasks_for_project(project_id.map(|p| p.as_str()))
     }
 
-    pub fn messages(&self, task_id: &str) -> Result<Vec<TaskMessage>> {
+    pub fn messages(&self, task_id: &str) -> anyhow::Result<Vec<TaskMessage>> {
         self.store.list_messages(task_id)
     }
 
-    pub fn list_skills(&self) -> Result<Vec<SkillSummary>> {
+    pub fn list_skills(&self) -> anyhow::Result<Vec<SkillSummary>> {
         let mut skills = Vec::new();
         let entries = std::fs::read_dir(&self.paths.skills_dir)?;
         for entry in entries {
@@ -417,17 +417,17 @@ impl<R: Runtime> ClatApp<R> {
         self.runtime.capture_pane_output(pane_id).ok()
     }
 
-    pub fn insert_exo_message(&self, role: MessageRole, content: &str) -> Result<()> {
+    pub fn insert_exo_message(&self, role: MessageRole, content: &str) -> anyhow::Result<()> {
         self.store.insert_message(EXO_CHAT_ID, role, content)
     }
 
-    pub fn exo_messages(&self) -> Result<Vec<TaskMessage>> {
+    pub fn exo_messages(&self) -> anyhow::Result<Vec<TaskMessage>> {
         self.store.list_messages(EXO_CHAT_ID)
     }
 
     // -- Project methods --
 
-    pub fn create_project(&self, name: &str, description: &str) -> Result<Project> {
+    pub fn create_project(&self, name: &str, description: &str) -> anyhow::Result<Project> {
         let id = crate::primitives::ProjectId::generate();
         self.store.insert_project(id.as_str(), name, description)?;
         self.store
@@ -435,11 +435,11 @@ impl<R: Runtime> ClatApp<R> {
             .ok_or_else(|| anyhow::anyhow!("failed to retrieve project after insert"))
     }
 
-    pub fn list_projects(&self) -> Result<Vec<Project>> {
+    pub fn list_projects(&self) -> anyhow::Result<Vec<Project>> {
         self.store.list_projects()
     }
 
-    pub fn delete_project(&self, name: &str) -> Result<()> {
+    pub fn delete_project(&self, name: &str) -> anyhow::Result<()> {
         let project = self
             .store
             .get_project_by_name(name)?
@@ -447,7 +447,7 @@ impl<R: Runtime> ClatApp<R> {
         self.store.delete_project(project.id.as_str())
     }
 
-    pub fn resolve_project_id(&self, name: &str) -> Result<ProjectId> {
+    pub fn resolve_project_id(&self, name: &str) -> anyhow::Result<ProjectId> {
         let project = self
             .store
             .get_project_by_name(name)?
@@ -455,7 +455,7 @@ impl<R: Runtime> ClatApp<R> {
         Ok(project.id)
     }
 
-    pub fn pm_messages(&self, project_id: &str) -> Result<Vec<TaskMessage>> {
+    pub fn pm_messages(&self, project_id: &str) -> anyhow::Result<Vec<TaskMessage>> {
         let chat_id = format!("pm:{project_id}");
         self.store.list_messages(&chat_id)
     }
@@ -465,16 +465,16 @@ impl<R: Runtime> ClatApp<R> {
         project_id: &str,
         role: MessageRole,
         content: &str,
-    ) -> Result<()> {
+    ) -> anyhow::Result<()> {
         let chat_id = format!("pm:{project_id}");
         self.store.insert_message(&chat_id, role, content)
     }
 
-    pub fn complete(&self, id: &str, exit_code: i32, output: Option<&str>) -> Result<()> {
+    pub fn complete(&self, id: &str, exit_code: i32, output: Option<&str>) -> anyhow::Result<()> {
         self.store.complete_task(id, exit_code, output)
     }
 
-    fn resolve_task(&self, id_prefix: &str) -> Result<Task> {
+    fn resolve_task(&self, id_prefix: &str) -> anyhow::Result<Task> {
         self.store
             .get_task_by_prefix(id_prefix)?
             .ok_or_else(|| anyhow::anyhow!("no task found matching '{id_prefix}'"))
@@ -486,7 +486,7 @@ mod tests {
     use std::cell::RefCell;
     use std::path::{Path, PathBuf};
 
-    use anyhow::{Result, bail};
+    use anyhow::bail;
 
     use chrono::Utc;
 
@@ -563,7 +563,7 @@ mod tests {
             _skill_tools: &[String],
             _branch: Option<&str>,
             _hooks_source: &Path,
-        ) -> Result<PathBuf> {
+        ) -> anyhow::Result<PathBuf> {
             self.calls.borrow_mut().push(Call::CreateWorktree {
                 name: name.to_string(),
             });
@@ -572,7 +572,7 @@ mod tests {
             Ok(path)
         }
 
-        fn recreate_worktree(&self, _repo_root: &Path, work_dir: &Path) -> Result<()> {
+        fn recreate_worktree(&self, _repo_root: &Path, work_dir: &Path) -> anyhow::Result<()> {
             self.calls.borrow_mut().push(Call::RecreateWorktree {
                 work_dir: work_dir.to_path_buf(),
             });
@@ -585,14 +585,14 @@ mod tests {
             _hooks_source: &Path,
             work_dir: &Path,
             _skill_tools: &[String],
-        ) -> Result<()> {
+        ) -> anyhow::Result<()> {
             self.calls.borrow_mut().push(Call::SetupDirConfig {
                 work_dir: work_dir.to_path_buf(),
             });
             Ok(())
         }
 
-        fn init_scratch_dir(&self, scratch_dir: &Path) -> Result<()> {
+        fn init_scratch_dir(&self, scratch_dir: &Path) -> anyhow::Result<()> {
             self.calls.borrow_mut().push(Call::InitScratchDir {
                 scratch_dir: scratch_dir.to_path_buf(),
             });
@@ -600,7 +600,7 @@ mod tests {
             Ok(())
         }
 
-        fn launch_agent(&self, config: LaunchConfig) -> Result<SpawnResult> {
+        fn launch_agent(&self, config: LaunchConfig) -> anyhow::Result<SpawnResult> {
             self.calls.borrow_mut().push(Call::LaunchAgent {
                 task_name: config.task_name.to_string(),
                 has_user_prompt: config.user_prompt.is_some(),
@@ -616,7 +616,7 @@ mod tests {
             task_name: &str,
             _session_id: &str,
             work_dir: &Path,
-        ) -> Result<SpawnResult> {
+        ) -> anyhow::Result<SpawnResult> {
             self.calls.borrow_mut().push(Call::ResumeAgent {
                 task_name: task_name.to_string(),
                 work_dir: work_dir.to_path_buf(),
@@ -627,7 +627,7 @@ mod tests {
             })
         }
 
-        fn relaunch_agent(&self, task_name: &str, work_dir: &Path) -> Result<SpawnResult> {
+        fn relaunch_agent(&self, task_name: &str, work_dir: &Path) -> anyhow::Result<SpawnResult> {
             self.calls.borrow_mut().push(Call::ResumeAgent {
                 task_name: task_name.to_string(),
                 work_dir: work_dir.to_path_buf(),
@@ -638,7 +638,7 @@ mod tests {
             })
         }
 
-        fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> Result<()> {
+        fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> anyhow::Result<()> {
             self.calls.borrow_mut().push(Call::SendKeys {
                 pane_id: pane_id.to_string(),
                 message: message.to_string(),
@@ -646,7 +646,7 @@ mod tests {
             Ok(())
         }
 
-        fn forward_key(&self, pane_id: &str, key: &str) -> Result<()> {
+        fn forward_key(&self, pane_id: &str, key: &str) -> anyhow::Result<()> {
             self.calls.borrow_mut().push(Call::SendKeys {
                 pane_id: pane_id.to_string(),
                 message: key.to_string(),
@@ -654,7 +654,7 @@ mod tests {
             Ok(())
         }
 
-        fn forward_literal(&self, pane_id: &str, text: &str) -> Result<()> {
+        fn forward_literal(&self, pane_id: &str, text: &str) -> anyhow::Result<()> {
             self.calls.borrow_mut().push(Call::SendKeys {
                 pane_id: pane_id.to_string(),
                 message: text.to_string(),
@@ -662,7 +662,7 @@ mod tests {
             Ok(())
         }
 
-        fn capture_pane_output(&self, pane_id: &str) -> Result<String> {
+        fn capture_pane_output(&self, pane_id: &str) -> anyhow::Result<String> {
             self.calls.borrow_mut().push(Call::CaptureOutput {
                 pane_id: pane_id.to_string(),
             });
@@ -672,7 +672,7 @@ mod tests {
                 .ok_or_else(|| anyhow::anyhow!("no capture result"))
         }
 
-        fn kill_tmux_window(&self, window_id: &str) -> Result<()> {
+        fn kill_tmux_window(&self, window_id: &str) -> anyhow::Result<()> {
             self.calls.borrow_mut().push(Call::KillWindow {
                 window_id: window_id.to_string(),
             });
@@ -682,7 +682,7 @@ mod tests {
             Ok(())
         }
 
-        fn select_window(&self, window_id: &str) -> Result<()> {
+        fn select_window(&self, window_id: &str) -> anyhow::Result<()> {
             self.calls.borrow_mut().push(Call::SelectWindow {
                 window_id: window_id.to_string(),
             });
