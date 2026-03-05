@@ -296,6 +296,157 @@ impl ScreenState {
         }
     }
 
+    // ── Detail view ──────────────────────────────────────────────────
+
+    pub fn scroll_detail_down(&mut self) {
+        self.detail_scroll = self.detail_scroll.saturating_add(10);
+    }
+
+    pub fn scroll_detail_up(&mut self) {
+        self.detail_scroll = self.detail_scroll.saturating_sub(10);
+    }
+
+    /// Open a task's detail view: select it, show detail panel, reset scrolls,
+    /// focus chat input, and restore that task's input buffer.
+    /// Callers that need to preserve the *current* input should call
+    /// `save_current_input()` **before** this method.
+    pub fn open_task_detail(&mut self, index: usize) {
+        self.list_state.select(Some(index));
+        self.show_detail = true;
+        self.detail_scroll = 0;
+        self.focus = Focus::ChatInput;
+        self.chat_scroll = 0;
+        self.restore_input();
+    }
+
+    /// Leave the task detail view and return to the main chat.
+    /// Resets chat scroll and restores the main chat input buffer.
+    /// Callers that need to preserve the *current* input should call
+    /// `save_current_input()` **before** this method.
+    pub fn close_task_detail(&mut self) {
+        self.show_detail = false;
+        self.chat_scroll = 0;
+        self.focus = Focus::ChatInput;
+        self.restore_input();
+    }
+
+    /// Move to the next (forward=true) or previous (forward=false) task
+    /// from within the task chat input. Returns `true` if navigation stayed
+    /// within bounds, `false` if it wrapped past the edge (detail is hidden).
+    pub fn navigate_to_adjacent_task(&mut self, forward: bool) -> bool {
+        self.save_current_input();
+        self.chat_scroll = 0;
+        let current = self.list_state.selected().unwrap_or(0);
+        let in_bounds = if forward {
+            if current + 1 < self.tasks.len() {
+                self.list_state.select(Some(current + 1));
+                self.detail_scroll = 0;
+                true
+            } else {
+                self.show_detail = false;
+                false
+            }
+        } else if current > 0 {
+            self.list_state.select(Some(current - 1));
+            self.detail_scroll = 0;
+            true
+        } else {
+            self.show_detail = false;
+            false
+        };
+        self.restore_input();
+        in_bounds
+    }
+
+    // ── Project list ────────────────────────────────────────────────
+
+    /// Show the project list overlay, replacing the task list.
+    pub fn show_project_list(&mut self, projects: Vec<Project>) {
+        self.projects = projects;
+        if !self.projects.is_empty() {
+            self.project_list_state.select(Some(0));
+        }
+        self.show_projects = true;
+        self.focus = Focus::ProjectList;
+    }
+
+    /// Refresh the project list and clamp the selection after changes (e.g. delete).
+    pub fn refresh_projects(&mut self, projects: Vec<Project>) {
+        self.projects = projects;
+        if self.projects.is_empty() {
+            self.project_list_state.select(None);
+        } else {
+            let sel = self
+                .project_list_state
+                .selected()
+                .unwrap_or(0)
+                .min(self.projects.len().saturating_sub(1));
+            self.project_list_state.select(Some(sel));
+        }
+    }
+
+    // ── Search ──────────────────────────────────────────────────────
+
+    /// Enter search mode: clear the search input and focus the search bar.
+    pub fn enter_search_mode(&mut self) {
+        self.search_input.take();
+        self.update_search_filter();
+        self.focus = Focus::TaskSearch;
+    }
+
+    /// Exit search mode: clear filters, clamp selection, restore focus.
+    pub fn exit_search(&mut self) {
+        self.search_input.take();
+        if self.show_projects {
+            self.filtered_project_indices.clear();
+            if !self.projects.is_empty() {
+                let sel = self
+                    .project_list_state
+                    .selected()
+                    .unwrap_or(0)
+                    .min(self.projects.len() - 1);
+                self.project_list_state.select(Some(sel));
+            }
+            self.focus = Focus::ProjectList;
+        } else {
+            self.filtered_indices.clear();
+            if !self.tasks.is_empty() {
+                let sel = self
+                    .list_state
+                    .selected()
+                    .unwrap_or(0)
+                    .min(self.tasks.len() - 1);
+                self.list_state.select(Some(sel));
+            }
+            self.focus = Focus::TaskList;
+        }
+    }
+
+    /// Confirm the current search selection. For tasks, opens the detail view.
+    /// For projects, selects the project. Returns `true` if a selection was made.
+    pub fn confirm_search_selection(&mut self) -> bool {
+        if self.show_projects {
+            if let Some(real_idx) = self.selected_filtered_project_index() {
+                self.project_list_state.select(Some(real_idx));
+            }
+            self.search_input.take();
+            self.filtered_project_indices.clear();
+            self.focus = Focus::ProjectList;
+            true
+        } else {
+            let selected = if let Some(real_idx) = self.selected_filtered_task_index() {
+                self.open_task_detail(real_idx);
+                true
+            } else {
+                self.focus = Focus::TaskList;
+                false
+            };
+            self.search_input.take();
+            self.filtered_indices.clear();
+            selected
+        }
+    }
+
     /// Returns the permission key for the currently visible pane.
     /// Task name if viewing a task's detail, "exo" otherwise.
     pub fn focused_perm_key(&self) -> TaskName {
@@ -500,5 +651,298 @@ impl ScreenState {
         self.list_state
             .selected()
             .and_then(|i| self.filtered_indices.get(i).copied())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::{ProjectId, ProjectName, TaskId, TaskName};
+    use crate::task::{Project, Task};
+    use chrono::Utc;
+    use std::collections::HashMap;
+    use std::path::Path;
+
+    fn make_task(name: &str) -> Task {
+        Task::new(
+            TaskId::generate(),
+            TaskName::from(name.to_string()),
+            "engineer",
+            &HashMap::new(),
+            Path::new("/tmp"),
+            None,
+        )
+    }
+
+    fn make_project(name: &str) -> Project {
+        Project {
+            id: ProjectId::generate(),
+            name: ProjectName::from(name.to_string()),
+            description: String::new(),
+            created_at: Utc::now(),
+        }
+    }
+
+    fn state_with_tasks(n: usize) -> ScreenState {
+        let tasks: Vec<Task> = (0..n).map(|i| make_task(&format!("task-{i}"))).collect();
+        ScreenState::new(tasks)
+    }
+
+    // ── scroll_detail_up / scroll_detail_down ───────────────────────
+
+    #[test]
+    fn scroll_detail_down_increments() {
+        let mut s = state_with_tasks(0);
+        s.scroll_detail_down();
+        assert_eq!(s.detail_scroll, 10);
+        s.scroll_detail_down();
+        assert_eq!(s.detail_scroll, 20);
+    }
+
+    #[test]
+    fn scroll_detail_up_decrements() {
+        let mut s = state_with_tasks(0);
+        s.detail_scroll = 25;
+        s.scroll_detail_up();
+        assert_eq!(s.detail_scroll, 15);
+    }
+
+    #[test]
+    fn scroll_detail_up_saturates_at_zero() {
+        let mut s = state_with_tasks(0);
+        s.detail_scroll = 5;
+        s.scroll_detail_up();
+        assert_eq!(s.detail_scroll, 0);
+    }
+
+    // ── open_task_detail ────────────────────────────────────────────
+
+    #[test]
+    fn open_task_detail_sets_expected_fields() {
+        let mut s = state_with_tasks(3);
+        s.show_detail = false;
+        s.detail_scroll = 99;
+        s.chat_scroll = 42;
+        s.focus = Focus::TaskList;
+
+        s.open_task_detail(2);
+
+        assert!(s.show_detail);
+        assert_eq!(s.list_state.selected(), Some(2));
+        assert_eq!(s.detail_scroll, 0);
+        assert_eq!(s.chat_scroll, 0);
+        assert!(matches!(s.focus, Focus::ChatInput));
+    }
+
+    // ── close_task_detail ───────────────────────────────────────────
+
+    #[test]
+    fn close_task_detail_hides_and_resets() {
+        let mut s = state_with_tasks(2);
+        s.show_detail = true;
+        s.chat_scroll = 10;
+        s.focus = Focus::TaskList;
+
+        s.close_task_detail();
+
+        assert!(!s.show_detail);
+        assert_eq!(s.chat_scroll, 0);
+        assert!(matches!(s.focus, Focus::ChatInput));
+    }
+
+    // ── navigate_to_adjacent_task ───────────────────────────────────
+
+    #[test]
+    fn navigate_forward_within_bounds() {
+        let mut s = state_with_tasks(3);
+        s.show_detail = true;
+        s.list_state.select(Some(0));
+
+        let result = s.navigate_to_adjacent_task(true);
+
+        assert!(result);
+        assert_eq!(s.list_state.selected(), Some(1));
+        assert!(s.show_detail);
+        assert_eq!(s.detail_scroll, 0);
+    }
+
+    #[test]
+    fn navigate_forward_past_end_hides_detail() {
+        let mut s = state_with_tasks(2);
+        s.show_detail = true;
+        s.list_state.select(Some(1));
+
+        let result = s.navigate_to_adjacent_task(true);
+
+        assert!(!result);
+        assert!(!s.show_detail);
+    }
+
+    #[test]
+    fn navigate_backward_within_bounds() {
+        let mut s = state_with_tasks(3);
+        s.show_detail = true;
+        s.list_state.select(Some(2));
+
+        let result = s.navigate_to_adjacent_task(false);
+
+        assert!(result);
+        assert_eq!(s.list_state.selected(), Some(1));
+        assert!(s.show_detail);
+    }
+
+    #[test]
+    fn navigate_backward_past_start_hides_detail() {
+        let mut s = state_with_tasks(2);
+        s.show_detail = true;
+        s.list_state.select(Some(0));
+
+        let result = s.navigate_to_adjacent_task(false);
+
+        assert!(!result);
+        assert!(!s.show_detail);
+    }
+
+    // ── show_project_list ───────────────────────────────────────────
+
+    #[test]
+    fn show_project_list_sets_state() {
+        let mut s = state_with_tasks(0);
+        let projects = vec![make_project("alpha"), make_project("beta")];
+
+        s.show_project_list(projects);
+
+        assert!(s.show_projects);
+        assert!(matches!(s.focus, Focus::ProjectList));
+        assert_eq!(s.project_list_state.selected(), Some(0));
+        assert_eq!(s.projects.len(), 2);
+    }
+
+    #[test]
+    fn show_project_list_empty() {
+        let mut s = state_with_tasks(0);
+
+        s.show_project_list(vec![]);
+
+        assert!(s.show_projects);
+        assert!(matches!(s.focus, Focus::ProjectList));
+        assert_eq!(s.project_list_state.selected(), None);
+    }
+
+    // ── refresh_projects ────────────────────────────────────────────
+
+    #[test]
+    fn refresh_projects_clamps_selection() {
+        let mut s = state_with_tasks(0);
+        s.projects = vec![make_project("a"), make_project("b"), make_project("c")];
+        s.project_list_state.select(Some(2));
+
+        // Shrink to 2 projects — selection should clamp from 2 to 1
+        s.refresh_projects(vec![make_project("a"), make_project("b")]);
+
+        assert_eq!(s.project_list_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn refresh_projects_empty_clears_selection() {
+        let mut s = state_with_tasks(0);
+        s.project_list_state.select(Some(1));
+
+        s.refresh_projects(vec![]);
+
+        assert_eq!(s.project_list_state.selected(), None);
+    }
+
+    // ── enter_search_mode ───────────────────────────────────────────
+
+    #[test]
+    fn enter_search_mode_focuses_search() {
+        let mut s = state_with_tasks(2);
+        s.focus = Focus::TaskList;
+        s.search_input.set("old query");
+
+        s.enter_search_mode();
+
+        assert!(matches!(s.focus, Focus::TaskSearch));
+        assert!(s.search_input.buffer().is_empty());
+    }
+
+    // ── exit_search ─────────────────────────────────────────────────
+
+    #[test]
+    fn exit_search_tasks_restores_task_list() {
+        let mut s = state_with_tasks(3);
+        s.show_projects = false;
+        s.focus = Focus::TaskSearch;
+        s.filtered_indices = vec![0, 2];
+        s.list_state.select(Some(0));
+
+        s.exit_search();
+
+        assert!(matches!(s.focus, Focus::TaskList));
+        assert!(s.filtered_indices.is_empty());
+    }
+
+    #[test]
+    fn exit_search_projects_restores_project_list() {
+        let mut s = state_with_tasks(0);
+        s.show_projects = true;
+        s.projects = vec![make_project("a"), make_project("b")];
+        s.focus = Focus::TaskSearch;
+        s.filtered_project_indices = vec![0, 1];
+        s.project_list_state.select(Some(1));
+
+        s.exit_search();
+
+        assert!(matches!(s.focus, Focus::ProjectList));
+        assert!(s.filtered_project_indices.is_empty());
+        assert_eq!(s.project_list_state.selected(), Some(1));
+    }
+
+    // ── confirm_search_selection ────────────────────────────────────
+
+    #[test]
+    fn confirm_search_selection_opens_task_detail() {
+        let mut s = state_with_tasks(3);
+        s.show_projects = false;
+        s.filtered_indices = vec![0, 2];
+        s.list_state.select(Some(1)); // points to filtered_indices[1] = 2
+
+        let result = s.confirm_search_selection();
+
+        assert!(result);
+        assert!(s.show_detail);
+        assert_eq!(s.list_state.selected(), Some(2)); // real index
+        assert!(matches!(s.focus, Focus::ChatInput));
+        assert!(s.filtered_indices.is_empty());
+    }
+
+    #[test]
+    fn confirm_search_selection_no_match_goes_to_task_list() {
+        let mut s = state_with_tasks(3);
+        s.show_projects = false;
+        s.filtered_indices = vec![];
+        s.list_state.select(None);
+
+        let result = s.confirm_search_selection();
+
+        assert!(!result);
+        assert!(matches!(s.focus, Focus::TaskList));
+    }
+
+    #[test]
+    fn confirm_search_selection_project() {
+        let mut s = state_with_tasks(0);
+        s.show_projects = true;
+        s.projects = vec![make_project("a"), make_project("b"), make_project("c")];
+        s.filtered_project_indices = vec![0, 2];
+        s.project_list_state.select(Some(1)); // points to filtered[1] = 2
+
+        let result = s.confirm_search_selection();
+
+        assert!(result);
+        assert_eq!(s.project_list_state.selected(), Some(2)); // real index
+        assert!(matches!(s.focus, Focus::ProjectList));
+        assert!(s.filtered_project_indices.is_empty());
     }
 }

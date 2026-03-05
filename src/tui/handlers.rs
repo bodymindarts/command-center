@@ -305,12 +305,7 @@ fn handle_cycle_permissions<R: Runtime>(
         } else if let Some(pos) = state.tasks.iter().position(|t| t.name == name) {
             // Task is in the current project view
             state.save_current_input();
-            state.list_state.select(Some(pos));
-            state.show_detail = true;
-            state.detail_scroll = 0;
-            state.focus = Focus::ChatInput;
-            state.chat_scroll = 0;
-            state.restore_input();
+            state.open_task_detail(pos);
         } else {
             // Task is in a different project — switch to it
             let target_pid = state.global_task_projects.get(&name).cloned().flatten();
@@ -334,13 +329,9 @@ fn handle_cycle_permissions<R: Runtime>(
                 state.switch_to_project(None, tasks, Some(&name));
             }
         }
-    } else if state.list_state.selected().is_some() {
+    } else if let Some(idx) = state.list_state.selected() {
         state.save_current_input();
-        state.show_detail = true;
-        state.detail_scroll = 0;
-        state.focus = Focus::ChatInput;
-        state.chat_scroll = 0;
-        state.restore_input();
+        state.open_task_detail(idx);
     }
     true
 }
@@ -377,10 +368,7 @@ fn handle_goto_project<R: Runtime>(
     // If in a project's task detail, go back to PM chat
     if state.show_detail && state.active_project_id.is_some() {
         state.save_current_input();
-        state.show_detail = false;
-        state.focus = Focus::ChatInput;
-        state.chat_scroll = 0;
-        state.restore_input();
+        state.close_task_detail();
     // If in ExO view, restore last active project (or first project)
     } else if state.active_project_id.is_none() {
         if let Ok(projects) = app.list_projects() {
@@ -463,9 +451,7 @@ fn handle_task_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app:
     match key.code {
         KeyCode::Char('q') => state.should_quit = true,
         KeyCode::Esc => {
-            state.show_detail = false;
-            state.focus = Focus::ChatInput;
-            state.restore_input();
+            state.close_task_detail();
         }
         KeyCode::Char('j') | KeyCode::Down => {
             state.next();
@@ -478,27 +464,23 @@ fn handle_task_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app:
             state.detail_scroll = 0;
         }
         KeyCode::PageDown => {
-            state.detail_scroll = state.detail_scroll.saturating_add(10);
+            state.scroll_detail_down();
         }
         KeyCode::PageUp => {
-            state.detail_scroll = state.detail_scroll.saturating_sub(10);
+            state.scroll_detail_up();
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            state.detail_scroll = state.detail_scroll.saturating_add(10);
+            state.scroll_detail_down();
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            state.detail_scroll = state.detail_scroll.saturating_sub(10);
+            state.scroll_detail_up();
         }
         KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             goto_task_window(state, app);
         }
         KeyCode::Enter => {
-            if state.selected_task().is_some() {
-                state.show_detail = true;
-                state.detail_scroll = 0;
-                state.focus = Focus::ChatInput;
-                state.chat_scroll = 0;
-                state.restore_input();
+            if let Some(idx) = state.list_state.selected() {
+                state.open_task_detail(idx);
             }
         }
         KeyCode::Char('x') => {
@@ -519,9 +501,7 @@ fn handle_task_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app:
             }
         }
         KeyCode::Char('/') => {
-            state.search_input.take();
-            state.update_search_filter();
-            state.focus = Focus::TaskSearch;
+            state.enter_search_mode();
         }
         KeyCode::Tab => {
             state.focus = Focus::ChatInput;
@@ -533,13 +513,11 @@ fn handle_task_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app:
         }
         KeyCode::Char('p') => {
             if let Ok(projects) = app.list_projects() {
-                state.projects = projects;
-                if !state.projects.is_empty() {
-                    state.project_list_state.select(Some(0));
-                }
+                state.show_project_list(projects);
+            } else {
+                state.show_projects = true;
+                state.focus = Focus::ProjectList;
             }
-            state.show_projects = true;
-            state.focus = Focus::ProjectList;
         }
         _ => {}
     }
@@ -557,53 +535,10 @@ fn handle_task_search_key(state: &mut ScreenState, key: KeyEvent) {
     };
     match key.code {
         KeyCode::Esc => {
-            state.search_input.take();
-            if searching_projects {
-                state.filtered_project_indices.clear();
-                if !state.projects.is_empty() {
-                    let sel = state
-                        .project_list_state
-                        .selected()
-                        .unwrap_or(0)
-                        .min(state.projects.len() - 1);
-                    state.project_list_state.select(Some(sel));
-                }
-                state.focus = Focus::ProjectList;
-            } else {
-                state.filtered_indices.clear();
-                if !state.tasks.is_empty() {
-                    let sel = state
-                        .list_state
-                        .selected()
-                        .unwrap_or(0)
-                        .min(state.tasks.len() - 1);
-                    state.list_state.select(Some(sel));
-                }
-                state.focus = Focus::TaskList;
-            }
+            state.exit_search();
         }
         KeyCode::Enter => {
-            if searching_projects {
-                if let Some(real_idx) = state.selected_filtered_project_index() {
-                    state.project_list_state.select(Some(real_idx));
-                }
-                state.search_input.take();
-                state.filtered_project_indices.clear();
-                state.focus = Focus::ProjectList;
-            } else {
-                if let Some(real_idx) = state.selected_filtered_task_index() {
-                    state.list_state.select(Some(real_idx));
-                    state.show_detail = true;
-                    state.detail_scroll = 0;
-                    state.focus = Focus::ChatInput;
-                    state.chat_scroll = 0;
-                    state.restore_input();
-                } else {
-                    state.focus = Focus::TaskList;
-                }
-                state.search_input.take();
-                state.filtered_indices.clear();
-            }
+            state.confirm_search_selection();
         }
         KeyCode::Down | KeyCode::Tab => {
             if searching_projects {
@@ -702,33 +637,13 @@ fn handle_task_chat_input_key<R: Runtime>(
     match key.code {
         KeyCode::Esc => {
             state.save_current_input();
-            state.show_detail = false;
-            state.chat_scroll = 0;
-            state.restore_input();
+            state.close_task_detail();
         }
         KeyCode::Tab => {
-            state.save_current_input();
-            state.chat_scroll = 0;
-            let current = state.list_state.selected().unwrap_or(0);
-            if current + 1 < state.tasks.len() {
-                state.list_state.select(Some(current + 1));
-                state.detail_scroll = 0;
-            } else {
-                state.show_detail = false;
-            }
-            state.restore_input();
+            state.navigate_to_adjacent_task(true);
         }
         KeyCode::BackTab => {
-            state.save_current_input();
-            state.chat_scroll = 0;
-            let current = state.list_state.selected().unwrap_or(0);
-            if current > 0 {
-                state.list_state.select(Some(current - 1));
-                state.detail_scroll = 0;
-            } else {
-                state.show_detail = false;
-            }
-            state.restore_input();
+            state.navigate_to_adjacent_task(false);
         }
         KeyCode::Char('k') if ctrl => {
             state.focus = Focus::ChatHistory;
@@ -797,23 +712,21 @@ fn handle_chat_input_key<R: Runtime>(
         }
         KeyCode::Tab => {
             state.save_current_input();
-            state.chat_scroll = 0;
             if !state.tasks.is_empty() {
-                state.list_state.select(Some(0));
-                state.show_detail = true;
-                state.detail_scroll = 0;
+                state.open_task_detail(0);
+            } else {
+                state.chat_scroll = 0;
+                state.restore_input();
             }
-            state.restore_input();
         }
         KeyCode::BackTab => {
             state.save_current_input();
-            state.chat_scroll = 0;
             if !state.tasks.is_empty() {
-                state.list_state.select(Some(state.tasks.len() - 1));
-                state.show_detail = true;
-                state.detail_scroll = 0;
+                state.open_task_detail(state.tasks.len() - 1);
+            } else {
+                state.chat_scroll = 0;
+                state.restore_input();
             }
-            state.restore_input();
         }
         KeyCode::Char('k') if ctrl => {
             state.focus = Focus::ChatHistory;
@@ -967,9 +880,7 @@ fn handle_confirm_close_task_key<R: Runtime>(
             if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()) {
                 state.refresh_tasks(tasks);
             }
-            state.show_detail = false;
-            state.focus = Focus::ChatInput;
-            state.restore_input();
+            state.close_task_detail();
         }
         KeyCode::Char('n') | KeyCode::Esc => {
             state.focus = if state.show_detail {
@@ -995,17 +906,7 @@ fn handle_confirm_delete_project_key<R: Runtime>(
         KeyCode::Char('y') => {
             let _ = app.delete_project(project_name.as_str());
             if let Ok(projects) = app.list_projects() {
-                state.projects = projects;
-                if state.projects.is_empty() {
-                    state.project_list_state.select(None);
-                } else {
-                    let sel = state
-                        .project_list_state
-                        .selected()
-                        .unwrap_or(0)
-                        .min(state.projects.len().saturating_sub(1));
-                    state.project_list_state.select(Some(sel));
-                }
+                state.refresh_projects(projects);
             }
             state.focus = Focus::ProjectList;
         }
