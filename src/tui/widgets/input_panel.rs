@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::primitives::TaskName;
 
 use super::super::permissions::PermissionStore;
-use super::super::screen_state::{Focus, InputState, ProjectListState, TaskListState};
+use super::super::screen::{Focus, InputState, ProjectListState, TaskListState};
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::tui) fn render_input(

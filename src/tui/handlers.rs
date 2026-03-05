@@ -12,7 +12,7 @@ use crate::runtime::Runtime;
 
 use super::ProjectContext;
 use super::permissions::ActivePermission;
-use super::screen_state::{Focus, ScreenState};
+use super::screen::{Focus, ScreenState};
 use super::telegram;
 use crate::assistant::{AssistantEvent, AssistantSession, ProjectEvent};
 

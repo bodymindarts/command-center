@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use crate::task::{DisplayStatus, Project};
 
 use super::super::permissions::PermissionStore;
-use super::super::screen_state::{Focus, ProjectListState, TaskListState};
+use super::super::screen::{Focus, ProjectListState, TaskListState};
 
 fn task_list_item(
     task_list: &TaskListState,
