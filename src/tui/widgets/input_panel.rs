@@ -3,17 +3,17 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use super::super::screen::{Focus, Screen};
+use super::super::screen::{Focus, ScreenState};
 
 pub(in crate::tui) fn render_input(
     frame: &mut ratatui::Frame,
-    dash: &Screen,
+    state: &ScreenState,
     area: Rect,
     focused: bool,
 ) {
-    let front_input_perm = dash.permissions.peek(&dash.focused_perm_key());
-    let focused_has_perms = dash.show_detail && front_input_perm.is_some_and(|p| !p.is_askuser());
-    let focused_has_askuser = dash.show_detail && front_input_perm.is_some_and(|p| p.is_askuser());
+    let front_input_perm = state.permissions.peek(&state.focused_perm_key());
+    let focused_has_perms = state.show_detail && front_input_perm.is_some_and(|p| !p.is_askuser());
+    let focused_has_askuser = state.show_detail && front_input_perm.is_some_and(|p| p.is_askuser());
     let border_color = if focused && focused_has_perms {
         Color::Yellow
     } else if focused && focused_has_askuser {
@@ -23,11 +23,14 @@ pub(in crate::tui) fn render_input(
     } else {
         Color::DarkGray
     };
-    let searching = matches!(dash.focus, Focus::TaskSearch);
-    let prefix = if !searching && dash.show_detail {
-        let name = dash.selected_task().map(|t| t.name.as_str()).unwrap_or("?");
+    let searching = matches!(state.focus, Focus::TaskSearch);
+    let prefix = if !searching && state.show_detail {
+        let name = state
+            .selected_task()
+            .map(|t| t.name.as_str())
+            .unwrap_or("?");
         format!("[{name}] > ")
-    } else if let Some(ref name) = dash.active_project {
+    } else if let Some(ref name) = state.active_project {
         format!("[{}] > ", name.as_str())
     } else {
         "[ExO] > ".to_string()
@@ -37,8 +40,8 @@ pub(in crate::tui) fn render_input(
     // Visible width inside borders
     let visible_width = area.width.saturating_sub(2);
 
-    let display_buf = dash.input.display_text();
-    let cursor_pos = prefix_len + dash.input.display_cursor() as u16;
+    let display_buf = state.input.display_text();
+    let cursor_pos = prefix_len + state.input.display_cursor() as u16;
     let scroll = if cursor_pos >= visible_width {
         cursor_pos - visible_width + 1
     } else {
@@ -92,9 +95,13 @@ fn askuser_hint_spans(n_opts: usize) -> Vec<Span<'static>> {
     spans
 }
 
-pub(in crate::tui) fn render_prompt_bar(frame: &mut ratatui::Frame, dash: &Screen, area: Rect) {
+pub(in crate::tui) fn render_prompt_bar(
+    frame: &mut ratatui::Frame,
+    state: &ScreenState,
+    area: Rect,
+) {
     // Show transient error in red, replacing normal keybinding hints
-    if let Some(ref err) = dash.status_error {
+    if let Some(ref err) = state.status_error {
         let bar = Paragraph::new(Line::from(vec![Span::styled(
             format!(" {err}"),
             Style::default().fg(Color::Red),
@@ -103,10 +110,10 @@ pub(in crate::tui) fn render_prompt_bar(frame: &mut ratatui::Frame, dash: &Scree
         return;
     }
 
-    let front_p = dash.permissions.peek(&dash.focused_perm_key());
-    let has_perms = dash.show_detail && front_p.is_some_and(|p| !p.is_askuser());
-    let mut spans = match &dash.focus {
-        Focus::ChatInput if dash.show_detail => {
+    let front_p = state.permissions.peek(&state.focused_perm_key());
+    let has_perms = state.show_detail && front_p.is_some_and(|p| !p.is_askuser());
+    let mut spans = match &state.focus {
+        Focus::ChatInput if state.show_detail => {
             vec![
                 Span::styled(" ^G", Style::default().fg(Color::Yellow)),
                 Span::raw(" goto  "),
@@ -199,7 +206,7 @@ pub(in crate::tui) fn render_prompt_bar(frame: &mut ratatui::Frame, dash: &Scree
             ]
         }
     };
-    let has_askuser = dash.show_detail && front_p.is_some_and(|p| p.is_askuser());
+    let has_askuser = state.show_detail && front_p.is_some_and(|p| p.is_askuser());
     if has_perms {
         spans.extend(perm_hint_spans());
     } else if has_askuser {

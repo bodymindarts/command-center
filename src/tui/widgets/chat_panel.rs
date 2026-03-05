@@ -6,28 +6,31 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use crate::primitives::MessageRole;
 
 use super::super::chat::{ChatMessage, ContentBlock, ExoState};
-use super::super::screen::{Focus, Screen};
+use super::super::screen::{Focus, ScreenState};
 
 pub(in crate::tui) fn render_chat(
     frame: &mut ratatui::Frame,
-    dash: &mut Screen,
+    state: &mut ScreenState,
     exo: &ExoState,
     pm: Option<&ExoState>,
     area: Rect,
 ) {
-    let searching = matches!(dash.focus, Focus::TaskSearch);
-    let in_task_chat = !searching && dash.show_detail && dash.selected_task().is_some();
+    let searching = matches!(state.focus, Focus::TaskSearch);
+    let in_task_chat = !searching && state.show_detail && state.selected_task().is_some();
 
     let title = if in_task_chat {
-        let name = dash.selected_task().map(|t| t.name.as_str()).unwrap_or("?");
+        let name = state
+            .selected_task()
+            .map(|t| t.name.as_str())
+            .unwrap_or("?");
         format!(" Chat: {name} ")
-    } else if let Some(ref name) = dash.active_project {
+    } else if let Some(ref name) = state.active_project {
         format!(" PM: {} ", name.as_str())
     } else {
         " ExO Chat ".to_string()
     };
 
-    let chat_border_color = if matches!(dash.focus, Focus::ChatHistory) {
+    let chat_border_color = if matches!(state.focus, Focus::ChatHistory) {
         Color::Blue
     } else {
         Color::DarkGray
@@ -46,13 +49,13 @@ pub(in crate::tui) fn render_chat(
 
     if in_task_chat {
         // Render task messages
-        if dash.selected_messages.is_empty() {
+        if state.selected_messages.is_empty() {
             lines.push(Line::from(Span::styled(
                 "No messages yet.",
                 Style::default().fg(Color::DarkGray),
             )));
         } else {
-            for msg in &dash.selected_messages {
+            for msg in &state.selected_messages {
                 let (label, label_color) = match msg.role {
                     MessageRole::System => ("PROMPT", Color::Cyan),
                     MessageRole::User => ("YOU", Color::Green),
@@ -72,7 +75,7 @@ pub(in crate::tui) fn render_chat(
             }
         }
 
-        if let Some(output) = &dash.detail_live_output {
+        if let Some(output) = &state.detail_live_output {
             let tail: Vec<&str> = output.lines().collect();
             let start = tail.len().saturating_sub(500);
             lines.push(Line::from(Span::styled(
@@ -85,7 +88,7 @@ pub(in crate::tui) fn render_chat(
                 lines.push(Line::from(l.to_string()));
             }
         }
-    } else if dash.active_project.is_some() {
+    } else if state.active_project.is_some() {
         // Render PM chat
         if let Some(pm) = pm {
             render_chat_messages(&mut lines, &pm.messages, "PM", pm.streaming);
@@ -124,9 +127,9 @@ pub(in crate::tui) fn render_chat(
         .sum();
 
     let max_scroll = rendered_lines.saturating_sub(inner_height) as u16;
-    dash.chat_viewport_height = inner_height as u16;
-    dash.chat_scroll = dash.chat_scroll.min(max_scroll);
-    let scroll = max_scroll.saturating_sub(dash.chat_scroll);
+    state.chat_viewport_height = inner_height as u16;
+    state.chat_scroll = state.chat_scroll.min(max_scroll);
+    let scroll = max_scroll.saturating_sub(state.chat_scroll);
 
     let chat = Paragraph::new(lines)
         .wrap(Wrap { trim: false })

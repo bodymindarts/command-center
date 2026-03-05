@@ -15,7 +15,7 @@ use super::PmContext;
 use super::chat::ExoState;
 use super::claude::{ExoEvent, ExoSession, PmEvent, pm_system_prompt};
 use super::permissions::ActivePermission;
-use super::screen::{Focus, Screen};
+use super::screen::{Focus, ScreenState};
 use super::telegram;
 
 const EXO_PERM_KEY: &str = "exo";
@@ -87,11 +87,11 @@ fn parse_ask_user_options(
 
 /// Resolve and consume the active permission request.
 fn resolve_permission(
-    dash: &mut Screen,
+    state: &mut ScreenState,
     allow: bool,
 ) -> Option<(UnixStream, bool, Vec<serde_json::Value>, u64)> {
-    let perm_key = dash.active_permission_key()?;
-    let perm = dash.permissions.take(&perm_key)?;
+    let perm_key = state.active_permission_key()?;
+    let perm = state.permissions.take(&perm_key)?;
     Some((
         perm.stream,
         allow,
@@ -171,13 +171,13 @@ fn handle_input_editing(input: &mut super::input::InputState, key: &KeyEvent) ->
 
 // ── Paste handling ──────────────────────────────────────────────────
 
-pub(super) fn handle_paste(dash: &mut Screen, text: String) {
-    if matches!(dash.focus, Focus::ChatInput) {
+pub(super) fn handle_paste(state: &mut ScreenState, text: String) {
+    if matches!(state.focus, Focus::ChatInput) {
         if text.contains('\n') || text.contains('\r') {
-            dash.input.set_paste(text);
+            state.input.set_paste(text);
         } else {
             for c in text.chars() {
-                dash.input.insert(c);
+                state.input.insert(c);
             }
         }
     }
@@ -188,7 +188,7 @@ pub(super) fn handle_paste(dash: &mut Screen, text: String) {
 /// Handle global key shortcuts (Ctrl+C, Ctrl+P, Ctrl+Y/T/N, number keys, Ctrl+O, Ctrl+R).
 /// Returns true if the key was consumed.
 pub(super) fn handle_global_keys<R: Runtime>(
-    dash: &mut Screen,
+    state: &mut ScreenState,
     key: KeyEvent,
     app: &ClatApp<R>,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
@@ -199,22 +199,22 @@ pub(super) fn handle_global_keys<R: Runtime>(
 
     // Ctrl+C quits
     if ctrl && key.code == KeyCode::Char('c') {
-        dash.should_quit = true;
+        state.should_quit = true;
         return true;
     }
 
     // Ctrl+P cycles to next task with pending permissions
     if ctrl && key.code == KeyCode::Char('p') {
-        return handle_cycle_permissions(dash, app, pm_contexts, pm_tx);
+        return handle_cycle_permissions(state, app, pm_contexts, pm_tx);
     }
 
     // Ctrl+Y one-time allow
     if ctrl
         && key.code == KeyCode::Char('y')
-        && dash.show_detail
-        && dash.permissions.peek(&dash.focused_perm_key()).is_some()
+        && state.show_detail
+        && state.permissions.peek(&state.focused_perm_key()).is_some()
     {
-        if let Some((stream, allow, _suggestions, perm_id)) = resolve_permission(dash, true) {
+        if let Some((stream, allow, _suggestions, perm_id)) = resolve_permission(state, true) {
             let _ = write_response_to_stream(stream, allow, None);
             notify_tg_resolved(tg_tx, perm_id, "✅ Approved locally");
         }
@@ -224,10 +224,10 @@ pub(super) fn handle_global_keys<R: Runtime>(
     // Ctrl+T trust / always-allow
     if ctrl
         && key.code == KeyCode::Char('t')
-        && dash.show_detail
-        && dash.permissions.peek(&dash.focused_perm_key()).is_some()
+        && state.show_detail
+        && state.permissions.peek(&state.focused_perm_key()).is_some()
     {
-        if let Some((stream, allow, suggestions, perm_id)) = resolve_permission(dash, true) {
+        if let Some((stream, allow, suggestions, perm_id)) = resolve_permission(state, true) {
             let _ = write_response_to_stream(stream, allow, Some(&suggestions));
             notify_tg_resolved(tg_tx, perm_id, "✅ Trusted locally");
         }
@@ -237,10 +237,10 @@ pub(super) fn handle_global_keys<R: Runtime>(
     // Ctrl+N denies permission
     if ctrl
         && key.code == KeyCode::Char('n')
-        && dash.show_detail
-        && dash.permissions.peek(&dash.focused_perm_key()).is_some()
+        && state.show_detail
+        && state.permissions.peek(&state.focused_perm_key()).is_some()
     {
-        if let Some((stream, allow, _suggestions, perm_id)) = resolve_permission(dash, false) {
+        if let Some((stream, allow, _suggestions, perm_id)) = resolve_permission(state, false) {
             let _ = write_response_to_stream(stream, allow, None);
             notify_tg_resolved(tg_tx, perm_id, "❌ Denied locally");
         }
@@ -250,29 +250,29 @@ pub(super) fn handle_global_keys<R: Runtime>(
     // Number keys 1-4 answer an AskUser prompt
     if matches!(key.code, KeyCode::Char('1'..='4'))
         && key.modifiers.is_empty()
-        && dash.show_detail
-        && dash
+        && state.show_detail
+        && state
             .permissions
-            .peek(&dash.focused_perm_key())
+            .peek(&state.focused_perm_key())
             .is_some_and(|p| p.is_askuser())
     {
-        handle_askuser_select(dash, key, tg_tx);
+        handle_askuser_select(state, key, tg_tx);
         return true;
     }
 
     // Ctrl+O returns to ExO chat
     if ctrl && key.code == KeyCode::Char('o') {
-        dash.save_project_state();
-        dash.switch_to_project(None);
+        state.save_project_state();
+        state.switch_to_project(None);
         if let Ok(tasks) = app.list_visible(None) {
-            dash.finish_project_switch(tasks);
+            state.finish_project_switch(tasks);
         }
         return true;
     }
 
     // Ctrl+R returns to PM (or last active project from ExO)
     if ctrl && key.code == KeyCode::Char('r') {
-        handle_goto_pm(dash, app, pm_contexts, pm_tx);
+        handle_goto_pm(state, app, pm_contexts, pm_tx);
         return true;
     }
 
@@ -280,14 +280,14 @@ pub(super) fn handle_global_keys<R: Runtime>(
 }
 
 fn handle_cycle_permissions<R: Runtime>(
-    dash: &mut Screen,
+    state: &mut ScreenState,
     app: &ClatApp<R>,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
 ) -> bool {
-    let names = dash.permissions.task_names_with_pending();
+    let names = state.permissions.task_names_with_pending();
     if !names.is_empty() {
-        let current = dash.focused_perm_key();
+        let current = state.focused_perm_key();
         let idx = names
             .iter()
             .position(|n| n == &current)
@@ -296,33 +296,33 @@ fn handle_cycle_permissions<R: Runtime>(
         let name = names[idx].clone();
         if name == EXO_PERM_KEY {
             // Navigate to ExO view
-            if dash.active_project_id.is_some() {
-                dash.save_project_state();
-                dash.switch_to_project(None);
+            if state.active_project_id.is_some() {
+                state.save_project_state();
+                state.switch_to_project(None);
                 if let Ok(tasks) = app.list_visible(None) {
-                    dash.finish_project_switch(tasks);
+                    state.finish_project_switch(tasks);
                 }
             } else {
-                dash.show_detail = false;
+                state.show_detail = false;
             }
-        } else if let Some(pos) = dash.tasks.iter().position(|t| t.name == name) {
+        } else if let Some(pos) = state.tasks.iter().position(|t| t.name == name) {
             // Task is in the current project view
-            dash.save_current_input();
-            dash.list_state.select(Some(pos));
-            dash.show_detail = true;
-            dash.detail_scroll = 0;
-            dash.focus = Focus::ChatInput;
-            dash.chat_scroll = 0;
-            dash.restore_input();
+            state.save_current_input();
+            state.list_state.select(Some(pos));
+            state.show_detail = true;
+            state.detail_scroll = 0;
+            state.focus = Focus::ChatInput;
+            state.chat_scroll = 0;
+            state.restore_input();
         } else {
             // Task is in a different project — switch to it
-            let target_pid = dash.global_task_projects.get(&name).cloned().flatten();
-            dash.save_project_state();
+            let target_pid = state.global_task_projects.get(&name).cloned().flatten();
+            state.save_project_state();
             if let Some(pid) = target_pid {
                 if let Ok(projects) = app.list_projects() {
-                    dash.projects = projects;
+                    state.projects = projects;
                 }
-                let proj_name = dash
+                let proj_name = state
                     .projects
                     .iter()
                     .find(|p| p.id == pid)
@@ -330,41 +330,41 @@ fn handle_cycle_permissions<R: Runtime>(
                     .unwrap_or_else(|| {
                         crate::primitives::ProjectName::from(pid.as_str().to_string())
                     });
-                dash.switch_to_project(Some((proj_name, pid.clone())));
+                state.switch_to_project(Some((proj_name, pid.clone())));
                 if let Ok(tasks) = app.list_visible(Some(&pid)) {
-                    dash.finish_project_switch(tasks);
+                    state.finish_project_switch(tasks);
                 }
-                if let Some(pos) = dash.tasks.iter().position(|t| t.name == name) {
-                    dash.list_state.select(Some(pos));
-                    dash.show_detail = true;
-                    dash.detail_scroll = 0;
+                if let Some(pos) = state.tasks.iter().position(|t| t.name == name) {
+                    state.list_state.select(Some(pos));
+                    state.show_detail = true;
+                    state.detail_scroll = 0;
                 }
-                super::ensure_pm_context(pm_contexts, dash, app, &pid, pm_tx);
+                super::ensure_pm_context(pm_contexts, state, app, &pid, pm_tx);
             } else {
-                dash.switch_to_project(None);
+                state.switch_to_project(None);
                 if let Ok(tasks) = app.list_visible(None) {
-                    dash.finish_project_switch(tasks);
+                    state.finish_project_switch(tasks);
                 }
-                if let Some(pos) = dash.tasks.iter().position(|t| t.name == name) {
-                    dash.list_state.select(Some(pos));
-                    dash.show_detail = true;
-                    dash.detail_scroll = 0;
+                if let Some(pos) = state.tasks.iter().position(|t| t.name == name) {
+                    state.list_state.select(Some(pos));
+                    state.show_detail = true;
+                    state.detail_scroll = 0;
                 }
             }
         }
-    } else if dash.list_state.selected().is_some() {
-        dash.save_current_input();
-        dash.show_detail = true;
-        dash.detail_scroll = 0;
-        dash.focus = Focus::ChatInput;
-        dash.chat_scroll = 0;
-        dash.restore_input();
+    } else if state.list_state.selected().is_some() {
+        state.save_current_input();
+        state.show_detail = true;
+        state.detail_scroll = 0;
+        state.focus = Focus::ChatInput;
+        state.chat_scroll = 0;
+        state.restore_input();
     }
     true
 }
 
 fn handle_askuser_select(
-    dash: &mut Screen,
+    state: &mut ScreenState,
     key: KeyEvent,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
 ) {
@@ -372,13 +372,13 @@ fn handle_askuser_select(
         KeyCode::Char(c) => c.to_digit(10).unwrap_or(1) as usize,
         _ => 1,
     };
-    let perm_key = dash.focused_perm_key();
-    if let Some(perm) = dash.permissions.peek(&perm_key) {
+    let perm_key = state.focused_perm_key();
+    if let Some(perm) = state.permissions.peek(&perm_key) {
         let idx = digit - 1;
         if idx < perm.askuser_options.len() {
             let label = perm.askuser_options[idx].0.clone();
             let perm_id = perm.perm_id;
-            if let Some(perm) = dash.permissions.take(&perm_key) {
+            if let Some(perm) = state.permissions.take(&perm_key) {
                 let _ = write_response_with_message(perm.stream, true, &label);
                 notify_tg_resolved(tg_tx, perm_id, &format!("✅ Selected: {label}"));
             }
@@ -387,66 +387,67 @@ fn handle_askuser_select(
 }
 
 fn handle_goto_pm<R: Runtime>(
-    dash: &mut Screen,
+    state: &mut ScreenState,
     app: &ClatApp<R>,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
 ) {
     // If in a project's task detail, go back to PM chat
-    if dash.show_detail && dash.active_project_id.is_some() {
-        dash.save_current_input();
-        dash.show_detail = false;
-        dash.focus = Focus::ChatInput;
-        dash.chat_scroll = 0;
-        dash.restore_input();
+    if state.show_detail && state.active_project_id.is_some() {
+        state.save_current_input();
+        state.show_detail = false;
+        state.focus = Focus::ChatInput;
+        state.chat_scroll = 0;
+        state.restore_input();
     // If in ExO view, restore last active project (or first project)
-    } else if dash.active_project_id.is_none() {
+    } else if state.active_project_id.is_none() {
         if let Ok(projects) = app.list_projects() {
-            dash.projects = projects;
+            state.projects = projects;
         }
-        let target = dash
+        let target = state
             .last_project
             .take()
             .map(|s| (s.name, s.id, s.show_detail, s.selected_task_name))
             .or_else(|| {
-                dash.projects
+                state
+                    .projects
                     .first()
                     .map(|p| (p.name.clone(), p.id.clone(), false, None))
             });
         if let Some((name, id, saved_show_detail, saved_task_name)) = target {
-            dash.switch_to_project(Some((name, id.clone())));
+            state.switch_to_project(Some((name, id.clone())));
             if let Ok(tasks) = app.list_visible(Some(&id)) {
-                dash.finish_project_switch(tasks);
+                state.finish_project_switch(tasks);
             }
             if saved_show_detail
                 && let Some(ref task_name) = saved_task_name
-                && let Some(idx) = dash.tasks.iter().position(|t| &t.name == task_name)
+                && let Some(idx) = state.tasks.iter().position(|t| &t.name == task_name)
             {
-                dash.list_state.select(Some(idx));
-                dash.show_detail = true;
-                dash.detail_scroll = 0;
+                state.list_state.select(Some(idx));
+                state.show_detail = true;
+                state.detail_scroll = 0;
             }
-            super::ensure_pm_context(pm_contexts, dash, app, &id, pm_tx);
+            super::ensure_pm_context(pm_contexts, state, app, &id, pm_tx);
         }
     // If in a project PM view, cycle to next project
-    } else if dash.active_project_id.is_some() && !dash.show_detail {
+    } else if state.active_project_id.is_some() && !state.show_detail {
         if let Ok(projects) = app.list_projects() {
-            dash.projects = projects;
+            state.projects = projects;
         }
-        let cur_idx = dash
+        let cur_idx = state
             .active_project_id
             .as_ref()
-            .and_then(|pid| dash.projects.iter().position(|p| p.id == *pid));
+            .and_then(|pid| state.projects.iter().position(|p| p.id == *pid));
         if let Some(ci) = cur_idx {
-            let next_idx = (ci + 1) % dash.projects.len();
-            let next = &dash.projects[next_idx];
+            let next_idx = (ci + 1) % state.projects.len();
+            let next = &state.projects[next_idx];
             let next_id = next.id.clone();
             let next_name = next.name.clone();
-            dash.switch_to_project(Some((next_name, next_id.clone())));
+            state.switch_to_project(Some((next_name, next_id.clone())));
             if let Ok(tasks) = app.list_visible(Some(&next_id)) {
-                dash.finish_project_switch(tasks);
+                state.finish_project_switch(tasks);
             }
-            super::ensure_pm_context(pm_contexts, dash, app, &next_id, pm_tx);
+            super::ensure_pm_context(pm_contexts, state, app, &next_id, pm_tx);
         }
     }
 }
@@ -454,7 +455,7 @@ fn handle_goto_pm<R: Runtime>(
 // ── Per-focus key handlers ──────────────────────────────────────────
 
 pub(super) fn handle_focus_key<R: Runtime>(
-    dash: &mut Screen,
+    state: &mut ScreenState,
     key: KeyEvent,
     app: &ClatApp<R>,
     exo: &mut ExoState,
@@ -462,330 +463,336 @@ pub(super) fn handle_focus_key<R: Runtime>(
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
 ) {
-    match &dash.focus {
-        Focus::TaskList => handle_task_list_key(dash, key, app),
-        Focus::TaskSearch => handle_task_search_key(dash, key),
-        Focus::ProjectList => handle_project_list_key(dash, key, app, pm_contexts, pm_tx),
-        Focus::ChatInput if dash.show_detail => handle_task_chat_input_key(dash, key, app),
+    match &state.focus {
+        Focus::TaskList => handle_task_list_key(state, key, app),
+        Focus::TaskSearch => handle_task_search_key(state, key),
+        Focus::ProjectList => handle_project_list_key(state, key, app, pm_contexts, pm_tx),
+        Focus::ChatInput if state.show_detail => handle_task_chat_input_key(state, key, app),
         Focus::ChatInput => {
-            handle_chat_input_key(dash, key, app, exo, exo_session, pm_contexts, pm_tx)
+            handle_chat_input_key(state, key, app, exo, exo_session, pm_contexts, pm_tx)
         }
-        Focus::ChatHistory => handle_chat_history_key(dash, key),
-        Focus::ConfirmDelete(_) => handle_confirm_delete_key(dash, key, app),
-        Focus::ConfirmCloseTask(_) => handle_confirm_close_task_key(dash, key, app),
-        Focus::ConfirmDeleteProject(_) => handle_confirm_delete_project_key(dash, key, app),
-        Focus::ConfirmCloseProject => handle_confirm_close_project_key(dash, key, app, pm_contexts),
+        Focus::ChatHistory => handle_chat_history_key(state, key),
+        Focus::ConfirmDelete(_) => handle_confirm_delete_key(state, key, app),
+        Focus::ConfirmCloseTask(_) => handle_confirm_close_task_key(state, key, app),
+        Focus::ConfirmDeleteProject(_) => handle_confirm_delete_project_key(state, key, app),
+        Focus::ConfirmCloseProject => {
+            handle_confirm_close_project_key(state, key, app, pm_contexts)
+        }
     }
 }
 
-fn handle_task_list_key<R: Runtime>(dash: &mut Screen, key: KeyEvent, app: &ClatApp<R>) {
+fn handle_task_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app: &ClatApp<R>) {
     match key.code {
-        KeyCode::Char('q') => dash.should_quit = true,
+        KeyCode::Char('q') => state.should_quit = true,
         KeyCode::Esc => {
-            dash.show_detail = false;
-            dash.focus = Focus::ChatInput;
-            dash.restore_input();
+            state.show_detail = false;
+            state.focus = Focus::ChatInput;
+            state.restore_input();
         }
         KeyCode::Char('j') | KeyCode::Down => {
-            dash.next();
-            dash.show_detail = true;
-            dash.detail_scroll = 0;
+            state.next();
+            state.show_detail = true;
+            state.detail_scroll = 0;
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            dash.previous();
-            dash.show_detail = true;
-            dash.detail_scroll = 0;
+            state.previous();
+            state.show_detail = true;
+            state.detail_scroll = 0;
         }
         KeyCode::PageDown => {
-            dash.detail_scroll = dash.detail_scroll.saturating_add(10);
+            state.detail_scroll = state.detail_scroll.saturating_add(10);
         }
         KeyCode::PageUp => {
-            dash.detail_scroll = dash.detail_scroll.saturating_sub(10);
+            state.detail_scroll = state.detail_scroll.saturating_sub(10);
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            dash.detail_scroll = dash.detail_scroll.saturating_add(10);
+            state.detail_scroll = state.detail_scroll.saturating_add(10);
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            dash.detail_scroll = dash.detail_scroll.saturating_sub(10);
+            state.detail_scroll = state.detail_scroll.saturating_sub(10);
         }
         KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            goto_task_window(dash, app);
+            goto_task_window(state, app);
         }
         KeyCode::Enter => {
-            if dash.selected_task().is_some() {
-                dash.show_detail = true;
-                dash.detail_scroll = 0;
-                dash.focus = Focus::ChatInput;
-                dash.chat_scroll = 0;
-                dash.restore_input();
+            if state.selected_task().is_some() {
+                state.show_detail = true;
+                state.detail_scroll = 0;
+                state.focus = Focus::ChatInput;
+                state.chat_scroll = 0;
+                state.restore_input();
             }
         }
         KeyCode::Char('x') => {
-            if let Some(task) = dash.selected_task()
+            if let Some(task) = state.selected_task()
                 && task.status.is_running()
             {
                 let id = task.id.clone();
-                dash.focus = Focus::ConfirmCloseTask(id);
+                state.focus = Focus::ConfirmCloseTask(id);
             }
         }
         KeyCode::Char('r') => {
-            reopen_task(dash, app);
+            reopen_task(state, app);
         }
         KeyCode::Backspace => {
-            if let Some(task) = dash.selected_task() {
+            if let Some(task) = state.selected_task() {
                 let id = task.id.clone();
-                dash.focus = Focus::ConfirmDelete(id);
+                state.focus = Focus::ConfirmDelete(id);
             }
         }
         KeyCode::Char('/') => {
-            dash.search_input.take();
-            dash.update_search_filter();
-            dash.focus = Focus::TaskSearch;
+            state.search_input.take();
+            state.update_search_filter();
+            state.focus = Focus::TaskSearch;
         }
         KeyCode::Tab => {
-            dash.focus = Focus::ChatInput;
-            dash.restore_input();
+            state.focus = Focus::ChatInput;
+            state.restore_input();
         }
         KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            dash.focus = Focus::ChatInput;
-            dash.restore_input();
+            state.focus = Focus::ChatInput;
+            state.restore_input();
         }
         KeyCode::Char('p') => {
             if let Ok(projects) = app.list_projects() {
-                dash.projects = projects;
-                if !dash.projects.is_empty() {
-                    dash.project_list_state.select(Some(0));
+                state.projects = projects;
+                if !state.projects.is_empty() {
+                    state.project_list_state.select(Some(0));
                 }
             }
-            dash.show_projects = true;
-            dash.focus = Focus::ProjectList;
+            state.show_projects = true;
+            state.focus = Focus::ProjectList;
         }
         _ => {}
     }
 }
 
-fn handle_task_search_key(dash: &mut Screen, key: KeyEvent) {
+fn handle_task_search_key(state: &mut ScreenState, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let searching_projects = dash.show_projects;
-    let do_filter = |dash: &mut Screen| {
-        if dash.show_projects {
-            dash.update_project_search_filter();
+    let searching_projects = state.show_projects;
+    let do_filter = |state: &mut ScreenState| {
+        if state.show_projects {
+            state.update_project_search_filter();
         } else {
-            dash.update_search_filter();
+            state.update_search_filter();
         }
     };
     match key.code {
         KeyCode::Esc => {
-            dash.search_input.take();
+            state.search_input.take();
             if searching_projects {
-                dash.filtered_project_indices.clear();
-                if !dash.projects.is_empty() {
-                    let sel = dash
+                state.filtered_project_indices.clear();
+                if !state.projects.is_empty() {
+                    let sel = state
                         .project_list_state
                         .selected()
                         .unwrap_or(0)
-                        .min(dash.projects.len() - 1);
-                    dash.project_list_state.select(Some(sel));
+                        .min(state.projects.len() - 1);
+                    state.project_list_state.select(Some(sel));
                 }
-                dash.focus = Focus::ProjectList;
+                state.focus = Focus::ProjectList;
             } else {
-                dash.filtered_indices.clear();
-                if !dash.tasks.is_empty() {
-                    let sel = dash
+                state.filtered_indices.clear();
+                if !state.tasks.is_empty() {
+                    let sel = state
                         .list_state
                         .selected()
                         .unwrap_or(0)
-                        .min(dash.tasks.len() - 1);
-                    dash.list_state.select(Some(sel));
+                        .min(state.tasks.len() - 1);
+                    state.list_state.select(Some(sel));
                 }
-                dash.focus = Focus::TaskList;
+                state.focus = Focus::TaskList;
             }
         }
         KeyCode::Enter => {
             if searching_projects {
-                if let Some(real_idx) = dash.selected_filtered_project_index() {
-                    dash.project_list_state.select(Some(real_idx));
+                if let Some(real_idx) = state.selected_filtered_project_index() {
+                    state.project_list_state.select(Some(real_idx));
                 }
-                dash.search_input.take();
-                dash.filtered_project_indices.clear();
-                dash.focus = Focus::ProjectList;
+                state.search_input.take();
+                state.filtered_project_indices.clear();
+                state.focus = Focus::ProjectList;
             } else {
-                if let Some(real_idx) = dash.selected_filtered_task_index() {
-                    dash.list_state.select(Some(real_idx));
-                    dash.show_detail = true;
-                    dash.detail_scroll = 0;
-                    dash.focus = Focus::ChatInput;
-                    dash.chat_scroll = 0;
-                    dash.restore_input();
+                if let Some(real_idx) = state.selected_filtered_task_index() {
+                    state.list_state.select(Some(real_idx));
+                    state.show_detail = true;
+                    state.detail_scroll = 0;
+                    state.focus = Focus::ChatInput;
+                    state.chat_scroll = 0;
+                    state.restore_input();
                 } else {
-                    dash.focus = Focus::TaskList;
+                    state.focus = Focus::TaskList;
                 }
-                dash.search_input.take();
-                dash.filtered_indices.clear();
+                state.search_input.take();
+                state.filtered_indices.clear();
             }
         }
         KeyCode::Down | KeyCode::Tab => {
             if searching_projects {
-                dash.search_next_project();
+                state.search_next_project();
             } else {
-                dash.search_next();
+                state.search_next();
             }
         }
         KeyCode::Up | KeyCode::BackTab => {
             if searching_projects {
-                dash.search_prev_project();
+                state.search_prev_project();
             } else {
-                dash.search_prev();
+                state.search_prev();
             }
         }
         KeyCode::Char('n') if ctrl => {
             if searching_projects {
-                dash.search_next_project();
+                state.search_next_project();
             } else {
-                dash.search_next();
+                state.search_next();
             }
         }
         KeyCode::Char('p') if ctrl => {
             if searching_projects {
-                dash.search_prev_project();
+                state.search_prev_project();
             } else {
-                dash.search_prev();
+                state.search_prev();
             }
         }
         KeyCode::Char('k') if ctrl => {
-            dash.search_input.kill_line();
-            do_filter(dash);
+            state.search_input.kill_line();
+            do_filter(state);
         }
         _ => {
-            if handle_input_editing(&mut dash.search_input, &key) {
-                do_filter(dash);
+            if handle_input_editing(&mut state.search_input, &key) {
+                do_filter(state);
             }
         }
     }
 }
 
 fn handle_project_list_key<R: Runtime>(
-    dash: &mut Screen,
+    state: &mut ScreenState,
     key: KeyEvent,
     app: &ClatApp<R>,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
 ) {
     match key.code {
-        KeyCode::Char('q') => dash.should_quit = true,
-        KeyCode::Char('j') | KeyCode::Down => dash.next_project(),
-        KeyCode::Char('k') | KeyCode::Up => dash.previous_project(),
+        KeyCode::Char('q') => state.should_quit = true,
+        KeyCode::Char('j') | KeyCode::Down => state.next_project(),
+        KeyCode::Char('k') | KeyCode::Up => state.previous_project(),
         KeyCode::Char('/') => {
-            dash.search_input.take();
-            dash.update_project_search_filter();
-            dash.focus = Focus::TaskSearch;
+            state.search_input.take();
+            state.update_project_search_filter();
+            state.focus = Focus::TaskSearch;
         }
         KeyCode::Enter => {
-            if let Some(project) = dash.selected_project() {
+            if let Some(project) = state.selected_project() {
                 let project_id = project.id.clone();
                 let project_name = project.name.clone();
-                dash.switch_to_project(Some((project_name, project_id.clone())));
+                state.switch_to_project(Some((project_name, project_id.clone())));
                 if let Ok(tasks) = app.list_visible(Some(&project_id)) {
-                    dash.finish_project_switch(tasks);
+                    state.finish_project_switch(tasks);
                 }
-                super::ensure_pm_context(pm_contexts, dash, app, &project_id, pm_tx);
+                super::ensure_pm_context(pm_contexts, state, app, &project_id, pm_tx);
             }
         }
         KeyCode::Backspace => {
-            if let Some(project) = dash.selected_project() {
+            if let Some(project) = state.selected_project() {
                 let name = project.name.clone();
-                dash.focus = Focus::ConfirmDeleteProject(name);
+                state.focus = Focus::ConfirmDeleteProject(name);
             }
         }
         KeyCode::Char('p') | KeyCode::Esc => {
-            dash.switch_to_project(None);
-            dash.focus = Focus::TaskList;
+            state.switch_to_project(None);
+            state.focus = Focus::TaskList;
             if let Ok(tasks) = app.list_visible(None) {
-                dash.finish_project_switch(tasks);
+                state.finish_project_switch(tasks);
             }
         }
         _ => {}
     }
 }
 
-fn handle_task_chat_input_key<R: Runtime>(dash: &mut Screen, key: KeyEvent, app: &ClatApp<R>) {
+fn handle_task_chat_input_key<R: Runtime>(
+    state: &mut ScreenState,
+    key: KeyEvent,
+    app: &ClatApp<R>,
+) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Esc => {
-            dash.save_current_input();
-            dash.show_detail = false;
-            dash.chat_scroll = 0;
-            dash.restore_input();
+            state.save_current_input();
+            state.show_detail = false;
+            state.chat_scroll = 0;
+            state.restore_input();
         }
         KeyCode::Tab => {
-            dash.save_current_input();
-            dash.chat_scroll = 0;
-            let current = dash.list_state.selected().unwrap_or(0);
-            if current + 1 < dash.tasks.len() {
-                dash.list_state.select(Some(current + 1));
-                dash.detail_scroll = 0;
+            state.save_current_input();
+            state.chat_scroll = 0;
+            let current = state.list_state.selected().unwrap_or(0);
+            if current + 1 < state.tasks.len() {
+                state.list_state.select(Some(current + 1));
+                state.detail_scroll = 0;
             } else {
-                dash.show_detail = false;
+                state.show_detail = false;
             }
-            dash.restore_input();
+            state.restore_input();
         }
         KeyCode::BackTab => {
-            dash.save_current_input();
-            dash.chat_scroll = 0;
-            let current = dash.list_state.selected().unwrap_or(0);
+            state.save_current_input();
+            state.chat_scroll = 0;
+            let current = state.list_state.selected().unwrap_or(0);
             if current > 0 {
-                dash.list_state.select(Some(current - 1));
-                dash.detail_scroll = 0;
+                state.list_state.select(Some(current - 1));
+                state.detail_scroll = 0;
             } else {
-                dash.show_detail = false;
+                state.show_detail = false;
             }
-            dash.restore_input();
+            state.restore_input();
         }
         KeyCode::Char('k') if ctrl => {
-            dash.focus = Focus::ChatHistory;
+            state.focus = Focus::ChatHistory;
         }
         KeyCode::Char('x') if ctrl => {
-            if let Some(task) = dash.selected_task()
+            if let Some(task) = state.selected_task()
                 && task.status.is_running()
             {
                 let id = task.id.clone();
-                dash.focus = Focus::ConfirmCloseTask(id);
+                state.focus = Focus::ConfirmCloseTask(id);
             }
         }
         KeyCode::Char('l') if ctrl => {
-            dash.save_current_input();
-            dash.focus = Focus::TaskList;
+            state.save_current_input();
+            state.focus = Focus::TaskList;
         }
         KeyCode::Char('g') if ctrl => {
-            goto_task_window(dash, app);
+            goto_task_window(state, app);
         }
         KeyCode::Enter => {
-            if !dash.input.is_empty() {
-                let msg = dash.input.take();
-                if let Some(task) = dash.selected_task() {
+            if !state.input.is_empty() {
+                let msg = state.input.take();
+                if let Some(task) = state.selected_task() {
                     let task_id = task.id.as_str().to_string();
                     let pane = task.tmux_pane.clone();
                     match app.send(&task_id, &msg) {
                         Ok(_) => {
                             if let Some(pane) = pane {
-                                dash.idle_panes.remove(&pane);
+                                state.idle_panes.remove(&pane);
                             }
                         }
                         Err(e) => {
-                            dash.status_error = Some(format!("send: {e}"));
+                            state.status_error = Some(format!("send: {e}"));
                         }
                     }
                 }
             }
         }
         _ => {
-            handle_input_editing(&mut dash.input, &key);
+            handle_input_editing(&mut state.input, &key);
         }
     }
 }
 
 fn handle_chat_input_key<R: Runtime>(
-    dash: &mut Screen,
+    state: &mut ScreenState,
     key: KeyEvent,
     app: &ClatApp<R>,
     exo: &mut ExoState,
@@ -799,70 +806,70 @@ fn handle_chat_input_key<R: Runtime>(
             if exo.streaming {
                 exo.finish_streaming();
             }
-            if let Some(ref pid) = dash.active_project_id
+            if let Some(ref pid) = state.active_project_id
                 && let Some(ctx) = pm_contexts.get_mut(pid)
                 && ctx.state.streaming
             {
                 ctx.state.finish_streaming();
             }
-            dash.chat_scroll = 0;
+            state.chat_scroll = 0;
         }
         KeyCode::Tab => {
-            dash.save_current_input();
-            dash.chat_scroll = 0;
-            if !dash.tasks.is_empty() {
-                dash.list_state.select(Some(0));
-                dash.show_detail = true;
-                dash.detail_scroll = 0;
+            state.save_current_input();
+            state.chat_scroll = 0;
+            if !state.tasks.is_empty() {
+                state.list_state.select(Some(0));
+                state.show_detail = true;
+                state.detail_scroll = 0;
             }
-            dash.restore_input();
+            state.restore_input();
         }
         KeyCode::BackTab => {
-            dash.save_current_input();
-            dash.chat_scroll = 0;
-            if !dash.tasks.is_empty() {
-                dash.list_state.select(Some(dash.tasks.len() - 1));
-                dash.show_detail = true;
-                dash.detail_scroll = 0;
+            state.save_current_input();
+            state.chat_scroll = 0;
+            if !state.tasks.is_empty() {
+                state.list_state.select(Some(state.tasks.len() - 1));
+                state.show_detail = true;
+                state.detail_scroll = 0;
             }
-            dash.restore_input();
+            state.restore_input();
         }
         KeyCode::Char('k') if ctrl => {
-            dash.focus = Focus::ChatHistory;
+            state.focus = Focus::ChatHistory;
         }
-        KeyCode::Char('x') if ctrl && dash.active_project.is_some() => {
-            dash.focus = Focus::ConfirmCloseProject;
+        KeyCode::Char('x') if ctrl && state.active_project.is_some() => {
+            state.focus = Focus::ConfirmCloseProject;
         }
         KeyCode::Char('l') if ctrl => {
-            dash.save_current_input();
-            dash.focus = Focus::TaskList;
-            if dash.list_state.selected().is_some() {
-                dash.show_detail = true;
-                dash.detail_scroll = 0;
+            state.save_current_input();
+            state.focus = Focus::TaskList;
+            if state.list_state.selected().is_some() {
+                state.show_detail = true;
+                state.detail_scroll = 0;
             }
         }
         KeyCode::Enter => {
-            handle_chat_enter(dash, app, exo, exo_session, pm_contexts, pm_tx);
+            handle_chat_enter(state, app, exo, exo_session, pm_contexts, pm_tx);
         }
         _ => {
-            handle_input_editing(&mut dash.input, &key);
+            handle_input_editing(&mut state.input, &key);
         }
     }
 }
 
 fn handle_chat_enter<R: Runtime>(
-    dash: &mut Screen,
+    state: &mut ScreenState,
     app: &ClatApp<R>,
     exo: &mut ExoState,
     exo_session: &mut ExoSession,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
 ) {
-    dash.chat_scroll = 0;
-    if dash.input.is_empty() {
+    state.chat_scroll = 0;
+    if state.input.is_empty() {
         return;
     }
-    if let Some(ref pid) = dash.active_project_id {
+    if let Some(ref pid) = state.active_project_id {
         if !pm_contexts.contains_key(pid) {
             pm_contexts.insert(pid.clone(), PmContext::new(pid, pm_tx));
         }
@@ -876,14 +883,14 @@ fn handle_chat_enter<R: Runtime>(
                 let _ = app.insert_pm_message(pid, MessageRole::Assistant, &msg.text_content());
             }
         }
-        let msg = dash.input.take();
+        let msg = state.input.take();
         let _ = app.insert_pm_message(pid, MessageRole::User, &msg);
         ctx.state.add_user_message(msg.clone());
         if ctx.session.is_none() {
             let sid = app
                 .read_pm_session_id(pid)
                 .or_else(|| ctx.state.session_id.clone());
-            let proj_name = dash
+            let proj_name = state
                 .active_project
                 .as_ref()
                 .map(|p| p.as_str())
@@ -901,7 +908,7 @@ fn handle_chat_enter<R: Runtime>(
         }
         if let Some(sess) = &mut ctx.session {
             sess.send_message(&msg, ctx.state.session_id.as_deref());
-            dash.chat_scroll = 0;
+            state.chat_scroll = 0;
         }
     } else {
         if exo.streaming {
@@ -913,76 +920,80 @@ fn handle_chat_enter<R: Runtime>(
                 let _ = app.insert_exo_message(MessageRole::Assistant, &msg.text_content());
             }
         }
-        let msg = dash.input.take();
+        let msg = state.input.take();
         let _ = app.insert_exo_message(MessageRole::User, &msg);
         exo.add_user_message(msg.clone());
         exo_session.send_message(&msg, exo.session_id.as_deref());
-        dash.chat_scroll = 0;
+        state.chat_scroll = 0;
     }
 }
 
-fn handle_chat_history_key(dash: &mut Screen, key: KeyEvent) {
+fn handle_chat_history_key(state: &mut ScreenState, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Char('j') if ctrl => {
-            dash.focus = Focus::ChatInput;
+            state.focus = Focus::ChatInput;
         }
         KeyCode::Char('u') if ctrl => {
-            let half = (dash.chat_viewport_height / 2).max(1);
-            dash.chat_scroll = dash.chat_scroll.saturating_add(half);
+            let half = (state.chat_viewport_height / 2).max(1);
+            state.chat_scroll = state.chat_scroll.saturating_add(half);
         }
         KeyCode::Char('d') if ctrl => {
-            let half = (dash.chat_viewport_height / 2).max(1);
-            dash.chat_scroll = dash.chat_scroll.saturating_sub(half);
+            let half = (state.chat_viewport_height / 2).max(1);
+            state.chat_scroll = state.chat_scroll.saturating_sub(half);
         }
         KeyCode::Char('l') if ctrl => {
-            dash.focus = Focus::TaskList;
+            state.focus = Focus::TaskList;
         }
         KeyCode::Esc => {
-            dash.focus = Focus::ChatInput;
-            dash.chat_scroll = 0;
+            state.focus = Focus::ChatInput;
+            state.chat_scroll = 0;
         }
         _ => {}
     }
 }
 
-fn handle_confirm_delete_key<R: Runtime>(dash: &mut Screen, key: KeyEvent, app: &ClatApp<R>) {
-    let task_id = match &dash.focus {
+fn handle_confirm_delete_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app: &ClatApp<R>) {
+    let task_id = match &state.focus {
         Focus::ConfirmDelete(id) => id.clone(),
         _ => return,
     };
     match key.code {
         KeyCode::Char('y') => {
             let _ = app.delete(task_id.as_str());
-            if let Ok(tasks) = app.list_visible(dash.active_project_id.as_ref()) {
-                dash.refresh_tasks(tasks);
+            if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()) {
+                state.refresh_tasks(tasks);
             }
-            dash.focus = Focus::TaskList;
+            state.focus = Focus::TaskList;
         }
         KeyCode::Char('n') | KeyCode::Esc => {
-            dash.focus = Focus::TaskList;
+            state.focus = Focus::TaskList;
         }
         _ => {}
     }
 }
 
-fn handle_confirm_close_task_key<R: Runtime>(dash: &mut Screen, key: KeyEvent, app: &ClatApp<R>) {
-    let task_id = match &dash.focus {
+fn handle_confirm_close_task_key<R: Runtime>(
+    state: &mut ScreenState,
+    key: KeyEvent,
+    app: &ClatApp<R>,
+) {
+    let task_id = match &state.focus {
         Focus::ConfirmCloseTask(id) => id.clone(),
         _ => return,
     };
     match key.code {
         KeyCode::Char('y') => {
             let _ = app.close(task_id.as_str());
-            if let Ok(tasks) = app.list_visible(dash.active_project_id.as_ref()) {
-                dash.refresh_tasks(tasks);
+            if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()) {
+                state.refresh_tasks(tasks);
             }
-            dash.show_detail = false;
-            dash.focus = Focus::ChatInput;
-            dash.restore_input();
+            state.show_detail = false;
+            state.focus = Focus::ChatInput;
+            state.restore_input();
         }
         KeyCode::Char('n') | KeyCode::Esc => {
-            dash.focus = if dash.show_detail {
+            state.focus = if state.show_detail {
                 Focus::ChatInput
             } else {
                 Focus::TaskList
@@ -993,11 +1004,11 @@ fn handle_confirm_close_task_key<R: Runtime>(dash: &mut Screen, key: KeyEvent, a
 }
 
 fn handle_confirm_delete_project_key<R: Runtime>(
-    dash: &mut Screen,
+    state: &mut ScreenState,
     key: KeyEvent,
     app: &ClatApp<R>,
 ) {
-    let project_name = match &dash.focus {
+    let project_name = match &state.focus {
         Focus::ConfirmDeleteProject(name) => name.clone(),
         _ => return,
     };
@@ -1005,55 +1016,55 @@ fn handle_confirm_delete_project_key<R: Runtime>(
         KeyCode::Char('y') => {
             let _ = app.delete_project(project_name.as_str());
             if let Ok(projects) = app.list_projects() {
-                dash.projects = projects;
-                if dash.projects.is_empty() {
-                    dash.project_list_state.select(None);
+                state.projects = projects;
+                if state.projects.is_empty() {
+                    state.project_list_state.select(None);
                 } else {
-                    let sel = dash
+                    let sel = state
                         .project_list_state
                         .selected()
                         .unwrap_or(0)
-                        .min(dash.projects.len().saturating_sub(1));
-                    dash.project_list_state.select(Some(sel));
+                        .min(state.projects.len().saturating_sub(1));
+                    state.project_list_state.select(Some(sel));
                 }
             }
-            dash.focus = Focus::ProjectList;
+            state.focus = Focus::ProjectList;
         }
         KeyCode::Char('n') | KeyCode::Esc => {
-            dash.focus = Focus::ProjectList;
+            state.focus = Focus::ProjectList;
         }
         _ => {}
     }
 }
 
 fn handle_confirm_close_project_key<R: Runtime>(
-    dash: &mut Screen,
+    state: &mut ScreenState,
     key: KeyEvent,
     app: &ClatApp<R>,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
 ) {
     match key.code {
         KeyCode::Char('y') => {
-            let closed_pid = dash.active_project_id.clone();
-            dash.switch_to_project(None);
-            dash.focus = Focus::TaskList;
+            let closed_pid = state.active_project_id.clone();
+            state.switch_to_project(None);
+            state.focus = Focus::TaskList;
             if let Some(pid) = closed_pid {
                 super::cancel_pm_context(pm_contexts, &pid);
             }
             if let Ok(tasks) = app.list_visible(None) {
-                dash.finish_project_switch(tasks);
+                state.finish_project_switch(tasks);
             }
         }
         KeyCode::Char('n') | KeyCode::Esc => {
-            dash.focus = Focus::ChatInput;
+            state.focus = Focus::ChatInput;
         }
         _ => {}
     }
 }
 
 /// Shared: go to the selected task's tmux window (or reopen if closed).
-fn goto_task_window<R: Runtime>(dash: &mut Screen, app: &ClatApp<R>) {
-    if let Some(task) = dash.selected_task() {
+fn goto_task_window<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
+    if let Some(task) = state.selected_task() {
         if task.status.is_running() {
             if let Some(window_id) = &task.tmux_window {
                 app.goto_window(window_id);
@@ -1062,13 +1073,13 @@ fn goto_task_window<R: Runtime>(dash: &mut Screen, app: &ClatApp<R>) {
             let id = task.id.as_str().to_string();
             match app.reopen(&id) {
                 Ok(window_id) => {
-                    if let Ok(tasks) = app.list_visible(dash.active_project_id.as_ref()) {
-                        dash.refresh_tasks(tasks);
+                    if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()) {
+                        state.refresh_tasks(tasks);
                     }
                     app.goto_window(&window_id);
                 }
                 Err(e) => {
-                    dash.status_error = Some(format!("reopen: {e}"));
+                    state.status_error = Some(format!("reopen: {e}"));
                 }
             }
         }
@@ -1076,19 +1087,19 @@ fn goto_task_window<R: Runtime>(dash: &mut Screen, app: &ClatApp<R>) {
 }
 
 /// Shared: reopen a closed task.
-fn reopen_task<R: Runtime>(dash: &mut Screen, app: &ClatApp<R>) {
-    if let Some(task) = dash.selected_task()
+fn reopen_task<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
+    if let Some(task) = state.selected_task()
         && !task.status.is_running()
     {
         let id = task.id.as_str().to_string();
         match app.reopen(&id) {
             Ok(_) => {
-                if let Ok(tasks) = app.list_visible(dash.active_project_id.as_ref()) {
-                    dash.refresh_tasks(tasks);
+                if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()) {
+                    state.refresh_tasks(tasks);
                 }
             }
             Err(e) => {
-                dash.status_error = Some(format!("reopen: {e}"));
+                state.status_error = Some(format!("reopen: {e}"));
             }
         }
     }
@@ -1101,7 +1112,7 @@ pub(super) fn drain_exo_events<R: Runtime>(
     exo_session: &mut ExoSession,
     app: &ClatApp<R>,
     rx: &mpsc::Receiver<ExoEvent>,
-    dash: &mut Screen,
+    state: &mut ScreenState,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
 ) {
     while let Ok(ev) = rx.try_recv() {
@@ -1109,7 +1120,7 @@ pub(super) fn drain_exo_events<R: Runtime>(
             ExoEvent::TextDelta(text) => {
                 if exo.streaming {
                     exo.append_text(&text);
-                    dash.chat_scroll = 0;
+                    state.chat_scroll = 0;
                     if let Some(tx) = tg_tx {
                         let _ = tx.send(telegram::TgOutbound::ExoTextDelta { text: text.clone() });
                     }
@@ -1162,20 +1173,20 @@ pub(super) fn drain_pm_events<R: Runtime>(
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     app: &ClatApp<R>,
     pm_rx: &mpsc::Receiver<PmEvent>,
-    dash: &mut Screen,
+    state: &mut ScreenState,
 ) {
     while let Ok(pm_ev) = pm_rx.try_recv() {
         let project_id = pm_ev.project_id;
         let Some(ctx) = pm_contexts.get_mut(&project_id) else {
             continue;
         };
-        let is_active_pm = dash.active_project_id.as_ref() == Some(&project_id);
+        let is_active_pm = state.active_project_id.as_ref() == Some(&project_id);
         match pm_ev.inner {
             ExoEvent::TextDelta(text) => {
                 if ctx.state.streaming {
                     ctx.state.append_text(&text);
                     if is_active_pm {
-                        dash.chat_scroll = 0;
+                        state.chat_scroll = 0;
                     }
                 }
             }
@@ -1232,7 +1243,7 @@ pub(super) fn drain_pm_events<R: Runtime>(
 }
 
 pub(super) fn drain_resolved(
-    dash: &mut Screen,
+    state: &mut ScreenState,
     resolved_rx: &mpsc::Receiver<String>,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
     tg_perm_ids: &mut HashSet<u64>,
@@ -1240,17 +1251,17 @@ pub(super) fn drain_resolved(
     while let Ok(cwd) = resolved_rx.try_recv() {
         let resolved_cwd =
             std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
-        let task_name = find_task_name_by_cwd(&dash.global_task_work_dirs, &resolved_cwd);
+        let task_name = find_task_name_by_cwd(&state.global_task_work_dirs, &resolved_cwd);
         if let Some(ref name) = task_name {
-            if let Some(pane_id) = dash
+            if let Some(pane_id) = state
                 .tasks
                 .iter()
                 .find(|t| t.name == *name)
                 .and_then(|t| t.tmux_pane.as_ref())
             {
-                dash.idle_panes.remove(pane_id);
+                state.idle_panes.remove(pane_id);
             }
-            if let Some(perm) = dash.permissions.take(name) {
+            if let Some(perm) = state.permissions.take(name) {
                 let _ = write_response_to_stream(perm.stream, false, None);
                 if tg_perm_ids.remove(&perm.perm_id) {
                     notify_tg_resolved(tg_tx, perm.perm_id, "✅ Resolved in pane");
@@ -1260,41 +1271,41 @@ pub(super) fn drain_resolved(
     }
 }
 
-pub(super) fn drain_idle(dash: &mut Screen, idle_rx: &mpsc::Receiver<String>) {
+pub(super) fn drain_idle(state: &mut ScreenState, idle_rx: &mpsc::Receiver<String>) {
     while let Ok(cwd) = idle_rx.try_recv() {
         let cwd_path =
             std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
-        if let Some(task_name) = find_task_name_by_cwd(&dash.global_task_work_dirs, &cwd_path)
-            && let Some(pane_id) = dash
+        if let Some(task_name) = find_task_name_by_cwd(&state.global_task_work_dirs, &cwd_path)
+            && let Some(pane_id) = state
                 .tasks
                 .iter()
                 .find(|t| t.name == task_name)
                 .and_then(|t| t.tmux_pane.as_ref())
         {
-            dash.idle_panes.insert(pane_id.clone());
+            state.idle_panes.insert(pane_id.clone());
         }
     }
 }
 
 /// Drain active notifications from Notification hooks — mark pane as not idle.
-pub(super) fn drain_active(dash: &mut Screen, active_rx: &mpsc::Receiver<String>) {
+pub(super) fn drain_active(state: &mut ScreenState, active_rx: &mpsc::Receiver<String>) {
     while let Ok(cwd) = active_rx.try_recv() {
         let cwd_path =
             std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
-        if let Some(task_name) = find_task_name_by_cwd(&dash.global_task_work_dirs, &cwd_path)
-            && let Some(pane_id) = dash
+        if let Some(task_name) = find_task_name_by_cwd(&state.global_task_work_dirs, &cwd_path)
+            && let Some(pane_id) = state
                 .tasks
                 .iter()
                 .find(|t| t.name == task_name)
                 .and_then(|t| t.tmux_pane.as_ref())
         {
-            dash.idle_panes.remove(pane_id);
+            state.idle_panes.remove(pane_id);
         }
     }
 }
 
 pub(super) fn drain_permissions(
-    dash: &mut Screen,
+    state: &mut ScreenState,
     perm_rx: &mpsc::Receiver<(UnixStream, PermissionRequest)>,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
     tg_perm_ids: &mut HashSet<u64>,
@@ -1303,15 +1314,15 @@ pub(super) fn drain_permissions(
     while let Ok((stream, req)) = perm_rx.try_recv() {
         let req_cwd =
             std::fs::canonicalize(&req.cwd).unwrap_or_else(|_| std::path::PathBuf::from(&req.cwd));
-        let task_name = find_task_name_by_cwd(&dash.global_task_work_dirs, &req_cwd)
+        let task_name = find_task_name_by_cwd(&state.global_task_work_dirs, &req_cwd)
             .unwrap_or_else(|| TaskName::from(EXO_PERM_KEY.to_string()));
-        if let Some(pane_id) = dash
+        if let Some(pane_id) = state
             .tasks
             .iter()
             .find(|t| t.name == task_name)
             .and_then(|t| t.tmux_pane.as_ref())
         {
-            dash.idle_panes.remove(pane_id);
+            state.idle_panes.remove(pane_id);
         }
         *perm_id_counter += 1;
         let perm_id = *perm_id_counter;
@@ -1352,12 +1363,12 @@ pub(super) fn drain_permissions(
             askuser_question,
             askuser_options,
         };
-        dash.permissions.add(perm);
+        state.permissions.add(perm);
     }
 }
 
 pub(super) fn drain_telegram<R: Runtime>(
-    dash: &mut Screen,
+    state: &mut ScreenState,
     exo: &mut ExoState,
     exo_session: &mut ExoSession,
     app: &ClatApp<R>,
@@ -1367,17 +1378,17 @@ pub(super) fn drain_telegram<R: Runtime>(
     while let Ok(tg_msg) = rx.try_recv() {
         match tg_msg {
             telegram::TgInbound::PermissionDecision { perm_id, action } => {
-                let task_name = dash
+                let task_name = state
                     .permissions
                     .iter()
                     .find(|(_, queue)| queue.iter().any(|p| p.perm_id == perm_id))
                     .map(|(name, _)| name.clone());
                 if let Some(name) = task_name
-                    && dash
+                    && state
                         .permissions
                         .peek(&name)
                         .is_some_and(|front| front.perm_id == perm_id)
-                    && let Some(perm) = dash.permissions.take(&name)
+                    && let Some(perm) = state.permissions.take(&name)
                 {
                     let (allow, suggestions) = match action {
                         telegram::PermAction::Approve => (true, None),
@@ -1390,23 +1401,23 @@ pub(super) fn drain_telegram<R: Runtime>(
                 }
             }
             telegram::TgInbound::QuestionAnswer { perm_id, answer } => {
-                let task_name = dash
+                let task_name = state
                     .permissions
                     .iter()
                     .find(|(_, queue)| queue.iter().any(|p| p.perm_id == perm_id))
                     .map(|(name, _)| name.clone());
                 if let Some(name) = task_name
-                    && dash
+                    && state
                         .permissions
                         .peek(&name)
                         .is_some_and(|front| front.perm_id == perm_id)
-                    && let Some(perm) = dash.permissions.take(&name)
+                    && let Some(perm) = state.permissions.take(&name)
                 {
                     let _ = write_response_with_message(perm.stream, true, &answer);
                 }
             }
             telegram::TgInbound::ExoMessage { text } => {
-                dash.chat_scroll = 0;
+                state.chat_scroll = 0;
                 if exo.streaming {
                     exo.finish_streaming();
                     if let Some(msg) = exo.messages.last()
@@ -1425,68 +1436,68 @@ pub(super) fn drain_telegram<R: Runtime>(
 }
 
 pub(super) fn tick_refresh<R: Runtime>(
-    dash: &mut Screen,
+    state: &mut ScreenState,
     app: &ClatApp<R>,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
 ) {
-    if let Ok(tasks) = app.list_visible(dash.active_project_id.as_ref()) {
-        dash.refresh_tasks(tasks);
+    if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()) {
+        state.refresh_tasks(tasks);
     }
     // Update global task→project mapping and drain stale permissions.
     let all_active = app.list_active().unwrap_or_default();
     let all_running_names: HashSet<TaskName> = all_active.iter().map(|t| t.name.clone()).collect();
-    dash.global_task_projects = all_active
+    state.global_task_projects = all_active
         .iter()
         .map(|t| (t.name.clone(), t.project_id.clone()))
         .collect();
-    dash.global_task_work_dirs = all_active
+    state.global_task_work_dirs = all_active
         .iter()
         .filter_map(|t| t.work_dir.as_ref().map(|wd| (t.name.clone(), wd.clone())))
         .collect();
-    for perm in dash.permissions.drain_stale(&all_running_names) {
+    for perm in state.permissions.drain_stale(&all_running_names) {
         notify_tg_resolved(tg_tx, perm.perm_id, "⚪ Expired (task ended)");
         let _ = write_response_to_stream(perm.stream, false, None);
     }
-    dash.window_numbers = app.window_numbers();
+    state.window_numbers = app.window_numbers();
     // Update selected messages and live output for detail view
-    if let Some(task) = dash.selected_task() {
+    if let Some(task) = state.selected_task() {
         let chat = ChatId::Task(task.id.clone());
         let is_running = task.status.is_running();
         let pane = task.tmux_pane.clone();
         if let Ok(messages) = app.messages(&chat) {
-            dash.selected_messages = messages;
+            state.selected_messages = messages;
         }
         if is_running {
-            dash.detail_live_output = pane
+            state.detail_live_output = pane
                 .as_ref()
                 .map(|p| p.as_str())
                 .and_then(|p| app.capture_pane(p));
         } else {
-            dash.detail_live_output = None;
+            state.detail_live_output = None;
         }
     } else {
-        dash.selected_messages.clear();
-        dash.detail_live_output = None;
+        state.selected_messages.clear();
+        state.detail_live_output = None;
     }
     // Refresh PM messages for active project
-    if let Some(ref pid) = dash.active_project_id {
+    if let Some(ref pid) = state.active_project_id {
         if let Ok(messages) = app.pm_messages(pid) {
-            dash.pm_messages = messages;
+            state.pm_messages = messages;
         }
     } else {
-        dash.pm_messages.clear();
+        state.pm_messages.clear();
     }
 }
 
 pub(super) fn detect_vanished_perms(
-    dash: &Screen,
+    state: &ScreenState,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
     tg_perm_ids: &mut HashSet<u64>,
 ) {
     if tg_perm_ids.is_empty() {
         return;
     }
-    let still_pending = dash.permissions.all_perm_ids();
+    let still_pending = state.permissions.all_perm_ids();
     let vanished: Vec<u64> = tg_perm_ids
         .iter()
         .filter(|id| !still_pending.contains(id))
