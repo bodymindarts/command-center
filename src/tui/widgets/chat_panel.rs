@@ -5,16 +5,10 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::primitives::MessageRole;
 
-use super::super::chat::{ChatMessage, ContentBlock, ExoState};
+use super::super::chat::{ChatMessage, ContentBlock};
 use super::super::screen_state::{Focus, ScreenState};
 
-pub(in crate::tui) fn render_chat(
-    frame: &mut ratatui::Frame,
-    state: &mut ScreenState,
-    exo: &ExoState,
-    pm: Option<&ExoState>,
-    area: Rect,
-) {
+pub(in crate::tui) fn render_chat(frame: &mut ratatui::Frame, state: &ScreenState, area: Rect) {
     let searching = matches!(state.focus, Focus::TaskSearch);
     let in_task_chat = !searching && state.show_detail && state.selected_task().is_some();
 
@@ -88,9 +82,9 @@ pub(in crate::tui) fn render_chat(
                 lines.push(Line::from(l.to_string()));
             }
         }
-    } else if state.active_project.is_some() {
+    } else if let Some(ref pid) = state.active_project_id {
         // Render PM chat
-        if let Some(pm) = pm {
+        if let Some(pm) = state.pm_chats.get(pid) {
             render_chat_messages(&mut lines, &pm.messages, "PM", pm.streaming);
         }
         if lines.is_empty() {
@@ -101,7 +95,12 @@ pub(in crate::tui) fn render_chat(
         }
     } else {
         // Render ExO chat
-        render_chat_messages(&mut lines, &exo.messages, "ExO", exo.streaming);
+        render_chat_messages(
+            &mut lines,
+            &state.exo_chat.messages,
+            "ExO",
+            state.exo_chat.streaming,
+        );
         if lines.is_empty() {
             lines.push(Line::from(Span::styled(
                 "Press Tab to chat with ExO",
@@ -127,9 +126,8 @@ pub(in crate::tui) fn render_chat(
         .sum();
 
     let max_scroll = rendered_lines.saturating_sub(inner_height) as u16;
-    state.chat_viewport_height = inner_height as u16;
-    state.chat_scroll = state.chat_scroll.min(max_scroll);
-    let scroll = max_scroll.saturating_sub(state.chat_scroll);
+    let effective_scroll = state.chat_scroll.min(max_scroll);
+    let scroll = max_scroll.saturating_sub(effective_scroll);
 
     let chat = Paragraph::new(lines)
         .wrap(Wrap { trim: false })

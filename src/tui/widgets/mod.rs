@@ -5,15 +5,9 @@ mod task_panel;
 
 use ratatui::layout::{Constraint, Direction, Layout};
 
-use super::chat::ExoState;
 use super::screen_state::{Focus, ScreenState};
 
-pub(in crate::tui) fn ui(
-    frame: &mut ratatui::Frame,
-    state: &mut ScreenState,
-    exo: &ExoState,
-    pm: Option<&ExoState>,
-) {
+pub(in crate::tui) fn ui(frame: &mut ratatui::Frame, state: &mut ScreenState) {
     let outer = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
@@ -65,7 +59,9 @@ pub(in crate::tui) fn ui(
             .split(outer[0])
     };
 
-    chat_panel::render_chat(frame, state, exo, pm, left[0]);
+    state.update_chat_viewport_height(left[0].height);
+
+    chat_panel::render_chat(frame, state, left[0]);
     if show_close_task {
         confirm::render_close_task_panel(frame, state, left[1]);
     } else if show_close_project {

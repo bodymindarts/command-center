@@ -30,7 +30,7 @@ impl ChatMessage {
     }
 }
 
-pub struct ExoState {
+pub struct AssistantChat {
     pub session_id: Option<String>,
     pub messages: Vec<ChatMessage>,
     pub streaming: bool,
@@ -39,7 +39,7 @@ pub struct ExoState {
     pub had_process_error: bool,
 }
 
-impl ExoState {
+impl AssistantChat {
     pub fn new() -> Self {
         Self {
             session_id: None,
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn add_error_creates_assistant_message_when_none_exists() {
-        let mut exo = ExoState::new();
+        let mut exo = AssistantChat::new();
         exo.add_error("connection lost");
 
         assert_eq!(exo.messages.len(), 1);
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn add_error_appends_to_existing_assistant_message() {
-        let mut exo = ExoState::new();
+        let mut exo = AssistantChat::new();
         exo.add_user_message("hello".into());
         assert!(exo.streaming);
 
@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn add_error_after_user_message_with_no_text_yet() {
-        let mut exo = ExoState::new();
+        let mut exo = AssistantChat::new();
         exo.add_user_message("hello".into());
 
         // Error before any text arrives — should append to the empty assistant msg
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn add_error_does_not_append_to_user_message() {
-        let mut exo = ExoState::new();
+        let mut exo = AssistantChat::new();
         // Manually push just a user message (no assistant follows)
         exo.messages.push(ChatMessage {
             role: MessageRole::User,
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn finish_streaming_clears_flag() {
-        let mut exo = ExoState::new();
+        let mut exo = AssistantChat::new();
         exo.add_user_message("hi".into());
         assert!(exo.streaming);
         exo.finish_streaming();
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn blocks_preserve_interleaved_order() {
-        let mut exo = ExoState::new();
+        let mut exo = AssistantChat::new();
         exo.add_user_message("do stuff".into());
 
         exo.append_text("Let me check.");

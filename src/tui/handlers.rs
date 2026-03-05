@@ -12,7 +12,6 @@ use crate::primitives::{ChatId, MessageRole, ProjectId, TaskName};
 use crate::runtime::Runtime;
 
 use super::PmContext;
-use super::chat::ExoState;
 use super::claude::{ExoEvent, ExoSession, PmEvent, pm_system_prompt};
 use super::permissions::ActivePermission;
 use super::screen_state::{Focus, ScreenState};
@@ -458,7 +457,6 @@ pub(super) fn handle_focus_key<R: Runtime>(
     state: &mut ScreenState,
     key: KeyEvent,
     app: &ClatApp<R>,
-    exo: &mut ExoState,
     exo_session: &mut ExoSession,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
@@ -468,9 +466,7 @@ pub(super) fn handle_focus_key<R: Runtime>(
         Focus::TaskSearch => handle_task_search_key(state, key),
         Focus::ProjectList => handle_project_list_key(state, key, app, pm_contexts, pm_tx),
         Focus::ChatInput if state.show_detail => handle_task_chat_input_key(state, key, app),
-        Focus::ChatInput => {
-            handle_chat_input_key(state, key, app, exo, exo_session, pm_contexts, pm_tx)
-        }
+        Focus::ChatInput => handle_chat_input_key(state, key, app, exo_session, pm_contexts, pm_tx),
         Focus::ChatHistory => handle_chat_history_key(state, key),
         Focus::ConfirmDelete(_) => handle_confirm_delete_key(state, key, app),
         Focus::ConfirmCloseTask(_) => handle_confirm_close_task_key(state, key, app),
@@ -795,7 +791,6 @@ fn handle_chat_input_key<R: Runtime>(
     state: &mut ScreenState,
     key: KeyEvent,
     app: &ClatApp<R>,
-    exo: &mut ExoState,
     exo_session: &mut ExoSession,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
@@ -803,14 +798,14 @@ fn handle_chat_input_key<R: Runtime>(
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Esc => {
-            if exo.streaming {
-                exo.finish_streaming();
+            if state.exo_chat.streaming {
+                state.exo_chat.finish_streaming();
             }
             if let Some(ref pid) = state.active_project_id
-                && let Some(ctx) = pm_contexts.get_mut(pid)
-                && ctx.state.streaming
+                && let Some(chat) = state.pm_chats.get_mut(pid)
+                && chat.streaming
             {
-                ctx.state.finish_streaming();
+                chat.finish_streaming();
             }
             state.chat_scroll = 0;
         }
@@ -849,7 +844,7 @@ fn handle_chat_input_key<R: Runtime>(
             }
         }
         KeyCode::Enter => {
-            handle_chat_enter(state, app, exo, exo_session, pm_contexts, pm_tx);
+            handle_chat_enter(state, app, exo_session, pm_contexts, pm_tx);
         }
         _ => {
             handle_input_editing(&mut state.input, &key);
@@ -860,7 +855,6 @@ fn handle_chat_input_key<R: Runtime>(
 fn handle_chat_enter<R: Runtime>(
     state: &mut ScreenState,
     app: &ClatApp<R>,
-    exo: &mut ExoState,
     exo_session: &mut ExoSession,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
@@ -869,27 +863,31 @@ fn handle_chat_enter<R: Runtime>(
     if state.input.is_empty() {
         return;
     }
-    if let Some(ref pid) = state.active_project_id {
-        if !pm_contexts.contains_key(pid) {
-            pm_contexts.insert(pid.clone(), PmContext::new(pid, pm_tx));
+    if let Some(pid) = state.active_project_id.clone() {
+        if !pm_contexts.contains_key(&pid) {
+            pm_contexts.insert(pid.clone(), PmContext::new(&pid, pm_tx));
         }
-        let ctx = pm_contexts.get_mut(pid).unwrap();
-        if ctx.state.streaming {
-            ctx.state.finish_streaming();
-            if let Some(msg) = ctx.state.messages.last()
+        let chat = state
+            .pm_chats
+            .entry(pid.clone())
+            .or_insert_with(super::chat::AssistantChat::new);
+        if chat.streaming {
+            chat.finish_streaming();
+            if let Some(msg) = chat.messages.last()
                 && matches!(msg.role, MessageRole::Assistant)
                 && msg.has_text()
             {
-                let _ = app.insert_pm_message(pid, MessageRole::Assistant, &msg.text_content());
+                let _ = app.insert_pm_message(&pid, MessageRole::Assistant, &msg.text_content());
             }
         }
         let msg = state.input.take();
-        let _ = app.insert_pm_message(pid, MessageRole::User, &msg);
-        ctx.state.add_user_message(msg.clone());
+        let _ = app.insert_pm_message(&pid, MessageRole::User, &msg);
+        chat.add_user_message(msg.clone());
+        let ctx = pm_contexts.get_mut(&pid).unwrap();
         if ctx.session.is_none() {
             let sid = app
-                .read_pm_session_id(pid)
-                .or_else(|| ctx.state.session_id.clone());
+                .read_pm_session_id(&pid)
+                .or_else(|| chat.session_id.clone());
             let proj_name = state
                 .active_project
                 .as_ref()
@@ -903,17 +901,17 @@ fn handle_chat_enter<R: Runtime>(
                 &prompt,
             ));
             if let Some(ref s) = sid {
-                ctx.state.session_id = Some(s.clone());
+                chat.session_id = Some(s.clone());
             }
         }
         if let Some(sess) = &mut ctx.session {
-            sess.send_message(&msg, ctx.state.session_id.as_deref());
+            sess.send_message(&msg, chat.session_id.as_deref());
             state.chat_scroll = 0;
         }
     } else {
-        if exo.streaming {
-            exo.finish_streaming();
-            if let Some(msg) = exo.messages.last()
+        if state.exo_chat.streaming {
+            state.exo_chat.finish_streaming();
+            if let Some(msg) = state.exo_chat.messages.last()
                 && matches!(msg.role, MessageRole::Assistant)
                 && msg.has_text()
             {
@@ -922,8 +920,8 @@ fn handle_chat_enter<R: Runtime>(
         }
         let msg = state.input.take();
         let _ = app.insert_exo_message(MessageRole::User, &msg);
-        exo.add_user_message(msg.clone());
-        exo_session.send_message(&msg, exo.session_id.as_deref());
+        state.exo_chat.add_user_message(msg.clone());
+        exo_session.send_message(&msg, state.exo_chat.session_id.as_deref());
         state.chat_scroll = 0;
     }
 }
@@ -935,12 +933,10 @@ fn handle_chat_history_key(state: &mut ScreenState, key: KeyEvent) {
             state.focus = Focus::ChatInput;
         }
         KeyCode::Char('u') if ctrl => {
-            let half = (state.chat_viewport_height / 2).max(1);
-            state.chat_scroll = state.chat_scroll.saturating_add(half);
+            state.scroll_chat_up();
         }
         KeyCode::Char('d') if ctrl => {
-            let half = (state.chat_viewport_height / 2).max(1);
-            state.chat_scroll = state.chat_scroll.saturating_sub(half);
+            state.scroll_chat_down();
         }
         KeyCode::Char('l') if ctrl => {
             state.focus = Focus::TaskList;
@@ -1049,7 +1045,7 @@ fn handle_confirm_close_project_key<R: Runtime>(
             state.switch_to_project(None);
             state.focus = Focus::TaskList;
             if let Some(pid) = closed_pid {
-                super::cancel_pm_context(pm_contexts, &pid);
+                super::cancel_pm_context(pm_contexts, state, &pid);
             }
             if let Ok(tasks) = app.list_visible(None) {
                 state.finish_project_switch(tasks);
@@ -1108,7 +1104,6 @@ fn reopen_task<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
 // ── Channel draining ────────────────────────────────────────────────
 
 pub(super) fn drain_exo_events<R: Runtime>(
-    exo: &mut ExoState,
     exo_session: &mut ExoSession,
     app: &ClatApp<R>,
     rx: &mpsc::Receiver<ExoEvent>,
@@ -1118,8 +1113,8 @@ pub(super) fn drain_exo_events<R: Runtime>(
     while let Ok(ev) = rx.try_recv() {
         match ev {
             ExoEvent::TextDelta(text) => {
-                if exo.streaming {
-                    exo.append_text(&text);
+                if state.exo_chat.streaming {
+                    state.exo_chat.append_text(&text);
                     state.chat_scroll = 0;
                     if let Some(tx) = tg_tx {
                         let _ = tx.send(telegram::TgOutbound::ExoTextDelta { text: text.clone() });
@@ -1127,18 +1122,18 @@ pub(super) fn drain_exo_events<R: Runtime>(
                 }
             }
             ExoEvent::ToolStart(name) => {
-                if exo.streaming {
-                    exo.add_tool_activity(name);
+                if state.exo_chat.streaming {
+                    state.exo_chat.add_tool_activity(name);
                 }
             }
             ExoEvent::SessionId(id) => {
                 app.write_exo_session_id(&id);
-                exo.session_id = Some(id.clone());
+                state.exo_chat.session_id = Some(id.clone());
                 exo_session.set_session_id(id);
             }
             ExoEvent::TurnDone => {
-                exo.finish_streaming();
-                if let Some(msg) = exo.messages.last()
+                state.exo_chat.finish_streaming();
+                if let Some(msg) = state.exo_chat.messages.last()
                     && matches!(msg.role, MessageRole::Assistant)
                     && msg.has_text()
                 {
@@ -1149,16 +1144,18 @@ pub(super) fn drain_exo_events<R: Runtime>(
                 }
             }
             ExoEvent::ProcessExited => {
-                exo.had_process_error = false;
+                state.exo_chat.had_process_error = false;
                 exo_session.mark_exited();
-                if exo.streaming {
-                    exo.add_error("Claude process exited unexpectedly");
+                if state.exo_chat.streaming {
+                    state
+                        .exo_chat
+                        .add_error("Claude process exited unexpectedly");
                 }
             }
             ExoEvent::Error(e) => {
-                exo.had_process_error = true;
-                exo.add_error(&e);
-                if let Some(msg) = exo.messages.last()
+                state.exo_chat.had_process_error = true;
+                state.exo_chat.add_error(&e);
+                if let Some(msg) = state.exo_chat.messages.last()
                     && matches!(msg.role, MessageRole::Assistant)
                     && msg.has_text()
                 {
@@ -1177,34 +1174,36 @@ pub(super) fn drain_pm_events<R: Runtime>(
 ) {
     while let Ok(pm_ev) = pm_rx.try_recv() {
         let project_id = pm_ev.project_id;
-        let Some(ctx) = pm_contexts.get_mut(&project_id) else {
+        let is_active_pm = state.active_project_id.as_ref() == Some(&project_id);
+        let Some(chat) = state.pm_chats.get_mut(&project_id) else {
             continue;
         };
-        let is_active_pm = state.active_project_id.as_ref() == Some(&project_id);
         match pm_ev.inner {
             ExoEvent::TextDelta(text) => {
-                if ctx.state.streaming {
-                    ctx.state.append_text(&text);
+                if chat.streaming {
+                    chat.append_text(&text);
                     if is_active_pm {
                         state.chat_scroll = 0;
                     }
                 }
             }
             ExoEvent::ToolStart(name) => {
-                if ctx.state.streaming {
-                    ctx.state.add_tool_activity(name);
+                if chat.streaming {
+                    chat.add_tool_activity(name);
                 }
             }
             ExoEvent::SessionId(id) => {
                 app.write_pm_session_id(&project_id, &id);
-                ctx.state.session_id = Some(id.clone());
-                if let Some(sess) = &mut ctx.session {
+                chat.session_id = Some(id.clone());
+                if let Some(ctx) = pm_contexts.get_mut(&project_id)
+                    && let Some(sess) = &mut ctx.session
+                {
                     sess.set_session_id(id);
                 }
             }
             ExoEvent::TurnDone => {
-                ctx.state.finish_streaming();
-                if let Some(msg) = ctx.state.messages.last()
+                chat.finish_streaming();
+                if let Some(msg) = chat.messages.last()
                     && matches!(msg.role, MessageRole::Assistant)
                     && msg.has_text()
                 {
@@ -1216,18 +1215,20 @@ pub(super) fn drain_pm_events<R: Runtime>(
                 }
             }
             ExoEvent::ProcessExited => {
-                ctx.state.had_process_error = false;
-                if let Some(sess) = &mut ctx.session {
+                chat.had_process_error = false;
+                if let Some(ctx) = pm_contexts.get_mut(&project_id)
+                    && let Some(sess) = &mut ctx.session
+                {
                     sess.mark_exited();
                 }
-                if ctx.state.streaming {
-                    ctx.state.add_error("PM process exited unexpectedly");
+                if chat.streaming {
+                    chat.add_error("PM process exited unexpectedly");
                 }
             }
             ExoEvent::Error(e) => {
-                ctx.state.had_process_error = true;
-                ctx.state.add_error(&e);
-                if let Some(msg) = ctx.state.messages.last()
+                chat.had_process_error = true;
+                chat.add_error(&e);
+                if let Some(msg) = chat.messages.last()
                     && matches!(msg.role, MessageRole::Assistant)
                     && msg.has_text()
                 {
@@ -1369,7 +1370,6 @@ pub(super) fn drain_permissions(
 
 pub(super) fn drain_telegram<R: Runtime>(
     state: &mut ScreenState,
-    exo: &mut ExoState,
     exo_session: &mut ExoSession,
     app: &ClatApp<R>,
     tg_rx: Option<&mpsc::Receiver<telegram::TgInbound>>,
@@ -1418,9 +1418,9 @@ pub(super) fn drain_telegram<R: Runtime>(
             }
             telegram::TgInbound::ExoMessage { text } => {
                 state.chat_scroll = 0;
-                if exo.streaming {
-                    exo.finish_streaming();
-                    if let Some(msg) = exo.messages.last()
+                if state.exo_chat.streaming {
+                    state.exo_chat.finish_streaming();
+                    if let Some(msg) = state.exo_chat.messages.last()
                         && matches!(msg.role, MessageRole::Assistant)
                         && msg.has_text()
                     {
@@ -1428,8 +1428,8 @@ pub(super) fn drain_telegram<R: Runtime>(
                     }
                 }
                 let _ = app.insert_exo_message(MessageRole::User, &text);
-                exo.add_user_message(text.clone());
-                exo_session.send_message(&text, exo.session_id.as_deref());
+                state.exo_chat.add_user_message(text.clone());
+                exo_session.send_message(&text, state.exo_chat.session_id.as_deref());
             }
         }
     }
@@ -1478,14 +1478,6 @@ pub(super) fn tick_refresh<R: Runtime>(
     } else {
         state.selected_messages.clear();
         state.detail_live_output = None;
-    }
-    // Refresh PM messages for active project
-    if let Some(ref pid) = state.active_project_id {
-        if let Ok(messages) = app.pm_messages(pid) {
-            state.pm_messages = messages;
-        }
-    } else {
-        state.pm_messages.clear();
     }
 }
 

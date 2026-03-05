@@ -25,13 +25,12 @@ use crate::app::ClatApp;
 use crate::permission::PermissionRequest;
 use crate::primitives::ProjectId;
 use crate::runtime::Runtime;
-use chat::ExoState;
 use claude::{EXO_SYSTEM_PROMPT, ExoEvent, ExoSession, PmEvent};
 use screen_state::ScreenState;
 
-/// Holds the PM state and session for a single project.
+/// Holds the PM session and bridge for a single project.
+/// Chat state (messages, streaming) lives in `ScreenState::pm_chats`.
 struct PmContext {
-    state: ExoState,
     session: Option<ExoSession>,
     cancel: Arc<AtomicBool>,
     /// Sender that wraps ExoEvent → PmEvent with this project's ID.
@@ -58,7 +57,6 @@ impl PmContext {
             }
         });
         PmContext {
-            state: ExoState::new(),
             session: None,
             cancel,
             bridge_tx,
@@ -66,11 +64,16 @@ impl PmContext {
     }
 }
 
-/// Cancel and remove a specific project's PM context.
-fn cancel_pm_context(pm_contexts: &mut HashMap<ProjectId, PmContext>, project_id: &ProjectId) {
+/// Cancel and remove a specific project's PM context and chat state.
+fn cancel_pm_context(
+    pm_contexts: &mut HashMap<ProjectId, PmContext>,
+    state: &mut ScreenState,
+    project_id: &ProjectId,
+) {
     if let Some(ctx) = pm_contexts.remove(project_id) {
         ctx.cancel.store(true, Ordering::Relaxed);
     }
+    state.pm_chats.remove(project_id);
 }
 
 /// Ensure a PmContext exists for the project, creating and loading history if needed.
@@ -82,16 +85,17 @@ fn ensure_pm_context<R: Runtime>(
     pm_tx: &mpsc::Sender<PmEvent>,
 ) {
     if !pm_contexts.contains_key(project_id) {
-        let mut ctx = PmContext::new(project_id, pm_tx);
-        ctx.state.session_id = app.read_pm_session_id(project_id);
+        let ctx = PmContext::new(project_id, pm_tx);
+        let chat = state
+            .pm_chats
+            .entry(project_id.clone())
+            .or_insert_with(chat::AssistantChat::new);
+        chat.session_id = app.read_pm_session_id(project_id);
         if let Ok(messages) = app.pm_messages(project_id) {
             let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
-            ctx.state.load_history(recent.into_iter().rev().collect());
+            chat.load_history(recent.into_iter().rev().collect());
         }
         pm_contexts.insert(project_id.clone(), ctx);
-    }
-    if let Ok(msgs) = app.pm_messages(project_id) {
-        state.pm_messages = msgs;
     }
 }
 
@@ -127,20 +131,21 @@ pub fn run<R: Runtime>(
 
     let tasks = app.list_visible(None)?;
     let mut state = ScreenState::new(tasks);
-    let mut exo = ExoState::new();
     if let Some(sid) = resume_session {
-        exo.session_id = Some(sid.to_string());
+        state.exo_chat.session_id = Some(sid.to_string());
     } else if let Some(sid) = app.read_exo_session_id() {
-        exo.session_id = Some(sid);
+        state.exo_chat.session_id = Some(sid);
     }
     if let Ok(messages) = app.exo_messages() {
         let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
-        exo.load_history(recent.into_iter().rev().collect());
+        state
+            .exo_chat
+            .load_history(recent.into_iter().rev().collect());
     }
     let (tx, rx) = mpsc::channel::<ExoEvent>();
     let cancel = Arc::new(AtomicBool::new(false));
     let mut exo_session = ExoSession::new(
-        exo.session_id.as_deref(),
+        state.exo_chat.session_id.as_deref(),
         Arc::clone(&cancel),
         tx.clone(),
         EXO_SYSTEM_PROMPT,
@@ -223,7 +228,6 @@ pub fn run<R: Runtime>(
     let result = run_loop(
         &mut terminal,
         &mut state,
-        &mut exo,
         &mut exo_session,
         &mut pm_contexts,
         &pm_tx,
@@ -278,7 +282,6 @@ pub fn run<R: Runtime>(
 fn run_loop<R: Runtime>(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     state: &mut ScreenState,
-    exo: &mut ExoState,
     exo_session: &mut ExoSession,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
@@ -307,22 +310,17 @@ fn run_loop<R: Runtime>(
         .collect();
 
     loop {
-        let any_pm_streaming = pm_contexts.values().any(|ctx| ctx.state.streaming);
-        let tick_rate = if exo.streaming || any_pm_streaming {
+        let any_pm_streaming = state.pm_chats.values().any(|c| c.streaming);
+        let tick_rate = if state.exo_chat.streaming || any_pm_streaming {
             Duration::from_millis(50)
         } else {
             Duration::from_millis(500)
         };
 
-        let active_pm_state = state
-            .active_project_id
-            .as_ref()
-            .and_then(|pid| pm_contexts.get(pid))
-            .map(|ctx| &ctx.state);
-        terminal.draw(|frame| widgets::ui(frame, state, exo, active_pm_state))?;
+        terminal.draw(|frame| widgets::ui(frame, state))?;
 
         // Drain channel events
-        handlers::drain_exo_events(exo, exo_session, app, rx, state, tg_tx);
+        handlers::drain_exo_events(exo_session, app, rx, state, tg_tx);
         handlers::drain_pm_events(pm_contexts, app, pm_rx, state);
 
         // Poll terminal input
@@ -366,7 +364,6 @@ fn run_loop<R: Runtime>(
                             state,
                             key,
                             app,
-                            exo,
                             exo_session,
                             pm_contexts,
                             pm_tx,
@@ -394,7 +391,7 @@ fn run_loop<R: Runtime>(
         handlers::drain_resolved(state, resolved_rx, tg_tx, &mut tg_perm_ids);
         handlers::drain_idle(state, idle_rx);
         handlers::drain_active(state, active_rx);
-        handlers::drain_telegram(state, exo, exo_session, app, tg_rx);
+        handlers::drain_telegram(state, exo_session, app, tg_rx);
         handlers::detect_vanished_perms(state, tg_tx, &mut tg_perm_ids);
 
         if state.should_quit {

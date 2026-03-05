@@ -5,6 +5,8 @@ use ratatui::widgets::ListState;
 use crate::primitives::{ChatId, PaneId, ProjectId, ProjectName, TaskId, TaskName, WindowId};
 use crate::task::{Project, Task, TaskMessage};
 
+use super::chat::AssistantChat;
+
 pub use super::input::InputState;
 pub use super::permissions::PermissionStore;
 
@@ -53,8 +55,10 @@ pub struct ScreenState {
     pub active_project_id: Option<ProjectId>,
     /// Last active project state — remembered when Ctrl+O leaves a project.
     pub last_project: Option<SavedProjectState>,
-    /// Cached PM messages for the active project.
-    pub pm_messages: Vec<TaskMessage>,
+    /// ExO assistant chat state (messages, streaming flag).
+    pub exo_chat: AssistantChat,
+    /// Per-project PM assistant chat states.
+    pub pm_chats: HashMap<ProjectId, AssistantChat>,
     /// Whether the right panel shows the project list instead of the task list.
     pub show_projects: bool,
     /// Cached list of projects for rendering.
@@ -102,7 +106,8 @@ impl ScreenState {
             active_project: None,
             active_project_id: None,
             last_project: None,
-            pm_messages: Vec::new(),
+            exo_chat: AssistantChat::new(),
+            pm_chats: HashMap::new(),
             show_projects: false,
             projects: Vec::new(),
             project_list_state: ListState::default(),
@@ -112,6 +117,20 @@ impl ScreenState {
             global_task_projects: HashMap::new(),
             global_task_work_dirs: Vec::new(),
         }
+    }
+
+    pub fn update_chat_viewport_height(&mut self, area_height: u16) {
+        self.chat_viewport_height = area_height.saturating_sub(2);
+    }
+
+    pub fn scroll_chat_up(&mut self) {
+        let half = (self.chat_viewport_height / 2).max(1);
+        self.chat_scroll = self.chat_scroll.saturating_add(half);
+    }
+
+    pub fn scroll_chat_down(&mut self) {
+        let half = (self.chat_viewport_height / 2).max(1);
+        self.chat_scroll = self.chat_scroll.saturating_sub(half);
     }
 
     pub fn selected_task(&self) -> Option<&Task> {
@@ -244,7 +263,6 @@ impl ScreenState {
         self.active_project_id = project.map(|(_, id)| id);
         self.show_projects = false;
         self.show_detail = false;
-        self.pm_messages.clear();
         self.focus = Focus::ChatInput;
         self.chat_scroll = 0;
     }
