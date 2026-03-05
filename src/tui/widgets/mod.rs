@@ -63,17 +63,33 @@ pub(in crate::tui) fn ui(frame: &mut ratatui::Frame, state: &mut ScreenState) {
 
     chat_panel::render_chat(frame, state, left[0]);
     if show_close_task {
-        confirm::render_close_task_panel(frame, state, left[1]);
+        confirm::render_close_task_panel(
+            frame,
+            state.current_focus(),
+            &state.task_list.tasks,
+            left[1],
+        );
     } else if show_close_project {
-        confirm::render_close_project_panel(frame, state, left[1]);
+        let name = state
+            .project_list
+            .active_project
+            .as_ref()
+            .map(|n| n.as_str())
+            .unwrap_or("?");
+        confirm::render_close_project_panel(frame, name, left[1]);
     } else if show_delete_project {
-        confirm::render_delete_project_panel(frame, state, left[1]);
+        confirm::render_delete_project_panel(frame, state.current_focus(), left[1]);
     } else if show_delete {
-        confirm::render_delete_confirm_panel(frame, state, left[1]);
+        confirm::render_delete_confirm_panel(
+            frame,
+            state.current_focus(),
+            &state.task_list.tasks,
+            left[1],
+        );
     } else if show_perm {
-        confirm::render_permission_panel(frame, state, left[1]);
+        confirm::render_permission_panel(frame, &state.permissions, &focused_perm_key, left[1]);
     } else if show_askuser {
-        confirm::render_askuser_panel(frame, state, left[1]);
+        confirm::render_askuser_panel(frame, &state.permissions, &focused_perm_key, left[1]);
     }
 
     let focused_input = matches!(state.current_focus(), Focus::ChatInput);

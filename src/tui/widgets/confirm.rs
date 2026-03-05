@@ -3,20 +3,23 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use super::super::screen_state::{Focus, ScreenState};
+use crate::primitives::TaskName;
+use crate::task::Task;
+
+use super::super::permissions::PermissionStore;
+use super::super::screen_state::Focus;
 
 pub(in crate::tui) fn render_permission_panel(
     frame: &mut ratatui::Frame,
-    state: &ScreenState,
+    permissions: &PermissionStore,
+    perm_key: &TaskName,
     area: Rect,
 ) {
-    let perm_key = state.focused_perm_key();
-    let Some(req) = state.permissions.peek(&perm_key) else {
+    let Some(req) = permissions.peek(perm_key) else {
         return;
     };
-    let extra = state
-        .permissions
-        .get(&perm_key)
+    let extra = permissions
+        .get(perm_key)
         .map(|q| q.len().saturating_sub(1))
         .unwrap_or(0);
     let more = if extra > 0 {
@@ -73,20 +76,19 @@ pub(in crate::tui) fn render_permission_panel(
 
 pub(in crate::tui) fn render_askuser_panel(
     frame: &mut ratatui::Frame,
-    state: &ScreenState,
+    permissions: &PermissionStore,
+    perm_key: &TaskName,
     area: Rect,
 ) {
-    let perm_key = state.focused_perm_key();
-    let Some(perm) = state.permissions.peek(&perm_key) else {
+    let Some(perm) = permissions.peek(perm_key) else {
         return;
     };
     if !perm.is_askuser() {
         return;
     }
     let question = perm.askuser_question.as_deref().unwrap_or("?");
-    let extra = state
-        .permissions
-        .get(&perm_key)
+    let extra = permissions
+        .get(perm_key)
         .map(|q| q.len().saturating_sub(1))
         .unwrap_or(0);
     let more = if extra > 0 {
@@ -134,15 +136,14 @@ pub(in crate::tui) fn render_askuser_panel(
 
 pub(in crate::tui) fn render_delete_confirm_panel(
     frame: &mut ratatui::Frame,
-    state: &ScreenState,
+    focus: &Focus,
+    tasks: &[Task],
     area: Rect,
 ) {
-    let Focus::ConfirmDelete(ref id) = *state.current_focus() else {
+    let Focus::ConfirmDelete(ref id) = *focus else {
         return;
     };
-    let name = state
-        .task_list
-        .tasks
+    let name = tasks
         .iter()
         .find(|t| t.id == *id)
         .map(|t| t.name.as_str())
@@ -184,15 +185,14 @@ pub(in crate::tui) fn render_delete_confirm_panel(
 
 pub(in crate::tui) fn render_close_task_panel(
     frame: &mut ratatui::Frame,
-    state: &ScreenState,
+    focus: &Focus,
+    tasks: &[Task],
     area: Rect,
 ) {
-    let Focus::ConfirmCloseTask(ref id) = *state.current_focus() else {
+    let Focus::ConfirmCloseTask(ref id) = *focus else {
         return;
     };
-    let name = state
-        .task_list
-        .tasks
+    let name = tasks
         .iter()
         .find(|t| t.id == *id)
         .map(|t| t.name.as_str())
@@ -234,15 +234,10 @@ pub(in crate::tui) fn render_close_task_panel(
 
 pub(in crate::tui) fn render_close_project_panel(
     frame: &mut ratatui::Frame,
-    state: &ScreenState,
+    project_name: &str,
     area: Rect,
 ) {
-    let name = state
-        .project_list
-        .active_project
-        .as_ref()
-        .map(|n| n.as_str())
-        .unwrap_or("?");
+    let name = project_name;
     let lines = vec![
         Line::from(vec![
             Span::raw(" Close project "),
@@ -280,10 +275,10 @@ pub(in crate::tui) fn render_close_project_panel(
 
 pub(in crate::tui) fn render_delete_project_panel(
     frame: &mut ratatui::Frame,
-    state: &ScreenState,
+    focus: &Focus,
     area: Rect,
 ) {
-    let Focus::ConfirmDeleteProject(ref name) = *state.current_focus() else {
+    let Focus::ConfirmDeleteProject(ref name) = *focus else {
         return;
     };
     let lines = vec![
