@@ -6,7 +6,8 @@ use rusqlite::{Connection, Row};
 use rusqlite_migration::{M, Migrations};
 
 use crate::primitives::{
-    ChatId, MessageRole, PaneId, ProjectId, ProjectName, TaskId, TaskName, TaskStatus, WindowId,
+    ChatId, ClaudeSessionId, MessageRole, PaneId, ProjectId, ProjectName, TaskId, TaskName,
+    TaskStatus, WindowId,
 };
 use crate::task::{Project, Task, TaskMessage};
 
@@ -59,7 +60,7 @@ fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
         tmux_pane: row.get::<_, Option<String>>(5)?.map(PaneId::from),
         tmux_window: row.get::<_, Option<String>>(6)?.map(WindowId::from),
         work_dir: row.get(7)?,
-        session_id: row.get(13)?,
+        session_id: row.get::<_, Option<String>>(13)?.map(ClaudeSessionId::from),
         started_at: DateTime::parse_from_rfc3339(&started_at)
             .unwrap_or_default()
             .with_timezone(&Utc),
@@ -106,8 +107,8 @@ impl Store {
 
     pub fn insert_task(&self, task: &Task) -> anyhow::Result<()> {
         self.conn.execute(
-            "INSERT INTO tasks (id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir, started_at, project_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO tasks (id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir, started_at, project_id, session_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             (
                 task.id.as_str(),
                 task.name.as_str(),
@@ -119,6 +120,7 @@ impl Store {
                 &task.work_dir,
                 task.started_at.to_rfc3339(),
                 task.project_id.as_ref().map(|p| p.as_str()),
+                task.session_id.as_ref().map(|s| s.as_str()),
             ),
         )?;
         Ok(())
@@ -198,26 +200,20 @@ impl Store {
         Ok(tasks)
     }
 
-    pub fn update_tmux_pane(&self, id: &TaskId, pane_id: &PaneId) -> anyhow::Result<()> {
+    pub fn update_task(&self, task: &Task) -> anyhow::Result<()> {
         self.conn.execute(
-            "UPDATE tasks SET tmux_pane = ?1 WHERE id = ?2",
-            (pane_id.as_str(), id.as_str()),
-        )?;
-        Ok(())
-    }
-
-    pub fn update_tmux_window(&self, id: &TaskId, window_id: &WindowId) -> anyhow::Result<()> {
-        self.conn.execute(
-            "UPDATE tasks SET tmux_window = ?1 WHERE id = ?2",
-            (window_id.as_str(), id.as_str()),
-        )?;
-        Ok(())
-    }
-
-    pub fn update_session_id(&self, id: &TaskId, session_id: &str) -> anyhow::Result<()> {
-        self.conn.execute(
-            "UPDATE tasks SET session_id = ?1 WHERE id = ?2",
-            (session_id, id.as_str()),
+            "UPDATE tasks SET status = ?1, tmux_pane = ?2, tmux_window = ?3,
+             completed_at = ?4, exit_code = ?5, output = ?6
+             WHERE id = ?7",
+            (
+                task.status.as_str(),
+                task.tmux_pane.as_ref().map(|p| p.as_str()),
+                task.tmux_window.as_ref().map(|w| w.as_str()),
+                task.completed_at.as_ref().map(|dt| dt.to_rfc3339()),
+                task.exit_code,
+                task.output.as_deref(),
+                task.id.as_str(),
+            ),
         )?;
         Ok(())
     }

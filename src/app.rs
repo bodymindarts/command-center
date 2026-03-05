@@ -188,8 +188,8 @@ impl<R: Runtime> ClatApp<R> {
             .map(|name| self.resolve_project_id(name))
             .transpose()?;
 
-        // 5. Insert task + session into DB
-        let task = Task::new(
+        // 5. Insert task into DB
+        let mut task = Task::new(
             id,
             TaskName::from(req.task_name.to_string()),
             req.skill_name,
@@ -197,10 +197,7 @@ impl<R: Runtime> ClatApp<R> {
             &work_dir,
             project_id,
         );
-        let session_id = uuid::Uuid::now_v7().to_string();
-
         self.store.insert_task(&task)?;
-        self.store.update_session_id(&task.id, &session_id)?;
 
         // Store user prompt message only if Full mode
         if let Some(ref prompt) = user_prompt {
@@ -210,15 +207,17 @@ impl<R: Runtime> ClatApp<R> {
         }
 
         // 6. Launch agent
+        let session_id = task.session_id.as_ref().expect("session_id set in new()");
         let result = self.runtime.launch_agent(LaunchConfig {
             task_name: req.task_name,
-            session_id: &session_id,
+            session_id: session_id.as_str(),
             system_prompt: system_prompt.as_deref(),
             work_dir: &work_dir,
             user_prompt: user_prompt.as_deref(),
         })?;
-        self.store.update_tmux_pane(&task.id, &result.pane_id)?;
-        self.store.update_tmux_window(&task.id, &result.window_id)?;
+        task.tmux_pane = Some(result.pane_id.clone());
+        task.tmux_window = Some(result.window_id.clone());
+        self.store.update_task(&task)?;
 
         Ok(SpawnOutput {
             task_id: task.id,
@@ -296,7 +295,7 @@ impl<R: Runtime> ClatApp<R> {
             self.runtime.recreate_worktree(&self.paths.root, work_dir)?;
         }
 
-        let session_id = task.session_id.as_deref().unwrap_or_default();
+        let session_id = task.session_id.as_ref().map(|s| s.as_str()).unwrap_or("");
         let result = if session_id.is_empty() {
             // Legacy task without session_id — fall back to re-running launch.sh
             // which still exists in the worktree's .claude/ directory.

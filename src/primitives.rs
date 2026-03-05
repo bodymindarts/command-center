@@ -70,6 +70,7 @@ macro_rules! id_newtype {
                 &self.repr
             }
 
+            #[allow(dead_code)]
             pub fn short(&self) -> &str {
                 &self.repr[..8.min(self.repr.len())]
             }
@@ -134,6 +135,7 @@ id_newtype!(TaskId);
 string_newtype!(TaskName);
 id_newtype!(ProjectId);
 string_newtype!(ProjectName);
+id_newtype!(ClaudeSessionId);
 string_newtype!(PaneId);
 string_newtype!(WindowId);
 

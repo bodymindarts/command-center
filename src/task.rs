@@ -4,7 +4,8 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 
 use crate::primitives::{
-    MessageRole, PaneId, ProjectId, ProjectName, TaskId, TaskName, TaskStatus, WindowId,
+    ClaudeSessionId, MessageRole, PaneId, ProjectId, ProjectName, TaskId, TaskName, TaskStatus,
+    WindowId,
 };
 
 /// Visual status of a task, combining persisted `TaskStatus` with runtime
@@ -47,7 +48,7 @@ pub struct Task {
     pub tmux_pane: Option<PaneId>,
     pub tmux_window: Option<WindowId>,
     pub work_dir: Option<String>,
-    pub session_id: Option<String>,
+    pub session_id: Option<ClaudeSessionId>,
     pub started_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
     pub exit_code: Option<i32>,
@@ -73,7 +74,7 @@ impl Task {
             tmux_pane: None,
             tmux_window: None,
             work_dir: Some(work_dir.display().to_string()),
-            session_id: None,
+            session_id: Some(ClaudeSessionId::generate()),
             started_at: Utc::now(),
             completed_at: None,
             exit_code: None,
