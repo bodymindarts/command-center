@@ -113,7 +113,7 @@ fn spawn_caffeinate() -> Option<std::process::Child> {
 }
 
 pub fn run<R: Runtime>(
-    service: &ClatApp<R>,
+    service: ClatApp<R>,
     resume_session: Option<&str>,
     caffeinate: bool,
 ) -> anyhow::Result<()> {
@@ -227,7 +227,7 @@ pub fn run<R: Runtime>(
         &mut exo_session,
         &mut pm_contexts,
         &pm_tx,
-        service,
+        &service,
         &rx,
         &pm_rx,
         &perm_rx,
@@ -282,7 +282,7 @@ fn run_loop<R: Runtime>(
     exo_session: &mut ExoSession,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
-    service: &ClatApp<R>,
+    service: &ClatApp<R>, // borrowed from run() which owns it
     rx: &mpsc::Receiver<ExoEvent>,
     pm_rx: &mpsc::Receiver<PmEvent>,
     perm_rx: &mpsc::Receiver<(UnixStream, PermissionRequest)>,

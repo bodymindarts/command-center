@@ -38,7 +38,7 @@ fn main() -> anyhow::Result<()> {
             scratch,
             project,
         } => cmd_spawn(
-            &app,
+            app,
             SpawnOpts {
                 name,
                 skill,
@@ -50,18 +50,18 @@ fn main() -> anyhow::Result<()> {
                 project,
             },
         )?,
-        Command::List { all, project } => cmd_list(&app, all, project)?,
-        Command::History => cmd_list(&app, true, None)?,
-        Command::Log { id } => cmd_log(&app, &id)?,
-        Command::Close { id } => cmd_close(&app, &id)?,
-        Command::Reopen { id } => cmd_reopen(&app, &id)?,
-        Command::Delete { id } => cmd_delete(&app, &id)?,
-        Command::Dash { resume, caffeinate } => tui::run(&app, resume.as_deref(), caffeinate)?,
+        Command::List { all, project } => cmd_list(app, all, project)?,
+        Command::History => cmd_list(app, true, None)?,
+        Command::Log { id } => cmd_log(app, &id)?,
+        Command::Close { id } => cmd_close(app, &id)?,
+        Command::Reopen { id } => cmd_reopen(app, &id)?,
+        Command::Delete { id } => cmd_delete(app, &id)?,
+        Command::Dash { resume, caffeinate } => tui::run(app, resume.as_deref(), caffeinate)?,
         Command::Start { resume, caffeinate } => cmd_start(resume.as_deref(), caffeinate)?,
-        Command::Goto { id } => cmd_goto(&app, &id)?,
-        Command::Send { id, message } => cmd_send(&app, &id, &message)?,
-        Command::Skill { action } => cmd_skill(action, &app)?,
-        Command::Project { action } => cmd_project(action, &app)?,
+        Command::Goto { id } => cmd_goto(app, &id)?,
+        Command::Send { id, message } => cmd_send(app, &id, &message)?,
+        Command::Skill { action } => cmd_skill(action, app)?,
+        Command::Project { action } => cmd_project(action, app)?,
         Command::Agent { action } => match action {
             AgentCommand::PermissionGate => permission::gate_request()?,
             AgentCommand::PermissionPrompt {
@@ -73,7 +73,7 @@ fn main() -> anyhow::Result<()> {
                 id,
                 exit_code,
                 output_file,
-            } => cmd_complete(&app, &id, exit_code, output_file.as_deref())?,
+            } => cmd_complete(app, &id, exit_code, output_file.as_deref())?,
         },
     }
 
@@ -91,7 +91,7 @@ struct SpawnOpts {
     project: Option<String>,
 }
 
-fn cmd_spawn(app: &ClatApp<impl Runtime>, opts: SpawnOpts) -> anyhow::Result<()> {
+fn cmd_spawn(app: ClatApp<impl Runtime>, opts: SpawnOpts) -> anyhow::Result<()> {
     let (work_dir_mode, prompt_mode) = if opts.scratch {
         (WorkDirMode::Scratch, PromptMode::Full)
     } else if opts.no_worktree {
@@ -131,7 +131,7 @@ fn cmd_spawn(app: &ClatApp<impl Runtime>, opts: SpawnOpts) -> anyhow::Result<()>
     Ok(())
 }
 
-fn cmd_list(app: &ClatApp<impl Runtime>, all: bool, project: Option<String>) -> anyhow::Result<()> {
+fn cmd_list(app: ClatApp<impl Runtime>, all: bool, project: Option<String>) -> anyhow::Result<()> {
     let tasks = app.list_tasks(all, project.as_deref())?;
 
     if tasks.is_empty() {
@@ -220,7 +220,7 @@ fn cmd_list(app: &ClatApp<impl Runtime>, all: bool, project: Option<String>) -> 
     Ok(())
 }
 
-fn cmd_close(app: &ClatApp<impl Runtime>, id: &str) -> anyhow::Result<()> {
+fn cmd_close(app: ClatApp<impl Runtime>, id: &str) -> anyhow::Result<()> {
     let result = app.close(id)?;
     println!(
         "Closed task {} ({})",
@@ -230,13 +230,13 @@ fn cmd_close(app: &ClatApp<impl Runtime>, id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_reopen(app: &ClatApp<impl Runtime>, id: &str) -> anyhow::Result<()> {
+fn cmd_reopen(app: ClatApp<impl Runtime>, id: &str) -> anyhow::Result<()> {
     let window_id = app.reopen(id)?;
     println!("Reopened task {id} (window: {window_id})");
     Ok(())
 }
 
-fn cmd_delete(app: &ClatApp<impl Runtime>, id: &str) -> anyhow::Result<()> {
+fn cmd_delete(app: ClatApp<impl Runtime>, id: &str) -> anyhow::Result<()> {
     let result = app.delete(id)?;
     println!(
         "Deleted task {} ({})",
@@ -246,7 +246,7 @@ fn cmd_delete(app: &ClatApp<impl Runtime>, id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_log(app: &ClatApp<impl Runtime>, id_prefix: &str) -> anyhow::Result<()> {
+fn cmd_log(app: ClatApp<impl Runtime>, id_prefix: &str) -> anyhow::Result<()> {
     let log = app.log(id_prefix)?;
 
     if log.messages.is_empty() {
@@ -286,7 +286,7 @@ fn cmd_log(app: &ClatApp<impl Runtime>, id_prefix: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_goto(app: &ClatApp<impl Runtime>, id: &str) -> anyhow::Result<()> {
+fn cmd_goto(app: ClatApp<impl Runtime>, id: &str) -> anyhow::Result<()> {
     app.goto(id)
 }
 
@@ -328,7 +328,7 @@ fn cmd_start(resume: Option<&str>, caffeinate: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_send(app: &ClatApp<impl Runtime>, id: &str, message: &str) -> anyhow::Result<()> {
+fn cmd_send(app: ClatApp<impl Runtime>, id: &str, message: &str) -> anyhow::Result<()> {
     let result = app.send(id, message)?;
     println!(
         "Sent message to {} ({})",
@@ -339,7 +339,7 @@ fn cmd_send(app: &ClatApp<impl Runtime>, id: &str, message: &str) -> anyhow::Res
 }
 
 fn cmd_complete(
-    app: &ClatApp<impl Runtime>,
+    app: ClatApp<impl Runtime>,
     id: &str,
     exit_code: i32,
     output_file: Option<&str>,
@@ -361,7 +361,7 @@ fn cmd_complete(
     Ok(())
 }
 
-fn cmd_skill(action: SkillAction, app: &ClatApp<impl Runtime>) -> anyhow::Result<()> {
+fn cmd_skill(action: SkillAction, app: ClatApp<impl Runtime>) -> anyhow::Result<()> {
     match action {
         SkillAction::List => {
             let skills = app.list_skills()?;
@@ -395,7 +395,7 @@ fn cmd_skill(action: SkillAction, app: &ClatApp<impl Runtime>) -> anyhow::Result
     Ok(())
 }
 
-fn cmd_project(action: ProjectAction, app: &ClatApp<impl Runtime>) -> anyhow::Result<()> {
+fn cmd_project(action: ProjectAction, app: ClatApp<impl Runtime>) -> anyhow::Result<()> {
     match action {
         ProjectAction::Create { name, description } => {
             let project = app.create_project(&name, &description)?;
