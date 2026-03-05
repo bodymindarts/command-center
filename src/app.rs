@@ -62,6 +62,18 @@ pub struct SendOutput {
 }
 
 #[derive(Debug)]
+pub struct CompleteOutput {
+    pub task_id: TaskId,
+    pub task_name: TaskName,
+}
+
+#[derive(Debug)]
+pub struct DeleteOutput {
+    pub task_id: TaskId,
+    pub task_name: TaskName,
+}
+
+#[derive(Debug)]
 pub struct LogOutput {
     pub task: Task,
     pub messages: Vec<TaskMessage>,
@@ -259,7 +271,7 @@ impl<R: Runtime> ClatApp<R> {
         })
     }
 
-    pub fn delete(&self, task_id: &str) -> anyhow::Result<()> {
+    pub fn delete(&self, task_id: &str) -> anyhow::Result<DeleteOutput> {
         let task = self.resolve_task(task_id)?;
 
         if task.status.is_running() {
@@ -269,7 +281,11 @@ impl<R: Runtime> ClatApp<R> {
             let _ = self.store.close_task(&task.id, None);
         }
 
-        self.store.delete_task(&task.id)
+        self.store.delete_task(&task.id)?;
+        Ok(DeleteOutput {
+            task_id: task.id,
+            task_name: task.name,
+        })
     }
 
     pub fn reopen(&self, task_id: &str) -> anyhow::Result<WindowId> {
@@ -487,9 +503,13 @@ impl<R: Runtime> ClatApp<R> {
         id_prefix: &str,
         exit_code: i32,
         output: Option<&str>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<CompleteOutput> {
         let task = self.resolve_task(id_prefix)?;
-        self.store.complete_task(&task.id, exit_code, output)
+        self.store.complete_task(&task.id, exit_code, output)?;
+        Ok(CompleteOutput {
+            task_id: task.id,
+            task_name: task.name,
+        })
     }
 
     fn resolve_task(&self, id_prefix: &str) -> anyhow::Result<Task> {

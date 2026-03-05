@@ -237,8 +237,12 @@ fn cmd_reopen(app: &ClatApp<impl Runtime>, id: &str) -> anyhow::Result<()> {
 }
 
 fn cmd_delete(app: &ClatApp<impl Runtime>, id: &str) -> anyhow::Result<()> {
-    app.delete(id)?;
-    println!("Deleted task {id}");
+    let result = app.delete(id)?;
+    println!(
+        "Deleted task {} ({})",
+        result.task_name,
+        result.task_id.short()
+    );
     Ok(())
 }
 
@@ -341,14 +345,18 @@ fn cmd_complete(
     output_file: Option<&str>,
 ) -> anyhow::Result<()> {
     let output = output_file.and_then(|path| std::fs::read_to_string(path).ok());
-    app.complete(id, exit_code, output.as_deref())?;
+    let result = app.complete(id, exit_code, output.as_deref())?;
 
     let status = if exit_code == 0 {
         "completed"
     } else {
         "failed"
     };
-    println!("Task {id} marked as {status} (exit code: {exit_code})");
+    println!(
+        "Task {} ({}) marked as {status} (exit code: {exit_code})",
+        result.task_name,
+        result.task_id.short()
+    );
 
     Ok(())
 }
