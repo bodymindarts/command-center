@@ -1,6 +1,6 @@
-mod app;
 mod chat;
 mod claude;
+mod dashboard;
 mod handlers;
 mod input;
 mod permissions;
@@ -22,12 +22,12 @@ use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
+use crate::app::ClatApp;
 use crate::permission::PermissionRequest;
 use crate::runtime::Runtime;
-use crate::service::TaskService;
-use app::App;
 use chat::ExoState;
 use claude::{EXO_SYSTEM_PROMPT, ExoEvent, ExoSession, PmEvent};
+use dashboard::Dashboard;
 
 /// Holds the PM state and session for a single project.
 struct PmContext {
@@ -76,8 +76,8 @@ fn cancel_pm_context(pm_contexts: &mut HashMap<String, PmContext>, project_id: &
 /// Ensure a PmContext exists for the project, creating and loading history if needed.
 fn ensure_pm_context<R: Runtime>(
     pm_contexts: &mut HashMap<String, PmContext>,
-    app: &mut App,
-    service: &TaskService<R>,
+    app: &mut Dashboard,
+    service: &ClatApp<R>,
     project_id: &str,
     pm_tx: &mpsc::Sender<PmEvent>,
 ) {
@@ -113,7 +113,7 @@ fn spawn_caffeinate() -> Option<std::process::Child> {
 }
 
 pub fn run<R: Runtime>(
-    service: &TaskService<R>,
+    service: &ClatApp<R>,
     resume_session: Option<&str>,
     caffeinate: bool,
 ) -> Result<()> {
@@ -126,7 +126,7 @@ pub fn run<R: Runtime>(
     let mut terminal = Terminal::new(backend)?;
 
     let tasks = service.list_visible(None)?;
-    let mut app = App::new(tasks);
+    let mut app = Dashboard::new(tasks);
     let mut exo = ExoState::new();
     if let Some(sid) = resume_session {
         exo.session_id = Some(sid.to_string());
@@ -179,6 +179,17 @@ pub fn run<R: Runtime>(
                 Ok((mut stream, _)) => {
                     let mut buf = String::new();
                     if std::io::Read::read_to_string(&mut stream, &mut buf).is_ok() {
+                        // Log every incoming hook message to data/hooks.log
+                        if let Ok(mut log) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open("data/hooks.log")
+                        {
+                            use std::io::Write;
+                            let ts = chrono::Local::now().format("%H:%M:%S%.3f");
+                            let _ = writeln!(log, "[{ts}] {}", buf.trim());
+                        }
+
                         if let Some(cwd) = crate::permission::parse_resolved_json(&buf) {
                             let _ = resolved_tx.send(cwd);
                         } else if let Some(cwd) = crate::permission::parse_idle_json(&buf) {
@@ -266,12 +277,12 @@ pub fn run<R: Runtime>(
 #[allow(clippy::too_many_arguments)]
 fn run_loop<R: Runtime>(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    app: &mut App,
+    app: &mut Dashboard,
     exo: &mut ExoState,
     exo_session: &mut ExoSession,
     pm_contexts: &mut HashMap<String, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
-    service: &TaskService<R>,
+    service: &ClatApp<R>,
     rx: &mpsc::Receiver<ExoEvent>,
     pm_rx: &mpsc::Receiver<PmEvent>,
     perm_rx: &mpsc::Receiver<(UnixStream, PermissionRequest)>,

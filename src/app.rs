@@ -70,14 +70,26 @@ pub struct LogOutput {
 
 const EXO_CHAT_ID: &str = "exo";
 
-pub struct TaskService<'a, R: Runtime> {
-    store: &'a Store,
-    runtime: &'a R,
-    paths: &'a Paths,
+pub struct ClatApp<R: Runtime> {
+    store: Store,
+    runtime: R,
+    paths: Paths,
 }
 
-impl<'a, R: Runtime> TaskService<'a, R> {
-    pub fn new(store: &'a Store, runtime: &'a R, paths: &'a Paths) -> Self {
+impl<R: Runtime> ClatApp<R> {
+    pub fn try_new(runtime: R) -> Result<Self> {
+        let paths = Paths::resolve()?;
+        paths.ensure_dirs()?;
+        let store = Store::open(&paths.db_path)?;
+        Ok(Self {
+            store,
+            runtime,
+            paths,
+        })
+    }
+
+    #[cfg(test)]
+    pub fn new(store: Store, runtime: R, paths: Paths) -> Self {
         Self {
             store,
             runtime,
@@ -87,6 +99,16 @@ impl<'a, R: Runtime> TaskService<'a, R> {
 
     pub fn project_root(&self) -> &std::path::Path {
         &self.paths.root
+    }
+
+    #[cfg(test)]
+    pub fn store(&self) -> &Store {
+        &self.store
+    }
+
+    #[cfg(test)]
+    pub fn runtime(&self) -> &R {
+        &self.runtime
     }
 
     pub fn read_exo_session_id(&self) -> Option<String> {
@@ -697,7 +719,7 @@ prompt = "noop prompt"
         }
     }
 
-    fn spawn_test_task(service: &TaskService<impl Runtime>) -> SpawnOutput {
+    fn spawn_test_task(service: &ClatApp<impl Runtime>) -> SpawnOutput {
         service
             .spawn(SpawnRequest {
                 task_name: "test-task",
@@ -719,7 +741,7 @@ prompt = "noop prompt"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = TaskService::new(&store, &runtime, &paths);
+        let service = ClatApp::new(store, runtime, paths);
 
         let output = spawn_test_task(&service);
 
@@ -728,7 +750,7 @@ prompt = "noop prompt"
         assert_eq!(output.window_id, "@fake-win");
 
         // Verify task is in store
-        let tasks = store.list_active_tasks().unwrap();
+        let tasks = service.store().list_active_tasks().unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].name, "test-task");
         assert_eq!(
@@ -737,12 +759,12 @@ prompt = "noop prompt"
         );
 
         // Verify system message recorded
-        let messages = store.list_messages(tasks[0].id.as_str()).unwrap();
+        let messages = service.store().list_messages(tasks[0].id.as_str()).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, MessageRole::System);
 
         // Verify call order
-        let calls = runtime.calls.borrow();
+        let calls = service.runtime().calls.borrow();
         assert!(matches!(calls[0], Call::CreateWorktree { .. }));
         assert!(matches!(
             calls[1],
@@ -759,7 +781,7 @@ prompt = "noop prompt"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = TaskService::new(&store, &runtime, &paths);
+        let service = ClatApp::new(store, runtime, paths);
 
         let spawned = spawn_test_task(&service);
         let result = service.close(spawned.task_id.as_str()).unwrap();
@@ -767,7 +789,8 @@ prompt = "noop prompt"
         assert_eq!(result.task_name, "test-task");
 
         // Verify task is closed with output
-        let task = store
+        let task = service
+            .store()
             .get_task_by_prefix(spawned.task_id.as_str())
             .unwrap()
             .unwrap();
@@ -775,7 +798,7 @@ prompt = "noop prompt"
         assert_eq!(task.output.as_deref(), Some("captured output"));
 
         // Verify call order: CaptureOutput before KillWindow
-        let calls = runtime.calls.borrow();
+        let calls = service.runtime().calls.borrow();
         let capture_pos = calls
             .iter()
             .position(|c| matches!(c, Call::CaptureOutput { .. }))
@@ -793,10 +816,11 @@ prompt = "noop prompt"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = TaskService::new(&store, &runtime, &paths);
+        let service = ClatApp::new(store, runtime, paths);
 
         let spawned = spawn_test_task(&service);
-        let task = store
+        let task = service
+            .store()
             .get_task_by_prefix(spawned.task_id.as_str())
             .unwrap()
             .unwrap();
@@ -814,7 +838,7 @@ prompt = "noop prompt"
         let store = Store::open_in_memory().unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         *runtime.kill_should_fail.borrow_mut() = true;
-        let service = TaskService::new(&store, &runtime, &paths);
+        let service = ClatApp::new(store, runtime, paths);
 
         let spawned = spawn_test_task(&service);
         let result = service.close(spawned.task_id.as_str());
@@ -827,7 +851,7 @@ prompt = "noop prompt"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = TaskService::new(&store, &runtime, &paths);
+        let service = ClatApp::new(store, runtime, paths);
 
         let spawned = spawn_test_task(&service);
         let result = service
@@ -837,18 +861,19 @@ prompt = "noop prompt"
         assert_eq!(result.task_name, "test-task");
 
         // Verify SendKeys call
-        let calls = runtime.calls.borrow();
+        let calls = service.runtime().calls.borrow();
         assert!(calls.iter().any(|c| matches!(c,
             Call::SendKeys { pane_id, message }
             if pane_id == "%fake-pane" && message == "hello agent"
         )));
 
         // Verify user message in store
-        let task = store
+        let task = service
+            .store()
             .get_task_by_prefix(spawned.task_id.as_str())
             .unwrap()
             .unwrap();
-        let messages = store.list_messages(task.id.as_str()).unwrap();
+        let messages = service.store().list_messages(task.id.as_str()).unwrap();
         assert!(
             messages
                 .iter()
@@ -862,12 +887,12 @@ prompt = "noop prompt"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = TaskService::new(&store, &runtime, &paths);
+        let service = ClatApp::new(store, runtime, paths);
 
         let spawned = spawn_test_task(&service);
         service.goto(spawned.task_id.as_str()).unwrap();
 
-        let calls = runtime.calls.borrow();
+        let calls = service.runtime().calls.borrow();
         assert!(calls.iter().any(|c| matches!(c,
             Call::SelectWindow { window_id } if window_id == "@fake-win"
         )));
@@ -879,7 +904,7 @@ prompt = "noop prompt"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = TaskService::new(&store, &runtime, &paths);
+        let service = ClatApp::new(store, runtime, paths);
 
         // Insert a task with no tmux_window directly
         let task = Task {
@@ -898,7 +923,7 @@ prompt = "noop prompt"
             output: None,
             project_id: None,
         };
-        store.insert_task(&task).unwrap();
+        service.store().insert_task(&task).unwrap();
 
         let err = service.goto("aaaa-bbb");
         assert!(err.is_err());
@@ -911,7 +936,7 @@ prompt = "noop prompt"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = TaskService::new(&store, &runtime, &paths);
+        let service = ClatApp::new(store, runtime, paths);
 
         let spawned = spawn_test_task(&service);
         service.send(spawned.task_id.as_str(), "hello").unwrap();
@@ -929,13 +954,14 @@ prompt = "noop prompt"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = TaskService::new(&store, &runtime, &paths);
+        let service = ClatApp::new(store, runtime, paths);
 
         let spawned1 = spawn_test_task(&service);
         let _spawned2 = spawn_test_task(&service);
 
         // Complete one
-        let task1 = store
+        let task1 = service
+            .store()
             .get_task_by_prefix(spawned1.task_id.as_str())
             .unwrap()
             .unwrap();
@@ -972,7 +998,7 @@ prompt = "deploy to {{ env }}"
 
         let store = Store::open_in_memory().unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = TaskService::new(&store, &runtime, &paths);
+        let service = ClatApp::new(store, runtime, paths);
 
         let skills = service.list_skills().unwrap();
         assert_eq!(skills.len(), 2);
@@ -989,7 +1015,7 @@ prompt = "deploy to {{ env }}"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = TaskService::new(&store, &runtime, &paths);
+        let service = ClatApp::new(store, runtime, paths);
 
         let spawned = spawn_test_task(&service);
         service.complete(spawned.task_id.as_str(), 0, None).unwrap();
@@ -998,7 +1024,7 @@ prompt = "deploy to {{ env }}"
         assert_eq!(window_id, "@fake-win");
 
         // Verify resume_agent was called with the task's work_dir
-        let calls = runtime.calls.borrow();
+        let calls = service.runtime().calls.borrow();
         let resume_call = calls
             .iter()
             .find(|c| matches!(c, Call::ResumeAgent { .. }))
@@ -1016,7 +1042,8 @@ prompt = "deploy to {{ env }}"
         }
 
         // Verify task is back to running with new pane/window
-        let task = store
+        let task = service
+            .store()
             .get_task_by_prefix(spawned.task_id.as_str())
             .unwrap()
             .unwrap();
@@ -1037,13 +1064,14 @@ prompt = "deploy to {{ env }}"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = TaskService::new(&store, &runtime, &paths);
+        let service = ClatApp::new(store, runtime, paths);
 
         let spawned = spawn_test_task(&service);
         service.complete(spawned.task_id.as_str(), 0, None).unwrap();
 
         // Delete the worktree directory to simulate post-merge cleanup
-        let task = store
+        let task = service
+            .store()
             .get_task_by_prefix(spawned.task_id.as_str())
             .unwrap()
             .unwrap();
@@ -1055,7 +1083,7 @@ prompt = "deploy to {{ env }}"
         assert_eq!(window_id, "@fake-win");
 
         // Verify RecreateWorktree was called
-        let calls = runtime.calls.borrow();
+        let calls = service.runtime().calls.borrow();
         assert!(
             calls
                 .iter()
@@ -1064,7 +1092,8 @@ prompt = "deploy to {{ env }}"
         );
 
         // Verify task is back to running
-        let task = store
+        let task = service
+            .store()
             .get_task_by_prefix(spawned.task_id.as_str())
             .unwrap()
             .unwrap();
@@ -1077,7 +1106,7 @@ prompt = "deploy to {{ env }}"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = TaskService::new(&store, &runtime, &paths);
+        let service = ClatApp::new(store, runtime, paths);
 
         let spawned = spawn_test_task(&service);
 
@@ -1094,7 +1123,7 @@ prompt = "deploy to {{ env }}"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = TaskService::new(&store, &runtime, &paths);
+        let service = ClatApp::new(store, runtime, paths);
 
         let output = service
             .spawn(SpawnRequest {
@@ -1114,7 +1143,7 @@ prompt = "deploy to {{ env }}"
         assert_eq!(output.window_id, "@fake-win");
 
         // Task is stored and running
-        let tasks = store.list_active_tasks().unwrap();
+        let tasks = service.store().list_active_tasks().unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].name, "nw-task");
         assert_eq!(
@@ -1123,7 +1152,7 @@ prompt = "deploy to {{ env }}"
         );
 
         // Verify call order: SetupDirConfig then LaunchAgent (no CreateWorktree)
-        let calls = runtime.calls.borrow();
+        let calls = service.runtime().calls.borrow();
         assert!(
             !calls
                 .iter()
@@ -1146,7 +1175,7 @@ prompt = "deploy to {{ env }}"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = TaskService::new(&store, &runtime, &paths);
+        let service = ClatApp::new(store, runtime, paths);
 
         let custom_repo = tmp.path().join("other-repo");
         std::fs::create_dir_all(&custom_repo).unwrap();
@@ -1164,7 +1193,8 @@ prompt = "deploy to {{ env }}"
         assert_eq!(output.task_name, "nw-task");
 
         // Task work_dir should be the custom path
-        let task = store
+        let task = service
+            .store()
             .get_task_by_prefix(output.task_id.as_str())
             .unwrap()
             .unwrap();
@@ -1174,7 +1204,7 @@ prompt = "deploy to {{ env }}"
         );
 
         // Verify SetupDirConfig was called with the custom path
-        let calls = runtime.calls.borrow();
+        let calls = service.runtime().calls.borrow();
         let setup_call = calls
             .iter()
             .find(|c| matches!(c, Call::SetupDirConfig { .. }))
@@ -1192,7 +1222,7 @@ prompt = "deploy to {{ env }}"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = TaskService::new(&store, &runtime, &paths);
+        let service = ClatApp::new(store, runtime, paths);
 
         let output = service
             .spawn(SpawnRequest {
@@ -1210,19 +1240,19 @@ prompt = "deploy to {{ env }}"
         assert_eq!(output.window_id, "@fake-win");
 
         // Task is stored and running
-        let tasks = store.list_active_tasks().unwrap();
+        let tasks = service.store().list_active_tasks().unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].name, "scratch-task");
 
         // Work dir should be data_dir/scratch/scratch-task
-        let expected_scratch = paths.data_dir.join("scratch").join("scratch-task");
+        let expected_scratch = tmp.path().join("data").join("scratch").join("scratch-task");
         assert_eq!(
             tasks[0].work_dir.as_deref(),
             Some(expected_scratch.to_str().unwrap())
         );
 
         // Verify call order: InitScratchDir, SetupDirConfig, LaunchAgent
-        let calls = runtime.calls.borrow();
+        let calls = service.runtime().calls.borrow();
         assert!(
             !calls
                 .iter()
@@ -1248,7 +1278,7 @@ prompt = "deploy to {{ env }}"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = TaskService::new(&store, &runtime, &paths);
+        let service = ClatApp::new(store, runtime, paths);
 
         let project = service
             .create_project("web-app", "frontend project")
@@ -1268,7 +1298,7 @@ prompt = "deploy to {{ env }}"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = TaskService::new(&store, &runtime, &paths);
+        let service = ClatApp::new(store, runtime, paths);
 
         service.create_project("temp-proj", "").unwrap();
         assert_eq!(service.list_projects().unwrap().len(), 1);
@@ -1283,7 +1313,7 @@ prompt = "deploy to {{ env }}"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = TaskService::new(&store, &runtime, &paths);
+        let service = ClatApp::new(store, runtime, paths);
 
         let err = service.delete_project("ghost");
         assert!(err.is_err());
@@ -1296,7 +1326,7 @@ prompt = "deploy to {{ env }}"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = TaskService::new(&store, &runtime, &paths);
+        let service = ClatApp::new(store, runtime, paths);
 
         // Spawn two tasks: one with project, one without
         let out1 = service

@@ -3,9 +3,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use super::super::app::{App, Focus};
+use super::super::dashboard::{Dashboard, Focus};
 
-pub(in crate::tui) fn render_permission_panel(frame: &mut ratatui::Frame, app: &App, area: Rect) {
+pub(in crate::tui) fn render_permission_panel(
+    frame: &mut ratatui::Frame,
+    app: &Dashboard,
+    area: Rect,
+) {
     let perm_key = app.focused_perm_key();
     let Some(req) = app.permissions.peek(&perm_key) else {
         return;
@@ -67,7 +71,11 @@ pub(in crate::tui) fn render_permission_panel(frame: &mut ratatui::Frame, app: &
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-pub(in crate::tui) fn render_askuser_panel(frame: &mut ratatui::Frame, app: &App, area: Rect) {
+pub(in crate::tui) fn render_askuser_panel(
+    frame: &mut ratatui::Frame,
+    app: &Dashboard,
+    area: Rect,
+) {
     let perm_key = app.focused_perm_key();
     let Some(perm) = app.permissions.peek(&perm_key) else {
         return;
@@ -126,7 +134,7 @@ pub(in crate::tui) fn render_askuser_panel(frame: &mut ratatui::Frame, app: &App
 
 pub(in crate::tui) fn render_delete_confirm_panel(
     frame: &mut ratatui::Frame,
-    app: &App,
+    app: &Dashboard,
     area: Rect,
 ) {
     let Focus::ConfirmDelete(ref id) = app.focus else {
@@ -173,7 +181,11 @@ pub(in crate::tui) fn render_delete_confirm_panel(
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-pub(in crate::tui) fn render_close_task_panel(frame: &mut ratatui::Frame, app: &App, area: Rect) {
+pub(in crate::tui) fn render_close_task_panel(
+    frame: &mut ratatui::Frame,
+    app: &Dashboard,
+    area: Rect,
+) {
     let Focus::ConfirmCloseTask(ref id) = app.focus else {
         return;
     };
@@ -220,7 +232,7 @@ pub(in crate::tui) fn render_close_task_panel(frame: &mut ratatui::Frame, app: &
 
 pub(in crate::tui) fn render_close_project_panel(
     frame: &mut ratatui::Frame,
-    app: &App,
+    app: &Dashboard,
     area: Rect,
 ) {
     let name = app
@@ -265,7 +277,7 @@ pub(in crate::tui) fn render_close_project_panel(
 
 pub(in crate::tui) fn render_delete_project_panel(
     frame: &mut ratatui::Frame,
-    app: &App,
+    app: &Dashboard,
     area: Rect,
 ) {
     let Focus::ConfirmDeleteProject(ref name) = app.focus else {

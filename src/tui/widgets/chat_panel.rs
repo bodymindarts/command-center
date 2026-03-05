@@ -5,12 +5,12 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::primitives::MessageRole;
 
-use super::super::app::{App, Focus};
 use super::super::chat::{ChatMessage, ContentBlock, ExoState};
+use super::super::dashboard::{Dashboard, Focus};
 
 pub(in crate::tui) fn render_chat(
     frame: &mut ratatui::Frame,
-    app: &mut App,
+    app: &mut Dashboard,
     exo: &ExoState,
     pm: Option<&ExoState>,
     area: Rect,

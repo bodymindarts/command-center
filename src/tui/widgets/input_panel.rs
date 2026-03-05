@@ -3,11 +3,11 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use super::super::app::{App, Focus};
+use super::super::dashboard::{Dashboard, Focus};
 
 pub(in crate::tui) fn render_input(
     frame: &mut ratatui::Frame,
-    app: &App,
+    app: &Dashboard,
     area: Rect,
     focused: bool,
 ) {
@@ -96,7 +96,7 @@ fn askuser_hint_spans(n_opts: usize) -> Vec<Span<'static>> {
     spans
 }
 
-pub(in crate::tui) fn render_prompt_bar(frame: &mut ratatui::Frame, app: &App, area: Rect) {
+pub(in crate::tui) fn render_prompt_bar(frame: &mut ratatui::Frame, app: &Dashboard, area: Rect) {
     // Show transient error in red, replacing normal keybinding hints
     if let Some(ref err) = app.status_error {
         let bar = Paragraph::new(Line::from(vec![Span::styled(

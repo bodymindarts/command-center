@@ -1,9 +1,9 @@
+mod app;
 mod cli;
 mod config;
 mod permission;
 mod primitives;
 mod runtime;
-mod service;
 mod skill;
 mod store;
 mod task;
@@ -13,20 +13,14 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use tabled::{Table, Tabled};
 
+use crate::app::{ClatApp, PromptMode, SpawnRequest, WorkDirMode};
 use crate::cli::{AgentCommand, Cli, Command, ProjectAction, SkillAction};
-use crate::config::Paths;
 use crate::primitives::MessageRole;
 use crate::runtime::{Runtime, TmuxRuntime};
-use crate::service::{PromptMode, SpawnRequest, TaskService, WorkDirMode};
-use crate::store::Store;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let paths = Paths::resolve()?;
-    paths.ensure_dirs()?;
-    let store = Store::open(&paths.db_path)?;
-    let runtime = TmuxRuntime;
-    let service = TaskService::new(&store, &runtime, &paths);
+    let service = ClatApp::try_new(TmuxRuntime)?;
 
     let command = cli.command.unwrap_or(Command::Dash {
         resume: None,
@@ -101,7 +95,7 @@ struct SpawnOpts {
     project: Option<String>,
 }
 
-fn cmd_spawn(service: &TaskService<impl Runtime>, opts: SpawnOpts) -> Result<()> {
+fn cmd_spawn(service: &ClatApp<impl Runtime>, opts: SpawnOpts) -> Result<()> {
     use crate::primitives::ProjectId;
     let project_id: Option<ProjectId> = opts
         .project
@@ -147,7 +141,7 @@ fn cmd_spawn(service: &TaskService<impl Runtime>, opts: SpawnOpts) -> Result<()>
 }
 
 fn cmd_list(
-    service: &TaskService<impl Runtime>,
+    service: &ClatApp<impl Runtime>,
     all: bool,
     project: Option<String>,
     filter: Option<String>,
@@ -252,7 +246,7 @@ fn cmd_list(
     Ok(())
 }
 
-fn cmd_close(service: &TaskService<impl Runtime>, id: &str) -> Result<()> {
+fn cmd_close(service: &ClatApp<impl Runtime>, id: &str) -> Result<()> {
     let result = service.close(id)?;
     println!(
         "Closed task {} ({})",
@@ -262,19 +256,19 @@ fn cmd_close(service: &TaskService<impl Runtime>, id: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_reopen(service: &TaskService<impl Runtime>, id: &str) -> Result<()> {
+fn cmd_reopen(service: &ClatApp<impl Runtime>, id: &str) -> Result<()> {
     let window_id = service.reopen(id)?;
     println!("Reopened task {id} (window: {window_id})");
     Ok(())
 }
 
-fn cmd_delete(service: &TaskService<impl Runtime>, id: &str) -> Result<()> {
+fn cmd_delete(service: &ClatApp<impl Runtime>, id: &str) -> Result<()> {
     service.delete(id)?;
     println!("Deleted task {id}");
     Ok(())
 }
 
-fn cmd_log(service: &TaskService<impl Runtime>, id_prefix: &str) -> Result<()> {
+fn cmd_log(service: &ClatApp<impl Runtime>, id_prefix: &str) -> Result<()> {
     let log = service.log(id_prefix)?;
 
     if log.messages.is_empty() {
@@ -314,7 +308,7 @@ fn cmd_log(service: &TaskService<impl Runtime>, id_prefix: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_goto(service: &TaskService<impl Runtime>, id: &str) -> Result<()> {
+fn cmd_goto(service: &ClatApp<impl Runtime>, id: &str) -> Result<()> {
     service.goto(id)
 }
 
@@ -356,7 +350,7 @@ fn cmd_start(resume: Option<&str>, caffeinate: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_send(service: &TaskService<impl Runtime>, id: &str, message: &str) -> Result<()> {
+fn cmd_send(service: &ClatApp<impl Runtime>, id: &str, message: &str) -> Result<()> {
     let result = service.send(id, message)?;
     println!(
         "Sent message to {} ({})",
@@ -367,7 +361,7 @@ fn cmd_send(service: &TaskService<impl Runtime>, id: &str, message: &str) -> Res
 }
 
 fn cmd_complete(
-    service: &TaskService<impl Runtime>,
+    service: &ClatApp<impl Runtime>,
     id: &str,
     exit_code: i32,
     output_file: Option<&str>,
@@ -385,7 +379,7 @@ fn cmd_complete(
     Ok(())
 }
 
-fn cmd_skill(action: SkillAction, service: &TaskService<impl Runtime>) -> Result<()> {
+fn cmd_skill(action: SkillAction, service: &ClatApp<impl Runtime>) -> Result<()> {
     match action {
         SkillAction::List => {
             let skills = service.list_skills()?;
@@ -419,7 +413,7 @@ fn cmd_skill(action: SkillAction, service: &TaskService<impl Runtime>) -> Result
     Ok(())
 }
 
-fn cmd_project(action: ProjectAction, service: &TaskService<impl Runtime>) -> Result<()> {
+fn cmd_project(action: ProjectAction, service: &ClatApp<impl Runtime>) -> Result<()> {
     match action {
         ProjectAction::Create { name, description } => {
             let project = service.create_project(&name, &description)?;
