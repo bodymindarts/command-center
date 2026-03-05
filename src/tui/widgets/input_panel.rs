@@ -24,9 +24,7 @@ pub(in crate::tui) fn render_input(
         Color::DarkGray
     };
     let searching = matches!(app.focus, Focus::TaskSearch);
-    let prefix = if matches!(app.focus, Focus::ProjectNameInput) {
-        "[new project] > ".to_string()
-    } else if !searching && app.show_detail {
+    let prefix = if !searching && app.show_detail {
         let name = app.selected_task().map(|t| t.name.as_str()).unwrap_or("?");
         format!("[{name}] > ")
     } else if let Some(ref name) = app.active_project {
@@ -108,12 +106,6 @@ pub(in crate::tui) fn render_prompt_bar(frame: &mut ratatui::Frame, app: &Dashbo
     let front_p = app.permissions.peek(&app.focused_perm_key());
     let has_perms = app.show_detail && front_p.is_some_and(|p| !p.is_askuser());
     let mut spans = match &app.focus {
-        Focus::ProjectNameInput => vec![
-            Span::styled(" Enter", Style::default().fg(Color::Yellow)),
-            Span::raw(" create  "),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::raw(" cancel"),
-        ],
         Focus::ChatInput if app.show_detail => {
             vec![
                 Span::styled(" ^G", Style::default().fg(Color::Yellow)),
@@ -180,8 +172,6 @@ pub(in crate::tui) fn render_prompt_bar(frame: &mut ratatui::Frame, app: &Dashbo
                 Span::raw(" navigate  "),
                 Span::styled("Enter", Style::default().fg(Color::Yellow)),
                 Span::raw(" select  "),
-                Span::styled("n", Style::default().fg(Color::Yellow)),
-                Span::raw(" new  "),
                 Span::styled("\u{232b}", Style::default().fg(Color::Yellow)),
                 Span::raw(" delete  "),
                 Span::styled("p/Esc", Style::default().fg(Color::Yellow)),

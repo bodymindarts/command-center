@@ -80,7 +80,7 @@ pub(in crate::tui) fn ui(
         confirm::render_askuser_panel(frame, app, left[1]);
     }
 
-    let focused_input = matches!(app.focus, Focus::ChatInput | Focus::ProjectNameInput);
+    let focused_input = matches!(app.focus, Focus::ChatInput);
     input_panel::render_input(frame, app, left[2], focused_input);
     input_panel::render_prompt_bar(frame, app, left[3]);
 

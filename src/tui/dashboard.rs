@@ -12,7 +12,6 @@ pub enum Focus {
     TaskList,
     TaskSearch,
     ProjectList,
-    ProjectNameInput,
     ChatInput,
     ChatHistory,
     ConfirmDelete(TaskId),

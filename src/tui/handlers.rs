@@ -466,7 +466,6 @@ pub(super) fn handle_focus_key<R: Runtime>(
         Focus::TaskList => handle_task_list_key(app, key, service),
         Focus::TaskSearch => handle_task_search_key(app, key),
         Focus::ProjectList => handle_project_list_key(app, key, service, pm_contexts, pm_tx),
-        Focus::ProjectNameInput => handle_project_name_input_key(app, key, service),
         Focus::ChatInput if app.show_detail => handle_task_chat_input_key(app, key, service),
         Focus::ChatInput => {
             handle_chat_input_key(app, key, service, exo, exo_session, pm_contexts, pm_tx)
@@ -694,10 +693,6 @@ fn handle_project_list_key<R: Runtime>(
                 super::ensure_pm_context(pm_contexts, app, service, &project_id, pm_tx);
             }
         }
-        KeyCode::Char('n') => {
-            app.input.take();
-            app.focus = Focus::ProjectNameInput;
-        }
         KeyCode::Backspace => {
             if let Some(project) = app.selected_project() {
                 let name = project.name.clone();
@@ -712,44 +707,6 @@ fn handle_project_list_key<R: Runtime>(
             }
         }
         _ => {}
-    }
-}
-
-fn handle_project_name_input_key<R: Runtime>(
-    app: &mut Dashboard,
-    key: KeyEvent,
-    service: &ClatApp<R>,
-) {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    match key.code {
-        KeyCode::Esc => {
-            app.input.take();
-            app.focus = Focus::ProjectList;
-        }
-        KeyCode::Enter => {
-            if !app.input.is_empty() {
-                let name = app.input.take();
-                match service.create_project(&name, "") {
-                    Ok(project) => {
-                        let project_id = project.id.clone();
-                        app.switch_to_project(Some((project.name.clone(), project_id.clone())));
-                        if let Ok(tasks) = service.list_visible(Some(&project_id)) {
-                            app.finish_project_switch(tasks);
-                        }
-                    }
-                    Err(e) => {
-                        app.status_error = Some(format!("create project: {e}"));
-                        app.focus = Focus::ProjectList;
-                    }
-                }
-            } else {
-                app.focus = Focus::ProjectList;
-            }
-        }
-        KeyCode::Char('k') if ctrl => app.input.kill_line(),
-        _ => {
-            handle_input_editing(&mut app.input, &key);
-        }
     }
 }
 
