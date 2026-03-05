@@ -5,7 +5,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
 use crate::task::{DisplayStatus, Project};
 
-use super::super::screen::{Focus, ScreenState};
+use super::super::screen_state::{Focus, ScreenState};
 
 fn task_list_item(state: &ScreenState, task: &crate::task::Task) -> ListItem<'static> {
     let ds = task.display_status(&state.idle_panes);

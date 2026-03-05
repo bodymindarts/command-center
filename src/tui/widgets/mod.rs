@@ -6,7 +6,7 @@ mod task_panel;
 use ratatui::layout::{Constraint, Direction, Layout};
 
 use super::chat::ExoState;
-use super::screen::{Focus, ScreenState};
+use super::screen_state::{Focus, ScreenState};
 
 pub(in crate::tui) fn ui(
     frame: &mut ratatui::Frame,

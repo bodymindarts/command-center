@@ -15,7 +15,7 @@ use super::PmContext;
 use super::chat::ExoState;
 use super::claude::{ExoEvent, ExoSession, PmEvent, pm_system_prompt};
 use super::permissions::ActivePermission;
-use super::screen::{Focus, ScreenState};
+use super::screen_state::{Focus, ScreenState};
 use super::telegram;
 
 const EXO_PERM_KEY: &str = "exo";

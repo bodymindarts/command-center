@@ -3,7 +3,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use super::super::screen::{Focus, ScreenState};
+use super::super::screen_state::{Focus, ScreenState};
 
 pub(in crate::tui) fn render_permission_panel(
     frame: &mut ratatui::Frame,

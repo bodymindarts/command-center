@@ -3,7 +3,7 @@ mod claude;
 mod handlers;
 mod input;
 mod permissions;
-mod screen;
+mod screen_state;
 mod telegram;
 mod widgets;
 
@@ -27,7 +27,7 @@ use crate::primitives::ProjectId;
 use crate::runtime::Runtime;
 use chat::ExoState;
 use claude::{EXO_SYSTEM_PROMPT, ExoEvent, ExoSession, PmEvent};
-use screen::ScreenState;
+use screen_state::ScreenState;
 
 /// Holds the PM state and session for a single project.
 struct PmContext {

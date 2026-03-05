@@ -3,7 +3,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use super::super::screen::{Focus, ScreenState};
+use super::super::screen_state::{Focus, ScreenState};
 
 pub(in crate::tui) fn render_input(
     frame: &mut ratatui::Frame,
