@@ -5,10 +5,15 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
 use crate::task::{DisplayStatus, Project};
 
-use super::super::screen_state::{Focus, ScreenState};
+use super::super::permissions::PermissionStore;
+use super::super::screen_state::{Focus, ProjectListState, TaskListState};
 
-fn task_list_item(state: &ScreenState, task: &crate::task::Task) -> ListItem<'static> {
-    let ds = task.display_status(&state.task_list.idle_panes);
+fn task_list_item(
+    task_list: &TaskListState,
+    permissions: &PermissionStore,
+    task: &crate::task::Task,
+) -> ListItem<'static> {
+    let ds = task.display_status(&task_list.idle_panes);
     let status_char = ds.indicator();
     let color = display_status_color(&ds);
     let dim = if ds.is_dim() {
@@ -25,7 +30,7 @@ fn task_list_item(state: &ScreenState, task: &crate::task::Task) -> ListItem<'st
     let win_num = task
         .tmux_window
         .as_ref()
-        .and_then(|w| state.task_list.window_numbers.get(w))
+        .and_then(|w| task_list.window_numbers.get(w))
         .map(|s| s.as_str())
         .unwrap_or("-");
     let main_line = Line::from(vec![
@@ -55,7 +60,7 @@ fn task_list_item(state: &ScreenState, task: &crate::task::Task) -> ListItem<'st
     ]);
 
     // Permission sub-line if this task has pending permissions
-    if let Some(queue) = state.permissions.get(&task.name)
+    if let Some(queue) = permissions.get(&task.name)
         && let Some(front) = queue.front()
     {
         let extra = queue.len().saturating_sub(1);
@@ -75,7 +80,7 @@ fn task_list_item(state: &ScreenState, task: &crate::task::Task) -> ListItem<'st
     }
 
     // AskUser sub-line if the front permission for this task is an AskUser question (green)
-    if let Some(queue) = state.permissions.get(&task.name)
+    if let Some(queue) = permissions.get(&task.name)
         && let Some(front) = queue.front()
         && front.is_askuser()
     {
@@ -91,18 +96,21 @@ fn task_list_item(state: &ScreenState, task: &crate::task::Task) -> ListItem<'st
     ListItem::new(main_line)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::tui) fn render_task_list(
     frame: &mut ratatui::Frame,
-    state: &mut ScreenState,
+    focus: &Focus,
+    task_list: &mut TaskListState,
+    permissions: &PermissionStore,
+    active_project_name: Option<&str>,
+    total_perm: usize,
+    total_askuser: usize,
+    other_perms: &[(String, usize)],
+    search_query: &str,
     area: Rect,
     focused: bool,
 ) {
-    if state.project_list.show_projects {
-        render_project_list(frame, state, area, focused);
-        return;
-    }
-
-    let searching = matches!(state.current_focus(), Focus::TaskSearch);
+    let searching = matches!(focus, Focus::TaskSearch);
 
     let (list_area, search_area) = if searching {
         let chunks = Layout::default()
@@ -115,19 +123,17 @@ pub(in crate::tui) fn render_task_list(
     };
 
     let items: Vec<ListItem> = if searching {
-        state
-            .task_list
+        task_list
             .filtered_indices
             .iter()
-            .filter_map(|&i| state.task_list.tasks.get(i))
-            .map(|task| task_list_item(state, task))
+            .filter_map(|&i| task_list.tasks.get(i))
+            .map(|task| task_list_item(task_list, permissions, task))
             .collect()
     } else {
-        state
-            .task_list
+        task_list
             .tasks
             .iter()
-            .map(|task| task_list_item(state, task))
+            .map(|task| task_list_item(task_list, permissions, task))
             .collect()
     };
 
@@ -137,20 +143,14 @@ pub(in crate::tui) fn render_task_list(
         Color::DarkGray
     };
 
-    let total_askuser = state.current_project_askuser_count();
-    let total_perm = state
-        .current_project_perm_count()
-        .saturating_sub(total_askuser);
-    let other_perms = state.other_project_perm_counts();
     let mut title_spans: Vec<Span> = Vec::new();
     if searching {
         title_spans.push(Span::raw(format!(
             " Tasks ({}/{}) ",
-            state.task_list.filtered_indices.len(),
-            state.task_list.tasks.len()
+            task_list.filtered_indices.len(),
+            task_list.tasks.len()
         )));
-    } else if let Some(ref name) = state.project_list.active_project {
-        let name = name.as_str();
+    } else if let Some(name) = active_project_name {
         let mut badges = Vec::new();
         if total_perm > 0 {
             badges.push(format!("{total_perm} perm"));
@@ -190,7 +190,7 @@ pub(in crate::tui) fn render_task_list(
     }
     let title = Line::from(title_spans);
 
-    let show_highlight = state.task_list.show_detail || focused;
+    let show_highlight = task_list.show_detail || focused;
 
     let list = List::new(items)
         .block(
@@ -212,21 +212,22 @@ pub(in crate::tui) fn render_task_list(
             "  "
         });
 
-    frame.render_stateful_widget(list, list_area, &mut state.task_list.list_state);
+    frame.render_stateful_widget(list, list_area, &mut task_list.list_state);
 
     if let Some(search_area) = search_area {
-        render_search_bar(frame, &state.search_input.buffer(), search_area);
+        render_search_bar(frame, search_query, search_area);
     }
 }
 
-fn render_project_list(
+pub(in crate::tui) fn render_project_list(
     frame: &mut ratatui::Frame,
-    state: &mut ScreenState,
+    focus: &Focus,
+    project_list: &mut ProjectListState,
+    search_query: &str,
     area: Rect,
     focused: bool,
 ) {
-    let searching =
-        matches!(state.current_focus(), Focus::TaskSearch) && state.project_list.show_projects;
+    let searching = matches!(focus, Focus::TaskSearch) && project_list.show_projects;
 
     let (list_area, search_area) = if searching {
         let chunks = Layout::default()
@@ -259,27 +260,21 @@ fn render_project_list(
     };
 
     let items: Vec<ListItem> = if searching {
-        state
-            .project_list
+        project_list
             .filtered_project_indices
             .iter()
-            .filter_map(|&i| state.project_list.projects.get(i))
+            .filter_map(|&i| project_list.projects.get(i))
             .map(project_item)
             .collect()
     } else {
-        state
-            .project_list
-            .projects
-            .iter()
-            .map(project_item)
-            .collect()
+        project_list.projects.iter().map(project_item).collect()
     };
 
     let title = if searching {
         format!(
             " Projects ({}/{}) ",
-            state.project_list.filtered_project_indices.len(),
-            state.project_list.projects.len()
+            project_list.filtered_project_indices.len(),
+            project_list.projects.len()
         )
     } else {
         " Projects ".to_string()
@@ -299,10 +294,10 @@ fn render_project_list(
         )
         .highlight_symbol("> ");
 
-    frame.render_stateful_widget(list, list_area, &mut state.project_list.list_state);
+    frame.render_stateful_widget(list, list_area, &mut project_list.list_state);
 
     if let Some(search_area) = search_area {
-        render_search_bar(frame, &state.search_input.buffer(), search_area);
+        render_search_bar(frame, search_query, search_area);
     }
 }
 

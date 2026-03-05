@@ -126,5 +126,39 @@ pub(in crate::tui) fn ui(frame: &mut ratatui::Frame, state: &mut ScreenState) {
         state.current_focus(),
         Focus::TaskList | Focus::TaskSearch | Focus::ProjectList
     );
-    task_panel::render_task_list(frame, state, outer[1], focused_task_list);
+    let search_query = state.search_input.buffer();
+    if state.project_list.show_projects {
+        task_panel::render_project_list(
+            frame,
+            &state.focus,
+            &mut state.project_list,
+            &search_query,
+            outer[1],
+            focused_task_list,
+        );
+    } else {
+        let total_askuser = state.current_project_askuser_count();
+        let total_perm = state
+            .current_project_perm_count()
+            .saturating_sub(total_askuser);
+        let other_perms = state.other_project_perm_counts();
+        let active_project_name = state
+            .project_list
+            .active_project
+            .as_ref()
+            .map(|n| n.as_str());
+        task_panel::render_task_list(
+            frame,
+            &state.focus,
+            &mut state.task_list,
+            &state.permissions,
+            active_project_name,
+            total_perm,
+            total_askuser,
+            &other_perms,
+            &search_query,
+            outer[1],
+            focused_task_list,
+        );
+    }
 }
