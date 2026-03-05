@@ -46,30 +46,115 @@ macro_rules! string_newtype {
     };
 }
 
-string_newtype!(TaskId);
+/// Generates a newtype wrapper around `uuid::Uuid` with a cached string
+/// representation. Provides the same API surface as `string_newtype!`
+/// (`as_str()`, `Display`, `From<String>`, equality) but stores a real UUID.
+macro_rules! id_newtype {
+    ($name:ident) => {
+        #[derive(Clone)]
+        pub struct $name {
+            id: uuid::Uuid,
+            repr: String,
+        }
+
+        impl $name {
+            pub fn generate() -> Self {
+                let id = uuid::Uuid::now_v7();
+                Self {
+                    repr: id.to_string(),
+                    id,
+                }
+            }
+
+            pub fn as_str(&self) -> &str {
+                &self.repr
+            }
+
+            pub fn short(&self) -> &str {
+                &self.repr[..8.min(self.repr.len())]
+            }
+        }
+
+        impl fmt::Debug for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.debug_tuple(stringify!($name)).field(&self.id).finish()
+            }
+        }
+
+        impl PartialEq for $name {
+            fn eq(&self, other: &Self) -> bool {
+                self.id == other.id
+            }
+        }
+
+        impl Eq for $name {}
+
+        impl std::hash::Hash for $name {
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                self.id.hash(state);
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(&self.repr)
+            }
+        }
+
+        impl From<String> for $name {
+            fn from(s: String) -> Self {
+                let id = uuid::Uuid::parse_str(&s).unwrap_or_else(|e| {
+                    panic!("invalid UUID for {}: '{}': {e}", stringify!($name), s)
+                });
+                Self { id, repr: s }
+            }
+        }
+
+        impl PartialEq<str> for $name {
+            fn eq(&self, other: &str) -> bool {
+                self.repr == other
+            }
+        }
+
+        impl PartialEq<&str> for $name {
+            fn eq(&self, other: &&str) -> bool {
+                self.repr == *other
+            }
+        }
+
+        impl PartialEq<String> for $name {
+            fn eq(&self, other: &String) -> bool {
+                self.repr == *other
+            }
+        }
+    };
+}
+
+id_newtype!(TaskId);
 string_newtype!(TaskName);
-string_newtype!(ProjectId);
+id_newtype!(ProjectId);
 string_newtype!(ProjectName);
 string_newtype!(PaneId);
 string_newtype!(WindowId);
 
-impl TaskId {
-    pub fn generate() -> Self {
-        Self(uuid::Uuid::now_v7().to_string())
-    }
-
-    pub fn short(&self) -> &str {
-        &self.0[..8.min(self.0.len())]
-    }
+/// Identifies the chat channel a message belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatId {
+    /// ExO-level orchestration chat.
+    Exo,
+    /// Project-management chat scoped to a project.
+    Pm(ProjectId),
+    /// Per-task agent chat.
+    Task(TaskId),
 }
 
-impl ProjectId {
-    pub fn generate() -> Self {
-        Self(uuid::Uuid::now_v7().to_string())
-    }
-
-    pub fn short(&self) -> &str {
-        &self.0[..8.min(self.0.len())]
+impl ChatId {
+    pub fn as_db_key(&self) -> String {
+        match self {
+            Self::Exo => "exo".to_string(),
+            Self::Pm(pid) => format!("pm:{}", pid.as_str()),
+            Self::Task(tid) => tid.as_str().to_string(),
+        }
     }
 }
 

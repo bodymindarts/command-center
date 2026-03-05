@@ -94,7 +94,7 @@ pub enum ExoEvent {
 /// PM event tagged with its project ID so the shared pm_rx channel
 /// can route events to the correct PmContext.
 pub struct PmEvent {
-    pub project_id: String,
+    pub project_id: crate::primitives::ProjectId,
     pub inner: ExoEvent,
 }
 

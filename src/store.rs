@@ -6,7 +6,7 @@ use rusqlite::{Connection, Row};
 use rusqlite_migration::{M, Migrations};
 
 use crate::primitives::{
-    MessageRole, PaneId, ProjectId, ProjectName, TaskId, TaskName, TaskStatus, WindowId,
+    ChatId, MessageRole, PaneId, ProjectId, ProjectName, TaskId, TaskName, TaskStatus, WindowId,
 };
 use crate::task::{Project, Task, TaskMessage};
 
@@ -126,7 +126,7 @@ impl Store {
 
     pub fn complete_task(
         &self,
-        id: &str,
+        id: &TaskId,
         exit_code: i32,
         output: Option<&str>,
     ) -> anyhow::Result<()> {
@@ -139,34 +139,42 @@ impl Store {
         self.conn.execute(
             "UPDATE tasks SET status = ?1, exit_code = ?2, completed_at = ?3, output = ?4
              WHERE id = ?5",
-            (status, exit_code, &now, output, id),
+            (status, exit_code, &now, output, id.as_str()),
         )?;
         Ok(())
     }
 
-    pub fn close_task(&self, id: &str, output: Option<&str>) -> anyhow::Result<bool> {
+    pub fn close_task(&self, id: &TaskId, output: Option<&str>) -> anyhow::Result<bool> {
         let now = Utc::now().to_rfc3339();
         let rows = self.conn.execute(
             "UPDATE tasks SET status = 'closed', completed_at = ?1, output = ?2
              WHERE id = ?3 AND status = 'running'",
-            (&now, output, id),
+            (&now, output, id.as_str()),
         )?;
         Ok(rows > 0)
     }
 
-    pub fn reopen_task(&self, id: &str, pane: &str, window: &str) -> anyhow::Result<bool> {
+    pub fn reopen_task(
+        &self,
+        id: &TaskId,
+        pane: &PaneId,
+        window: &WindowId,
+    ) -> anyhow::Result<bool> {
         let rows = self.conn.execute(
             "UPDATE tasks SET status = 'running', tmux_pane = ?1, tmux_window = ?2, completed_at = NULL
              WHERE id = ?3 AND status != 'running'",
-            (pane, window, id),
+            (pane.as_str(), window.as_str(), id.as_str()),
         )?;
         Ok(rows > 0)
     }
 
-    pub fn delete_task(&self, id: &str) -> anyhow::Result<()> {
+    pub fn delete_task(&self, id: &TaskId) -> anyhow::Result<()> {
+        self.conn.execute(
+            "DELETE FROM task_messages WHERE task_id = ?1",
+            [id.as_str()],
+        )?;
         self.conn
-            .execute("DELETE FROM task_messages WHERE task_id = ?1", [id])?;
-        self.conn.execute("DELETE FROM tasks WHERE id = ?1", [id])?;
+            .execute("DELETE FROM tasks WHERE id = ?1", [id.as_str()])?;
         Ok(())
     }
 
@@ -190,26 +198,26 @@ impl Store {
         Ok(tasks)
     }
 
-    pub fn update_tmux_pane(&self, id: &str, pane_id: &str) -> anyhow::Result<()> {
+    pub fn update_tmux_pane(&self, id: &TaskId, pane_id: &PaneId) -> anyhow::Result<()> {
         self.conn.execute(
             "UPDATE tasks SET tmux_pane = ?1 WHERE id = ?2",
-            (pane_id, id),
+            (pane_id.as_str(), id.as_str()),
         )?;
         Ok(())
     }
 
-    pub fn update_tmux_window(&self, id: &str, window_id: &str) -> anyhow::Result<()> {
+    pub fn update_tmux_window(&self, id: &TaskId, window_id: &WindowId) -> anyhow::Result<()> {
         self.conn.execute(
             "UPDATE tasks SET tmux_window = ?1 WHERE id = ?2",
-            (window_id, id),
+            (window_id.as_str(), id.as_str()),
         )?;
         Ok(())
     }
 
-    pub fn update_session_id(&self, id: &str, session_id: &str) -> anyhow::Result<()> {
+    pub fn update_session_id(&self, id: &TaskId, session_id: &str) -> anyhow::Result<()> {
         self.conn.execute(
             "UPDATE tasks SET session_id = ?1 WHERE id = ?2",
-            (session_id, id),
+            (session_id, id.as_str()),
         )?;
         Ok(())
     }
@@ -232,28 +240,30 @@ impl Store {
 
     pub fn insert_message(
         &self,
-        task_id: &str,
+        chat_id: &ChatId,
         role: MessageRole,
         content: &str,
     ) -> anyhow::Result<()> {
         let id = uuid::Uuid::now_v7().to_string();
         let now = Utc::now().to_rfc3339();
+        let key = chat_id.as_db_key();
         self.conn.execute(
             "INSERT INTO task_messages (id, task_id, role, content, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            (&id, task_id, role.as_str(), content, &now),
+            (&id, &key, role.as_str(), content, &now),
         )?;
         Ok(())
     }
 
-    pub fn list_messages(&self, task_id: &str) -> anyhow::Result<Vec<TaskMessage>> {
+    pub fn list_messages(&self, chat_id: &ChatId) -> anyhow::Result<Vec<TaskMessage>> {
+        let key = chat_id.as_db_key();
         let mut stmt = self.conn.prepare(
             "SELECT id, task_id, role, content, created_at
              FROM task_messages WHERE task_id = ?1 ORDER BY created_at ASC",
         )?;
 
         let messages = stmt
-            .query_map([task_id], |row| {
+            .query_map([&key], |row| {
                 let created_at: String = row.get(4)?;
                 Ok(TaskMessage {
                     id: row.get(0)?,
@@ -272,12 +282,17 @@ impl Store {
 
     // -- Project CRUD --
 
-    pub fn insert_project(&self, id: &str, name: &str, description: &str) -> anyhow::Result<()> {
+    pub fn insert_project(
+        &self,
+        id: &ProjectId,
+        name: &str,
+        description: &str,
+    ) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
         self.conn.execute(
             "INSERT INTO projects (id, name, description, created_at)
              VALUES (?1, ?2, ?3, ?4)",
-            (id, name, description, &now),
+            (id.as_str(), name, description, &now),
         )?;
         Ok(())
     }
@@ -323,9 +338,9 @@ impl Store {
         Ok(projects)
     }
 
-    pub fn delete_project(&self, id: &str) -> anyhow::Result<()> {
+    pub fn delete_project(&self, id: &ProjectId) -> anyhow::Result<()> {
         self.conn
-            .execute("DELETE FROM projects WHERE id = ?1", [id])?;
+            .execute("DELETE FROM projects WHERE id = ?1", [id.as_str()])?;
         Ok(())
     }
 
@@ -334,7 +349,7 @@ impl Store {
     /// When Some, returns tasks belonging to that project.
     pub fn list_visible_tasks_for_project(
         &self,
-        project_id: Option<&str>,
+        project_id: Option<&ProjectId>,
     ) -> anyhow::Result<Vec<Task>> {
         let sql = match project_id {
             Some(_) => format!(
@@ -349,7 +364,7 @@ impl Store {
         let mut stmt = self.conn.prepare(&sql)?;
         let tasks = match project_id {
             Some(pid) => stmt
-                .query_map([pid], row_to_task)?
+                .query_map([pid.as_str()], row_to_task)?
                 .collect::<Result<Vec<_>, _>>()?,
             None => stmt
                 .query_map([], row_to_task)?
@@ -367,9 +382,10 @@ mod tests {
         Store::open_in_memory().unwrap()
     }
 
-    fn insert_running_task(store: &Store, id: &str, name: &str) {
+    fn insert_running_task(store: &Store, name: &str) -> TaskId {
+        let id = TaskId::generate();
         let task = Task {
-            id: TaskId::from(id.to_string()),
+            id: id.clone(),
             name: TaskName::from(name.to_string()),
             skill_name: "noop".to_string(),
             params_json: "{}".to_string(),
@@ -385,17 +401,18 @@ mod tests {
             project_id: None,
         };
         store.insert_task(&task).unwrap();
+        id
     }
 
     #[test]
     fn close_task_sets_status_and_timestamp() {
         let store = test_store();
-        insert_running_task(&store, "aaa", "t1");
+        let id = insert_running_task(&store, "t1");
 
-        let ok = store.close_task("aaa", Some("output text")).unwrap();
+        let ok = store.close_task(&id, Some("output text")).unwrap();
         assert!(ok);
 
-        let task = store.get_task_by_prefix("aaa").unwrap().unwrap();
+        let task = store.get_task_by_prefix(id.as_str()).unwrap().unwrap();
         assert_eq!(task.status, TaskStatus::Closed);
         assert!(task.completed_at.is_some());
         assert_eq!(task.output.as_deref(), Some("output text"));
@@ -404,24 +421,24 @@ mod tests {
     #[test]
     fn close_task_only_affects_running() {
         let store = test_store();
-        insert_running_task(&store, "bbb", "t2");
-        store.complete_task("bbb", 0, None).unwrap();
+        let id = insert_running_task(&store, "t2");
+        store.complete_task(&id, 0, None).unwrap();
 
-        let ok = store.close_task("bbb", None).unwrap();
+        let ok = store.close_task(&id, None).unwrap();
         assert!(!ok);
 
-        let task = store.get_task_by_prefix("bbb").unwrap().unwrap();
+        let task = store.get_task_by_prefix(id.as_str()).unwrap().unwrap();
         assert_eq!(task.status, TaskStatus::Completed);
     }
 
     #[test]
     fn list_active_excludes_non_running() {
         let store = test_store();
-        insert_running_task(&store, "ccc", "active");
-        insert_running_task(&store, "ddd", "done");
-        store.complete_task("ddd", 0, None).unwrap();
-        insert_running_task(&store, "eee", "closed");
-        store.close_task("eee", None).unwrap();
+        let _id1 = insert_running_task(&store, "active");
+        let id2 = insert_running_task(&store, "done");
+        store.complete_task(&id2, 0, None).unwrap();
+        let id3 = insert_running_task(&store, "closed");
+        store.close_task(&id3, None).unwrap();
 
         let active = store.list_active_tasks().unwrap();
         assert_eq!(active.len(), 1);
@@ -434,16 +451,17 @@ mod tests {
     #[test]
     fn insert_and_list_messages() {
         let store = test_store();
-        insert_running_task(&store, "msg-task", "t1");
+        let id = insert_running_task(&store, "t1");
+        let chat = ChatId::Task(id);
 
         store
-            .insert_message("msg-task", MessageRole::System, "initial prompt")
+            .insert_message(&chat, MessageRole::System, "initial prompt")
             .unwrap();
         store
-            .insert_message("msg-task", MessageRole::User, "hello agent")
+            .insert_message(&chat, MessageRole::User, "hello agent")
             .unwrap();
 
-        let messages = store.list_messages("msg-task").unwrap();
+        let messages = store.list_messages(&chat).unwrap();
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, MessageRole::System);
         assert_eq!(messages[0].content, "initial prompt");
@@ -454,26 +472,28 @@ mod tests {
     #[test]
     fn list_messages_empty_for_unknown_task() {
         let store = test_store();
-        let messages = store.list_messages("nonexistent").unwrap();
+        let chat = ChatId::Task(TaskId::generate());
+        let messages = store.list_messages(&chat).unwrap();
         assert!(messages.is_empty());
     }
 
     #[test]
     fn messages_ordered_by_created_at() {
         let store = test_store();
-        insert_running_task(&store, "ord-task", "t1");
+        let id = insert_running_task(&store, "t1");
+        let chat = ChatId::Task(id);
 
         store
-            .insert_message("ord-task", MessageRole::System, "first")
+            .insert_message(&chat, MessageRole::System, "first")
             .unwrap();
         store
-            .insert_message("ord-task", MessageRole::User, "second")
+            .insert_message(&chat, MessageRole::User, "second")
             .unwrap();
         store
-            .insert_message("ord-task", MessageRole::User, "third")
+            .insert_message(&chat, MessageRole::User, "third")
             .unwrap();
 
-        let messages = store.list_messages("ord-task").unwrap();
+        let messages = store.list_messages(&chat).unwrap();
         assert_eq!(messages.len(), 3);
         assert!(messages[0].created_at <= messages[1].created_at);
         assert!(messages[1].created_at <= messages[2].created_at);
@@ -484,12 +504,13 @@ mod tests {
     #[test]
     fn insert_and_get_project_by_name() {
         let store = test_store();
+        let pid = ProjectId::generate();
         store
-            .insert_project("p1", "my-project", "a description")
+            .insert_project(&pid, "my-project", "a description")
             .unwrap();
 
         let project = store.get_project_by_name("my-project").unwrap().unwrap();
-        assert_eq!(project.id, "p1");
+        assert_eq!(project.id, pid);
         assert_eq!(project.name, "my-project");
         assert_eq!(project.description, "a description");
     }
@@ -511,9 +532,12 @@ mod tests {
     #[test]
     fn list_projects_ordered_by_created_at() {
         let store = test_store();
-        store.insert_project("p1", "alpha", "first").unwrap();
-        store.insert_project("p2", "beta", "second").unwrap();
-        store.insert_project("p3", "gamma", "third").unwrap();
+        let p1 = ProjectId::generate();
+        let p2 = ProjectId::generate();
+        let p3 = ProjectId::generate();
+        store.insert_project(&p1, "alpha", "first").unwrap();
+        store.insert_project(&p2, "beta", "second").unwrap();
+        store.insert_project(&p3, "gamma", "third").unwrap();
 
         let projects = store.list_projects().unwrap();
         assert_eq!(projects.len(), 3);
@@ -527,27 +551,35 @@ mod tests {
     #[test]
     fn insert_project_rejects_duplicate_name() {
         let store = test_store();
-        store.insert_project("p1", "dup", "first").unwrap();
-        let err = store.insert_project("p2", "dup", "second");
+        let p1 = ProjectId::generate();
+        let p2 = ProjectId::generate();
+        store.insert_project(&p1, "dup", "first").unwrap();
+        let err = store.insert_project(&p2, "dup", "second");
         assert!(err.is_err());
     }
 
     #[test]
     fn delete_project_removes_it() {
         let store = test_store();
-        store.insert_project("p1", "doomed", "bye").unwrap();
+        let pid = ProjectId::generate();
+        store.insert_project(&pid, "doomed", "bye").unwrap();
         assert!(store.get_project_by_name("doomed").unwrap().is_some());
 
-        store.delete_project("p1").unwrap();
+        store.delete_project(&pid).unwrap();
         assert!(store.get_project_by_name("doomed").unwrap().is_none());
         assert!(store.list_projects().unwrap().is_empty());
     }
 
     // -- list_visible_tasks_for_project tests --
 
-    fn insert_task_with_project(store: &Store, id: &str, name: &str, project_id: Option<&str>) {
+    fn insert_task_with_project(
+        store: &Store,
+        name: &str,
+        project_id: Option<&ProjectId>,
+    ) -> TaskId {
+        let id = TaskId::generate();
         let task = Task {
-            id: TaskId::from(id.to_string()),
+            id: id.clone(),
             name: TaskName::from(name.to_string()),
             skill_name: "noop".to_string(),
             params_json: "{}".to_string(),
@@ -560,16 +592,18 @@ mod tests {
             completed_at: None,
             exit_code: None,
             output: None,
-            project_id: project_id.map(|s| ProjectId::from(s.to_string())),
+            project_id: project_id.cloned(),
         };
         store.insert_task(&task).unwrap();
+        id
     }
 
     #[test]
     fn visible_tasks_null_project_returns_only_unscoped() {
         let store = test_store();
-        insert_task_with_project(&store, "t1", "no-project", None);
-        insert_task_with_project(&store, "t2", "has-project", Some("proj-1"));
+        let proj = ProjectId::generate();
+        insert_task_with_project(&store, "no-project", None);
+        insert_task_with_project(&store, "has-project", Some(&proj));
 
         let visible = store.list_visible_tasks_for_project(None).unwrap();
         assert_eq!(visible.len(), 1);
@@ -579,13 +613,13 @@ mod tests {
     #[test]
     fn visible_tasks_with_project_returns_only_matching() {
         let store = test_store();
-        insert_task_with_project(&store, "t1", "no-project", None);
-        insert_task_with_project(&store, "t2", "proj-a-task", Some("proj-a"));
-        insert_task_with_project(&store, "t3", "proj-b-task", Some("proj-b"));
+        let proj_a = ProjectId::generate();
+        let proj_b = ProjectId::generate();
+        insert_task_with_project(&store, "no-project", None);
+        insert_task_with_project(&store, "proj-a-task", Some(&proj_a));
+        insert_task_with_project(&store, "proj-b-task", Some(&proj_b));
 
-        let visible = store
-            .list_visible_tasks_for_project(Some("proj-a"))
-            .unwrap();
+        let visible = store.list_visible_tasks_for_project(Some(&proj_a)).unwrap();
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].name, "proj-a-task");
     }
@@ -593,9 +627,9 @@ mod tests {
     #[test]
     fn visible_tasks_running_sorted_before_completed() {
         let store = test_store();
-        insert_task_with_project(&store, "t1", "completed-task", None);
-        store.complete_task("t1", 0, None).unwrap();
-        insert_task_with_project(&store, "t2", "running-task", None);
+        let id1 = insert_task_with_project(&store, "completed-task", None);
+        store.complete_task(&id1, 0, None).unwrap();
+        insert_task_with_project(&store, "running-task", None);
 
         let visible = store.list_visible_tasks_for_project(None).unwrap();
         assert_eq!(visible.len(), 2);
@@ -609,10 +643,12 @@ mod tests {
     #[test]
     fn visible_tasks_empty_for_unknown_project() {
         let store = test_store();
-        insert_task_with_project(&store, "t1", "task", Some("proj-a"));
+        let proj = ProjectId::generate();
+        insert_task_with_project(&store, "task", Some(&proj));
 
+        let unknown = ProjectId::generate();
         let visible = store
-            .list_visible_tasks_for_project(Some("proj-z"))
+            .list_visible_tasks_for_project(Some(&unknown))
             .unwrap();
         assert!(visible.is_empty());
     }

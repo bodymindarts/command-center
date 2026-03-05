@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::config::Paths;
-use crate::primitives::{MessageRole, ProjectId, TaskId, TaskName, WindowId};
+use crate::primitives::{ChatId, MessageRole, ProjectId, TaskId, TaskName, WindowId};
 use crate::runtime::{LaunchConfig, Runtime};
 use crate::skill::SkillFile;
 use crate::store::Store;
@@ -68,7 +68,7 @@ pub struct LogOutput {
     pub live_output: Option<String>,
 }
 
-const EXO_CHAT_ID: &str = "exo";
+const EXO_CHAT: ChatId = ChatId::Exo;
 
 pub struct ClatApp<R: Runtime> {
     store: Store,
@@ -122,15 +122,15 @@ impl<R: Runtime> ClatApp<R> {
         let _ = std::fs::write(self.paths.exo_session_file(), session_id);
     }
 
-    pub fn read_pm_session_id(&self, project_id: &str) -> Option<String> {
-        std::fs::read_to_string(self.paths.pm_session_file(project_id))
+    pub fn read_pm_session_id(&self, project_id: &ProjectId) -> Option<String> {
+        std::fs::read_to_string(self.paths.pm_session_file(project_id.as_str()))
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
     }
 
-    pub fn write_pm_session_id(&self, project_id: &str, session_id: &str) {
-        let _ = std::fs::write(self.paths.pm_session_file(project_id), session_id);
+    pub fn write_pm_session_id(&self, project_id: &ProjectId, session_id: &str) {
+        let _ = std::fs::write(self.paths.pm_session_file(project_id.as_str()), session_id);
     }
 
     pub fn spawn(&self, req: SpawnRequest) -> anyhow::Result<SpawnOutput> {
@@ -193,13 +193,13 @@ impl<R: Runtime> ClatApp<R> {
         let session_id = uuid::Uuid::now_v7().to_string();
 
         self.store.insert_task(&task)?;
-        self.store
-            .update_session_id(task.id.as_str(), &session_id)?;
+        self.store.update_session_id(&task.id, &session_id)?;
 
         // Store user prompt message only if Full mode
         if let Some(ref prompt) = user_prompt {
+            let chat = ChatId::Task(task.id.clone());
             self.store
-                .insert_message(task.id.as_str(), MessageRole::System, prompt)?;
+                .insert_message(&chat, MessageRole::System, prompt)?;
         }
 
         // 5. Launch agent
@@ -210,10 +210,8 @@ impl<R: Runtime> ClatApp<R> {
             work_dir: &work_dir,
             user_prompt: user_prompt.as_deref(),
         })?;
-        self.store
-            .update_tmux_pane(task.id.as_str(), result.pane_id.as_str())?;
-        self.store
-            .update_tmux_window(task.id.as_str(), result.window_id.as_str())?;
+        self.store.update_tmux_pane(&task.id, &result.pane_id)?;
+        self.store.update_tmux_window(&task.id, &result.window_id)?;
 
         Ok(SpawnOutput {
             task_id: task.id,
@@ -244,7 +242,7 @@ impl<R: Runtime> ClatApp<R> {
             let _ = self.runtime.kill_tmux_window(window_id.as_str());
         }
 
-        let closed = self.store.close_task(task.id.as_str(), output.as_deref())?;
+        let closed = self.store.close_task(&task.id, output.as_deref())?;
         if !closed {
             bail!("failed to close task {} ({})", task.name, task.id.short());
         }
@@ -262,10 +260,10 @@ impl<R: Runtime> ClatApp<R> {
             if let Some(ref window_id) = task.tmux_window {
                 let _ = self.runtime.kill_tmux_window(window_id.as_str());
             }
-            let _ = self.store.close_task(task.id.as_str(), None);
+            let _ = self.store.close_task(&task.id, None);
         }
 
-        self.store.delete_task(task.id.as_str())
+        self.store.delete_task(&task.id)
     }
 
     pub fn reopen(&self, task_id: &str) -> anyhow::Result<WindowId> {
@@ -301,11 +299,8 @@ impl<R: Runtime> ClatApp<R> {
                 .resume_agent(task.name.as_str(), session_id, work_dir)?
         };
 
-        self.store.reopen_task(
-            task.id.as_str(),
-            result.pane_id.as_str(),
-            result.window_id.as_str(),
-        )?;
+        self.store
+            .reopen_task(&task.id, &result.pane_id, &result.window_id)?;
 
         Ok(result.window_id)
     }
@@ -319,8 +314,9 @@ impl<R: Runtime> ClatApp<R> {
             .ok_or_else(|| anyhow::anyhow!("task {} has no tmux pane", task.id.short()))?;
 
         self.runtime.send_keys_to_pane(pane_id.as_str(), message)?;
+        let chat = ChatId::Task(task.id.clone());
         self.store
-            .insert_message(task.id.as_str(), MessageRole::User, message)?;
+            .insert_message(&chat, MessageRole::User, message)?;
 
         Ok(SendOutput {
             task_id: task.id,
@@ -353,7 +349,8 @@ impl<R: Runtime> ClatApp<R> {
 
     pub fn log(&self, id_prefix: &str) -> anyhow::Result<LogOutput> {
         let task = self.resolve_task(id_prefix)?;
-        let messages = self.store.list_messages(task.id.as_str())?;
+        let chat = ChatId::Task(task.id.clone());
+        let messages = self.store.list_messages(&chat)?;
 
         let live_output = if task.status.is_running() {
             task.tmux_pane
@@ -378,8 +375,7 @@ impl<R: Runtime> ClatApp<R> {
                 .store
                 .get_project_by_name(name)?
                 .ok_or_else(|| anyhow::anyhow!("no project found with name '{name}'"))?;
-            self.store
-                .list_visible_tasks_for_project(Some(project.id.as_str()))
+            self.store.list_visible_tasks_for_project(Some(&project.id))
         } else {
             self.store.list_active_tasks()
         }
@@ -390,12 +386,11 @@ impl<R: Runtime> ClatApp<R> {
     }
 
     pub fn list_visible(&self, project_id: Option<&ProjectId>) -> anyhow::Result<Vec<Task>> {
-        self.store
-            .list_visible_tasks_for_project(project_id.map(|p| p.as_str()))
+        self.store.list_visible_tasks_for_project(project_id)
     }
 
-    pub fn messages(&self, task_id: &str) -> anyhow::Result<Vec<TaskMessage>> {
-        self.store.list_messages(task_id)
+    pub fn messages(&self, chat_id: &ChatId) -> anyhow::Result<Vec<TaskMessage>> {
+        self.store.list_messages(chat_id)
     }
 
     pub fn list_skills(&self) -> anyhow::Result<Vec<SkillSummary>> {
@@ -429,18 +424,18 @@ impl<R: Runtime> ClatApp<R> {
     }
 
     pub fn insert_exo_message(&self, role: MessageRole, content: &str) -> anyhow::Result<()> {
-        self.store.insert_message(EXO_CHAT_ID, role, content)
+        self.store.insert_message(&EXO_CHAT, role, content)
     }
 
     pub fn exo_messages(&self) -> anyhow::Result<Vec<TaskMessage>> {
-        self.store.list_messages(EXO_CHAT_ID)
+        self.store.list_messages(&EXO_CHAT)
     }
 
     // -- Project methods --
 
     pub fn create_project(&self, name: &str, description: &str) -> anyhow::Result<Project> {
         let id = crate::primitives::ProjectId::generate();
-        self.store.insert_project(id.as_str(), name, description)?;
+        self.store.insert_project(&id, name, description)?;
         self.store
             .get_project_by_name(name)?
             .ok_or_else(|| anyhow::anyhow!("failed to retrieve project after insert"))
@@ -455,7 +450,7 @@ impl<R: Runtime> ClatApp<R> {
             .store
             .get_project_by_name(name)?
             .ok_or_else(|| anyhow::anyhow!("no project found with name '{name}'"))?;
-        self.store.delete_project(project.id.as_str())
+        self.store.delete_project(&project.id)
     }
 
     pub fn resolve_project_id(&self, name: &str) -> anyhow::Result<ProjectId> {
@@ -466,23 +461,29 @@ impl<R: Runtime> ClatApp<R> {
         Ok(project.id)
     }
 
-    pub fn pm_messages(&self, project_id: &str) -> anyhow::Result<Vec<TaskMessage>> {
-        let chat_id = format!("pm:{project_id}");
-        self.store.list_messages(&chat_id)
+    pub fn pm_messages(&self, project_id: &ProjectId) -> anyhow::Result<Vec<TaskMessage>> {
+        let chat = ChatId::Pm(project_id.clone());
+        self.store.list_messages(&chat)
     }
 
     pub fn insert_pm_message(
         &self,
-        project_id: &str,
+        project_id: &ProjectId,
         role: MessageRole,
         content: &str,
     ) -> anyhow::Result<()> {
-        let chat_id = format!("pm:{project_id}");
-        self.store.insert_message(&chat_id, role, content)
+        let chat = ChatId::Pm(project_id.clone());
+        self.store.insert_message(&chat, role, content)
     }
 
-    pub fn complete(&self, id: &str, exit_code: i32, output: Option<&str>) -> anyhow::Result<()> {
-        self.store.complete_task(id, exit_code, output)
+    pub fn complete(
+        &self,
+        id_prefix: &str,
+        exit_code: i32,
+        output: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let task = self.resolve_task(id_prefix)?;
+        self.store.complete_task(&task.id, exit_code, output)
     }
 
     fn resolve_task(&self, id_prefix: &str) -> anyhow::Result<Task> {
@@ -770,7 +771,8 @@ prompt = "noop prompt"
         );
 
         // Verify system message recorded
-        let messages = service.store().list_messages(tasks[0].id.as_str()).unwrap();
+        let chat = ChatId::Task(tasks[0].id.clone());
+        let messages = service.store().list_messages(&chat).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, MessageRole::System);
 
@@ -884,10 +886,13 @@ prompt = "noop prompt"
             .get_task_by_prefix(spawned.task_id.as_str())
             .unwrap()
             .unwrap();
-        let messages = service.store().list_messages(task.id.as_str()).unwrap();
-        assert!(messages
-            .iter()
-            .any(|m| m.role == MessageRole::User && m.content == "hello agent"));
+        let chat = ChatId::Task(task.id.clone());
+        let messages = service.store().list_messages(&chat).unwrap();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.role == MessageRole::User && m.content == "hello agent")
+        );
     }
 
     #[test]
@@ -916,8 +921,9 @@ prompt = "noop prompt"
         let service = ClatApp::new(store, runtime, paths);
 
         // Insert a task with no tmux_window directly
+        let task_id = TaskId::generate();
         let task = Task {
-            id: TaskId::from("aaaa-bbbb".to_string()),
+            id: task_id.clone(),
             name: TaskName::from("no-window".to_string()),
             skill_name: "noop".to_string(),
             params_json: "{}".to_string(),
@@ -934,7 +940,7 @@ prompt = "noop prompt"
         };
         service.store().insert_task(&task).unwrap();
 
-        let err = service.goto("aaaa-bbb");
+        let err = service.goto(task_id.as_str());
         assert!(err.is_err());
         assert!(err.unwrap_err().to_string().contains("no tmux window"));
     }
@@ -1338,6 +1344,7 @@ prompt = "deploy to {{ env }}"
         let service = ClatApp::new(store, runtime, paths);
 
         // Spawn two tasks: one with project, one without
+        let proj_id = ProjectId::generate();
         let out1 = service
             .spawn(SpawnRequest {
                 task_name: "proj-task",
@@ -1348,7 +1355,7 @@ prompt = "deploy to {{ env }}"
                     branch: None,
                 },
                 prompt_mode: PromptMode::Full,
-                project_id: Some(ProjectId::from("proj-1".to_string())),
+                project_id: Some(proj_id.clone()),
             })
             .unwrap();
         let out2 = spawn_test_task(&service); // no project
@@ -1358,8 +1365,7 @@ prompt = "deploy to {{ env }}"
         assert_eq!(unscoped.len(), 1);
         assert_eq!(unscoped[0].id, out2.task_id);
 
-        // list_visible(Some("proj-1")) should only return the project task
-        let proj_id = crate::primitives::ProjectId::from("proj-1".to_string());
+        // list_visible(Some(proj_id)) should only return the project task
         let scoped = service.list_visible(Some(&proj_id)).unwrap();
         assert_eq!(scoped.len(), 1);
         assert_eq!(scoped[0].id, out1.task_id);

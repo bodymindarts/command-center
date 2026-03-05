@@ -23,6 +23,7 @@ use ratatui::backend::CrosstermBackend;
 
 use crate::app::ClatApp;
 use crate::permission::PermissionRequest;
+use crate::primitives::ProjectId;
 use crate::runtime::Runtime;
 use chat::ExoState;
 use claude::{EXO_SYSTEM_PROMPT, ExoEvent, ExoSession, PmEvent};
@@ -38,10 +39,10 @@ struct PmContext {
 }
 
 impl PmContext {
-    fn new(project_id: &str, pm_tx: &mpsc::Sender<PmEvent>) -> Self {
+    fn new(project_id: &ProjectId, pm_tx: &mpsc::Sender<PmEvent>) -> Self {
         let cancel = Arc::new(AtomicBool::new(false));
         let (bridge_tx, bridge_rx) = mpsc::channel::<ExoEvent>();
-        let pid = project_id.to_string();
+        let pid = project_id.clone();
         let pm_tx = pm_tx.clone();
         std::thread::spawn(move || {
             for event in bridge_rx {
@@ -66,7 +67,7 @@ impl PmContext {
 }
 
 /// Cancel and remove a specific project's PM context.
-fn cancel_pm_context(pm_contexts: &mut HashMap<String, PmContext>, project_id: &str) {
+fn cancel_pm_context(pm_contexts: &mut HashMap<ProjectId, PmContext>, project_id: &ProjectId) {
     if let Some(ctx) = pm_contexts.remove(project_id) {
         ctx.cancel.store(true, Ordering::Relaxed);
     }
@@ -74,10 +75,10 @@ fn cancel_pm_context(pm_contexts: &mut HashMap<String, PmContext>, project_id: &
 
 /// Ensure a PmContext exists for the project, creating and loading history if needed.
 fn ensure_pm_context<R: Runtime>(
-    pm_contexts: &mut HashMap<String, PmContext>,
+    pm_contexts: &mut HashMap<ProjectId, PmContext>,
     app: &mut Dashboard,
     service: &ClatApp<R>,
-    project_id: &str,
+    project_id: &ProjectId,
     pm_tx: &mpsc::Sender<PmEvent>,
 ) {
     if !pm_contexts.contains_key(project_id) {
@@ -87,7 +88,7 @@ fn ensure_pm_context<R: Runtime>(
             let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
             ctx.state.load_history(recent.into_iter().rev().collect());
         }
-        pm_contexts.insert(project_id.to_string(), ctx);
+        pm_contexts.insert(project_id.clone(), ctx);
     }
     if let Ok(msgs) = service.pm_messages(project_id) {
         app.pm_messages = msgs;
@@ -146,7 +147,7 @@ pub fn run<R: Runtime>(
     );
 
     // PM (project manager) contexts: one per project, keyed by project ID
-    let mut pm_contexts: HashMap<String, PmContext> = HashMap::new();
+    let mut pm_contexts: HashMap<ProjectId, PmContext> = HashMap::new();
     let (pm_tx, pm_rx) = mpsc::channel::<PmEvent>();
 
     // Permission socket listener
@@ -279,7 +280,7 @@ fn run_loop<R: Runtime>(
     app: &mut Dashboard,
     exo: &mut ExoState,
     exo_session: &mut ExoSession,
-    pm_contexts: &mut HashMap<String, PmContext>,
+    pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
     service: &ClatApp<R>,
     rx: &mpsc::Receiver<ExoEvent>,
@@ -316,7 +317,7 @@ fn run_loop<R: Runtime>(
         let active_pm_state = app
             .active_project_id
             .as_ref()
-            .and_then(|pid| pm_contexts.get(pid.as_str()))
+            .and_then(|pid| pm_contexts.get(pid))
             .map(|ctx| &ctx.state);
         terminal.draw(|frame| widgets::ui(frame, app, exo, active_pm_state))?;
 

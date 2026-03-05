@@ -8,7 +8,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::app::{ClatApp, PromptMode, SpawnRequest, WorkDirMode};
 use crate::permission::PermissionRequest;
-use crate::primitives::{MessageRole, TaskName};
+use crate::primitives::{ChatId, MessageRole, ProjectId, TaskName};
 use crate::runtime::Runtime;
 
 use super::PmContext;
@@ -191,7 +191,7 @@ pub(super) fn handle_global_keys<R: Runtime>(
     app: &mut Dashboard,
     key: KeyEvent,
     service: &ClatApp<R>,
-    pm_contexts: &mut HashMap<String, PmContext>,
+    pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
 ) -> bool {
@@ -282,7 +282,7 @@ pub(super) fn handle_global_keys<R: Runtime>(
 fn handle_cycle_permissions<R: Runtime>(
     app: &mut Dashboard,
     service: &ClatApp<R>,
-    pm_contexts: &mut HashMap<String, PmContext>,
+    pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
 ) -> bool {
     let names = app.permissions.task_names_with_pending();
@@ -339,7 +339,7 @@ fn handle_cycle_permissions<R: Runtime>(
                     app.show_detail = true;
                     app.detail_scroll = 0;
                 }
-                super::ensure_pm_context(pm_contexts, app, service, pid.as_str(), pm_tx);
+                super::ensure_pm_context(pm_contexts, app, service, &pid, pm_tx);
             } else {
                 app.switch_to_project(None);
                 if let Ok(tasks) = service.list_visible(None) {
@@ -389,7 +389,7 @@ fn handle_askuser_select(
 fn handle_goto_pm<R: Runtime>(
     app: &mut Dashboard,
     service: &ClatApp<R>,
-    pm_contexts: &mut HashMap<String, PmContext>,
+    pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
 ) {
     // If in a project's task detail, go back to PM chat
@@ -426,7 +426,7 @@ fn handle_goto_pm<R: Runtime>(
                 app.show_detail = true;
                 app.detail_scroll = 0;
             }
-            super::ensure_pm_context(pm_contexts, app, service, id.as_str(), pm_tx);
+            super::ensure_pm_context(pm_contexts, app, service, &id, pm_tx);
         }
     // If in a project PM view, cycle to next project
     } else if app.active_project_id.is_some() && !app.show_detail {
@@ -446,7 +446,7 @@ fn handle_goto_pm<R: Runtime>(
             if let Ok(tasks) = service.list_visible(Some(&next_id)) {
                 app.finish_project_switch(tasks);
             }
-            super::ensure_pm_context(pm_contexts, app, service, next_id.as_str(), pm_tx);
+            super::ensure_pm_context(pm_contexts, app, service, &next_id, pm_tx);
         }
     }
 }
@@ -459,7 +459,7 @@ pub(super) fn handle_focus_key<R: Runtime>(
     service: &ClatApp<R>,
     exo: &mut ExoState,
     exo_session: &mut ExoSession,
-    pm_contexts: &mut HashMap<String, PmContext>,
+    pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
 ) {
     match &app.focus {
@@ -676,7 +676,7 @@ fn handle_project_list_key<R: Runtime>(
     app: &mut Dashboard,
     key: KeyEvent,
     service: &ClatApp<R>,
-    pm_contexts: &mut HashMap<String, PmContext>,
+    pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
 ) {
     match key.code {
@@ -696,7 +696,7 @@ fn handle_project_list_key<R: Runtime>(
                 if let Ok(tasks) = service.list_visible(Some(&project_id)) {
                     app.finish_project_switch(tasks);
                 }
-                super::ensure_pm_context(pm_contexts, app, service, project_id.as_str(), pm_tx);
+                super::ensure_pm_context(pm_contexts, app, service, &project_id, pm_tx);
             }
         }
         KeyCode::Char('n') => {
@@ -871,7 +871,7 @@ fn handle_chat_input_key<R: Runtime>(
     service: &ClatApp<R>,
     exo: &mut ExoState,
     exo_session: &mut ExoSession,
-    pm_contexts: &mut HashMap<String, PmContext>,
+    pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
 ) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -881,7 +881,7 @@ fn handle_chat_input_key<R: Runtime>(
                 exo.finish_streaming();
             }
             if let Some(ref pid) = app.active_project_id
-                && let Some(ctx) = pm_contexts.get_mut(pid.as_str())
+                && let Some(ctx) = pm_contexts.get_mut(pid)
                 && ctx.state.streaming
             {
                 ctx.state.finish_streaming();
@@ -936,7 +936,7 @@ fn handle_chat_enter<R: Runtime>(
     service: &ClatApp<R>,
     exo: &mut ExoState,
     exo_session: &mut ExoSession,
-    pm_contexts: &mut HashMap<String, PmContext>,
+    pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
 ) {
     app.chat_scroll = 0;
@@ -944,30 +944,25 @@ fn handle_chat_enter<R: Runtime>(
         return;
     }
     if let Some(ref pid) = app.active_project_id {
-        let pid_str = pid.as_str().to_string();
-        if !pm_contexts.contains_key(&pid_str) {
-            pm_contexts.insert(pid_str.clone(), PmContext::new(&pid_str, pm_tx));
+        if !pm_contexts.contains_key(pid) {
+            pm_contexts.insert(pid.clone(), PmContext::new(pid, pm_tx));
         }
-        let ctx = pm_contexts.get_mut(&pid_str).unwrap();
+        let ctx = pm_contexts.get_mut(pid).unwrap();
         if ctx.state.streaming {
             ctx.state.finish_streaming();
             if let Some(msg) = ctx.state.messages.last()
                 && matches!(msg.role, MessageRole::Assistant)
                 && msg.has_text()
             {
-                let _ = service.insert_pm_message(
-                    &pid_str,
-                    MessageRole::Assistant,
-                    &msg.text_content(),
-                );
+                let _ = service.insert_pm_message(pid, MessageRole::Assistant, &msg.text_content());
             }
         }
         let msg = app.input.take();
-        let _ = service.insert_pm_message(&pid_str, MessageRole::User, &msg);
+        let _ = service.insert_pm_message(pid, MessageRole::User, &msg);
         ctx.state.add_user_message(msg.clone());
         if ctx.session.is_none() {
             let sid = service
-                .read_pm_session_id(&pid_str)
+                .read_pm_session_id(pid)
                 .or_else(|| ctx.state.session_id.clone());
             let proj_name = app
                 .active_project
@@ -1120,7 +1115,7 @@ fn handle_confirm_close_project_key<R: Runtime>(
     app: &mut Dashboard,
     key: KeyEvent,
     service: &ClatApp<R>,
-    pm_contexts: &mut HashMap<String, PmContext>,
+    pm_contexts: &mut HashMap<ProjectId, PmContext>,
 ) {
     match key.code {
         KeyCode::Char('y') => {
@@ -1128,7 +1123,7 @@ fn handle_confirm_close_project_key<R: Runtime>(
             app.switch_to_project(None);
             app.focus = Focus::TaskList;
             if let Some(pid) = closed_pid {
-                super::cancel_pm_context(pm_contexts, pid.as_str());
+                super::cancel_pm_context(pm_contexts, &pid);
             }
             if let Ok(tasks) = service.list_visible(None) {
                 app.finish_project_switch(tasks);
@@ -1249,7 +1244,7 @@ pub(super) fn drain_exo_events<R: Runtime>(
 }
 
 pub(super) fn drain_pm_events<R: Runtime>(
-    pm_contexts: &mut HashMap<String, PmContext>,
+    pm_contexts: &mut HashMap<ProjectId, PmContext>,
     service: &ClatApp<R>,
     pm_rx: &mpsc::Receiver<PmEvent>,
     app: &mut Dashboard,
@@ -1259,8 +1254,7 @@ pub(super) fn drain_pm_events<R: Runtime>(
         let Some(ctx) = pm_contexts.get_mut(&project_id) else {
             continue;
         };
-        let is_active_pm =
-            app.active_project_id.as_ref().map(|p| p.as_str()) == Some(project_id.as_str());
+        let is_active_pm = app.active_project_id.as_ref() == Some(&project_id);
         match pm_ev.inner {
             ExoEvent::TextDelta(text) => {
                 if ctx.state.streaming {
@@ -1542,10 +1536,10 @@ pub(super) fn tick_refresh<R: Runtime>(
     app.window_numbers = crate::runtime::tmux_window_numbers();
     // Update selected messages and live output for detail view
     if let Some(task) = app.selected_task() {
-        let task_id = task.id.as_str().to_string();
+        let chat = ChatId::Task(task.id.clone());
         let is_running = task.status.is_running();
         let pane = task.tmux_pane.clone();
-        if let Ok(messages) = service.messages(&task_id) {
+        if let Ok(messages) = service.messages(&chat) {
             app.selected_messages = messages;
         }
         if is_running {
@@ -1562,7 +1556,7 @@ pub(super) fn tick_refresh<R: Runtime>(
     }
     // Refresh PM messages for active project
     if let Some(ref pid) = app.active_project_id {
-        if let Ok(messages) = service.pm_messages(pid.as_str()) {
+        if let Ok(messages) = service.pm_messages(pid) {
             app.pm_messages = messages;
         }
     } else {
