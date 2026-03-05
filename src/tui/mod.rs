@@ -72,7 +72,7 @@ fn cancel_project_context(
     if let Some(ctx) = project_contexts.remove(project_id) {
         ctx.cancel.store(true, Ordering::Relaxed);
     }
-    state.project_chats.remove(project_id);
+    state.chat_view.project_chats.remove(project_id);
 }
 
 /// Ensure a ProjectContext exists for the project, creating and loading history if needed.
@@ -86,6 +86,7 @@ fn ensure_project_context<R: Runtime>(
     if !project_contexts.contains_key(project_id) {
         let ctx = ProjectContext::new(project_id, project_tx);
         let chat = state
+            .chat_view
             .project_chats
             .entry(project_id.clone())
             .or_insert_with(chat::AssistantChat::new);
@@ -131,20 +132,21 @@ pub fn run<R: Runtime>(
     let tasks = app.list_visible(None)?;
     let mut state = ScreenState::new(tasks);
     if let Some(sid) = resume_session {
-        state.exo_chat.session_id = Some(sid.to_string());
+        state.chat_view.exo_chat.session_id = Some(sid.to_string());
     } else if let Some(sid) = app.read_exo_session_id() {
-        state.exo_chat.session_id = Some(sid);
+        state.chat_view.exo_chat.session_id = Some(sid);
     }
     if let Ok(messages) = app.exo_messages() {
         let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
         state
+            .chat_view
             .exo_chat
             .load_history(recent.into_iter().rev().collect());
     }
     let (tx, rx) = mpsc::channel::<AssistantEvent>();
     let cancel = Arc::new(AtomicBool::new(false));
     let mut exo_session = AssistantSession::new(
-        state.exo_chat.session_id.as_deref(),
+        state.chat_view.exo_chat.session_id.as_deref(),
         Arc::clone(&cancel),
         tx.clone(),
         EXO_SYSTEM_PROMPT,
@@ -311,8 +313,8 @@ fn run_loop<R: Runtime>(
         .collect();
 
     loop {
-        let any_project_streaming = state.project_chats.values().any(|c| c.streaming);
-        let tick_rate = if state.exo_chat.streaming || any_project_streaming {
+        let any_project_streaming = state.chat_view.project_chats.values().any(|c| c.streaming);
+        let tick_rate = if state.chat_view.exo_chat.streaming || any_project_streaming {
             Duration::from_millis(50)
         } else {
             Duration::from_millis(500)

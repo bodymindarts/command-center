@@ -84,7 +84,7 @@ pub(in crate::tui) fn render_chat(frame: &mut ratatui::Frame, state: &ScreenStat
         }
     } else if let Some(ref pid) = state.project_list.active_project_id {
         // Render PM chat
-        if let Some(pm) = state.project_chats.get(pid) {
+        if let Some(pm) = state.chat_view.project_chats.get(pid) {
             render_chat_messages(&mut lines, &pm.messages, "PM", pm.streaming);
         }
         if lines.is_empty() {
@@ -97,9 +97,9 @@ pub(in crate::tui) fn render_chat(frame: &mut ratatui::Frame, state: &ScreenStat
         // Render ExO chat
         render_chat_messages(
             &mut lines,
-            &state.exo_chat.messages,
+            &state.chat_view.exo_chat.messages,
             "ExO",
-            state.exo_chat.streaming,
+            state.chat_view.exo_chat.streaming,
         );
         if lines.is_empty() {
             lines.push(Line::from(Span::styled(
@@ -126,7 +126,7 @@ pub(in crate::tui) fn render_chat(frame: &mut ratatui::Frame, state: &ScreenStat
         .sum();
 
     let max_scroll = rendered_lines.saturating_sub(inner_height) as u16;
-    let effective_scroll = state.chat_scroll.min(max_scroll);
+    let effective_scroll = state.chat_view.chat_scroll.min(max_scroll);
     let scroll = max_scroll.saturating_sub(effective_scroll);
 
     let chat = Paragraph::new(lines)

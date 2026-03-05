@@ -283,24 +283,70 @@ impl ProjectListState {
     }
 }
 
+// ── Chat view component ─────────────────────────────────────────────
+
+pub struct ChatViewState {
+    /// Per-chat input buffers, saved/restored on focus changes.
+    pub chat_buffers: HashMap<ChatId, String>,
+    pub chat_scroll: u16,
+    pub chat_viewport_height: u16,
+    /// ExO assistant chat state (messages, streaming flag).
+    pub exo_chat: AssistantChat,
+    /// Per-project PM assistant chat states.
+    pub project_chats: HashMap<ProjectId, AssistantChat>,
+}
+
+impl ChatViewState {
+    fn new() -> Self {
+        Self {
+            chat_buffers: HashMap::new(),
+            chat_scroll: 0,
+            chat_viewport_height: 0,
+            exo_chat: AssistantChat::new(),
+            project_chats: HashMap::new(),
+        }
+    }
+
+    pub fn update_chat_viewport_height(&mut self, area_height: u16) {
+        self.chat_viewport_height = area_height.saturating_sub(2);
+    }
+
+    pub fn scroll_chat_up(&mut self) {
+        let half = (self.chat_viewport_height / 2).max(1);
+        self.chat_scroll = self.chat_scroll.saturating_add(half);
+    }
+
+    pub fn scroll_chat_down(&mut self) {
+        let half = (self.chat_viewport_height / 2).max(1);
+        self.chat_scroll = self.chat_scroll.saturating_sub(half);
+    }
+}
+
+/// Determine which chat buffer corresponds to the current view.
+fn current_chat_id(tl: &TaskListState, pl: &ProjectListState) -> ChatId {
+    if tl.show_detail {
+        tl.selected_task()
+            .map(|t| ChatId::Task(t.id.clone()))
+            .unwrap_or(ChatId::Exo)
+    } else if let Some(ref pid) = pl.active_project_id {
+        ChatId::Project(pid.clone())
+    } else {
+        ChatId::Exo
+    }
+}
+
 // ── Top-level screen state ──────────────────────────────────────────
 
 pub struct ScreenState {
     pub task_list: TaskListState,
     pub project_list: ProjectListState,
+    pub chat_view: ChatViewState,
     pub should_quit: bool,
     pub focus: Focus,
     pub input: InputState,
     pub permissions: PermissionStore,
-    pub chat_buffers: HashMap<ChatId, String>,
-    pub chat_scroll: u16,
-    pub chat_viewport_height: u16,
     /// Transient error message shown in the prompt bar. Cleared on next keypress.
     pub status_error: Option<String>,
-    /// ExO assistant chat state (messages, streaming flag).
-    pub exo_chat: AssistantChat,
-    /// Per-project PM assistant chat states.
-    pub project_chats: HashMap<ProjectId, AssistantChat>,
     /// Input state for the task search filter.
     pub search_input: InputState,
     /// Global map of task_name → project_id for all running tasks.
@@ -317,16 +363,12 @@ impl ScreenState {
         Self {
             task_list: TaskListState::new(tasks),
             project_list: ProjectListState::new(),
+            chat_view: ChatViewState::new(),
             should_quit: false,
             focus: Focus::ChatInput,
             input: InputState::new(),
             permissions: PermissionStore::new(),
-            chat_buffers: HashMap::new(),
-            chat_scroll: 0,
-            chat_viewport_height: 0,
             status_error: None,
-            exo_chat: AssistantChat::new(),
-            project_chats: HashMap::new(),
             search_input: InputState::new(),
             global_task_projects: HashMap::new(),
             global_task_work_dirs: Vec::new(),
@@ -391,20 +433,18 @@ impl ScreenState {
         self.focus = Focus::TaskList;
     }
 
-    // ── Chat scroll ─────────────────────────────────────────────────
+    // ── Delegates to ChatViewState ─────────────────────────────────
 
     pub fn update_chat_viewport_height(&mut self, area_height: u16) {
-        self.chat_viewport_height = area_height.saturating_sub(2);
+        self.chat_view.update_chat_viewport_height(area_height);
     }
 
     pub fn scroll_chat_up(&mut self) {
-        let half = (self.chat_viewport_height / 2).max(1);
-        self.chat_scroll = self.chat_scroll.saturating_add(half);
+        self.chat_view.scroll_chat_up();
     }
 
     pub fn scroll_chat_down(&mut self) {
-        let half = (self.chat_viewport_height / 2).max(1);
-        self.chat_scroll = self.chat_scroll.saturating_sub(half);
+        self.chat_view.scroll_chat_down();
     }
 
     // ── Permissions ─────────────────────────────────────────────────
@@ -462,31 +502,24 @@ impl ScreenState {
 
     // ── Input save/restore ──────────────────────────────────────────
 
-    fn current_chat_id(&self) -> ChatId {
-        if self.task_list.show_detail {
-            self.selected_task()
-                .map(|t| ChatId::Task(t.id.clone()))
-                .unwrap_or(ChatId::Exo)
-        } else if let Some(ref pid) = self.project_list.active_project_id {
-            ChatId::Project(pid.clone())
-        } else {
-            ChatId::Exo
-        }
-    }
-
     pub fn save_current_input(&mut self) {
-        let chat_id = self.current_chat_id();
+        let chat_id = current_chat_id(&self.task_list, &self.project_list);
         let text = self.input.buffer();
         if text.is_empty() {
-            self.chat_buffers.remove(&chat_id);
+            self.chat_view.chat_buffers.remove(&chat_id);
         } else {
-            self.chat_buffers.insert(chat_id, text);
+            self.chat_view.chat_buffers.insert(chat_id, text);
         }
     }
 
     pub fn restore_input(&mut self) {
-        let chat_id = self.current_chat_id();
-        let text = self.chat_buffers.get(&chat_id).cloned().unwrap_or_default();
+        let chat_id = current_chat_id(&self.task_list, &self.project_list);
+        let text = self
+            .chat_view
+            .chat_buffers
+            .get(&chat_id)
+            .cloned()
+            .unwrap_or_default();
         self.input.take();
         self.input.set(&text);
     }
@@ -502,7 +535,7 @@ impl ScreenState {
         self.task_list.show_detail = true;
         self.task_list.detail_scroll = 0;
         self.focus = Focus::ChatInput;
-        self.chat_scroll = 0;
+        self.chat_view.chat_scroll = 0;
         self.restore_input();
     }
 
@@ -512,7 +545,7 @@ impl ScreenState {
     /// `save_current_input()` **before** this method.
     pub fn close_task_detail(&mut self) {
         self.task_list.show_detail = false;
-        self.chat_scroll = 0;
+        self.chat_view.chat_scroll = 0;
         self.focus = Focus::ChatInput;
         self.restore_input();
     }
@@ -522,7 +555,7 @@ impl ScreenState {
     /// within bounds, `false` if it wrapped past the edge (detail is hidden).
     pub fn navigate_to_adjacent_task(&mut self, forward: bool) -> bool {
         self.save_current_input();
-        self.chat_scroll = 0;
+        self.chat_view.chat_scroll = 0;
         let current = self.task_list.list_state.selected().unwrap_or(0);
         let in_bounds = if forward {
             if current + 1 < self.task_list.tasks.len() {
@@ -577,7 +610,7 @@ impl ScreenState {
         self.project_list.show_projects = false;
         self.task_list.show_detail = false;
         self.focus = Focus::ChatInput;
-        self.chat_scroll = 0;
+        self.chat_view.chat_scroll = 0;
 
         // Load tasks and restore input
         self.refresh_tasks(tasks);
@@ -841,7 +874,7 @@ mod tests {
         let mut s = state_with_tasks(3);
         s.task_list.show_detail = false;
         s.task_list.detail_scroll = 99;
-        s.chat_scroll = 42;
+        s.chat_view.chat_scroll = 42;
         s.focus = Focus::TaskList;
 
         s.open_task_detail(2);
@@ -849,7 +882,7 @@ mod tests {
         assert!(s.task_list.show_detail);
         assert_eq!(s.task_list.list_state.selected(), Some(2));
         assert_eq!(s.task_list.detail_scroll, 0);
-        assert_eq!(s.chat_scroll, 0);
+        assert_eq!(s.chat_view.chat_scroll, 0);
         assert!(matches!(s.focus, Focus::ChatInput));
     }
 
@@ -859,13 +892,13 @@ mod tests {
     fn close_task_detail_hides_and_resets() {
         let mut s = state_with_tasks(2);
         s.task_list.show_detail = true;
-        s.chat_scroll = 10;
+        s.chat_view.chat_scroll = 10;
         s.focus = Focus::TaskList;
 
         s.close_task_detail();
 
         assert!(!s.task_list.show_detail);
-        assert_eq!(s.chat_scroll, 0);
+        assert_eq!(s.chat_view.chat_scroll, 0);
         assert!(matches!(s.focus, Focus::ChatInput));
     }
 

@@ -711,23 +711,23 @@ fn handle_chat_input_key<R: Runtime>(
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Esc => {
-            if state.exo_chat.streaming {
-                state.exo_chat.finish_streaming();
+            if state.chat_view.exo_chat.streaming {
+                state.chat_view.exo_chat.finish_streaming();
             }
             if let Some(ref pid) = state.project_list.active_project_id
-                && let Some(chat) = state.project_chats.get_mut(pid)
+                && let Some(chat) = state.chat_view.project_chats.get_mut(pid)
                 && chat.streaming
             {
                 chat.finish_streaming();
             }
-            state.chat_scroll = 0;
+            state.chat_view.chat_scroll = 0;
         }
         KeyCode::Tab => {
             state.save_current_input();
             if !state.task_list.tasks.is_empty() {
                 state.open_task_detail(0);
             } else {
-                state.chat_scroll = 0;
+                state.chat_view.chat_scroll = 0;
                 state.restore_input();
             }
         }
@@ -736,7 +736,7 @@ fn handle_chat_input_key<R: Runtime>(
             if !state.task_list.tasks.is_empty() {
                 state.open_task_detail(state.task_list.tasks.len() - 1);
             } else {
-                state.chat_scroll = 0;
+                state.chat_view.chat_scroll = 0;
                 state.restore_input();
             }
         }
@@ -770,7 +770,7 @@ fn handle_chat_enter<R: Runtime>(
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
     project_tx: &mpsc::Sender<ProjectEvent>,
 ) {
-    state.chat_scroll = 0;
+    state.chat_view.chat_scroll = 0;
     if state.input.is_empty() {
         return;
     }
@@ -779,6 +779,7 @@ fn handle_chat_enter<R: Runtime>(
             project_contexts.insert(pid.clone(), ProjectContext::new(&pid, project_tx));
         }
         let chat = state
+            .chat_view
             .project_chats
             .entry(pid.clone())
             .or_insert_with(super::chat::AssistantChat::new);
@@ -819,12 +820,12 @@ fn handle_chat_enter<R: Runtime>(
         }
         if let Some(sess) = &mut ctx.session {
             sess.send_message(&msg, chat.session_id.as_deref());
-            state.chat_scroll = 0;
+            state.chat_view.chat_scroll = 0;
         }
     } else {
-        if state.exo_chat.streaming {
-            state.exo_chat.finish_streaming();
-            if let Some(msg) = state.exo_chat.messages.last()
+        if state.chat_view.exo_chat.streaming {
+            state.chat_view.exo_chat.finish_streaming();
+            if let Some(msg) = state.chat_view.exo_chat.messages.last()
                 && matches!(msg.role, MessageRole::Assistant)
                 && msg.has_text()
             {
@@ -833,9 +834,9 @@ fn handle_chat_enter<R: Runtime>(
         }
         let msg = state.input.take();
         let _ = app.insert_exo_message(MessageRole::User, &msg);
-        state.exo_chat.add_user_message(msg.clone());
-        exo_session.send_message(&msg, state.exo_chat.session_id.as_deref());
-        state.chat_scroll = 0;
+        state.chat_view.exo_chat.add_user_message(msg.clone());
+        exo_session.send_message(&msg, state.chat_view.exo_chat.session_id.as_deref());
+        state.chat_view.chat_scroll = 0;
     }
 }
 
@@ -1011,27 +1012,27 @@ pub(super) fn drain_exo_events<R: Runtime>(
     while let Ok(ev) = rx.try_recv() {
         match ev {
             AssistantEvent::TextDelta(text) => {
-                if state.exo_chat.streaming {
-                    state.exo_chat.append_text(&text);
-                    state.chat_scroll = 0;
+                if state.chat_view.exo_chat.streaming {
+                    state.chat_view.exo_chat.append_text(&text);
+                    state.chat_view.chat_scroll = 0;
                     if let Some(tx) = tg_tx {
                         let _ = tx.send(telegram::TgOutbound::ExoTextDelta { text: text.clone() });
                     }
                 }
             }
             AssistantEvent::ToolStart(name) => {
-                if state.exo_chat.streaming {
-                    state.exo_chat.add_tool_activity(name);
+                if state.chat_view.exo_chat.streaming {
+                    state.chat_view.exo_chat.add_tool_activity(name);
                 }
             }
             AssistantEvent::SessionId(id) => {
                 app.write_exo_session_id(&id);
-                state.exo_chat.session_id = Some(id.clone());
+                state.chat_view.exo_chat.session_id = Some(id.clone());
                 exo_session.set_session_id(id);
             }
             AssistantEvent::TurnDone => {
-                state.exo_chat.finish_streaming();
-                if let Some(msg) = state.exo_chat.messages.last()
+                state.chat_view.exo_chat.finish_streaming();
+                if let Some(msg) = state.chat_view.exo_chat.messages.last()
                     && matches!(msg.role, MessageRole::Assistant)
                     && msg.has_text()
                 {
@@ -1042,18 +1043,19 @@ pub(super) fn drain_exo_events<R: Runtime>(
                 }
             }
             AssistantEvent::ProcessExited => {
-                state.exo_chat.had_process_error = false;
+                state.chat_view.exo_chat.had_process_error = false;
                 exo_session.mark_exited();
-                if state.exo_chat.streaming {
+                if state.chat_view.exo_chat.streaming {
                     state
+                        .chat_view
                         .exo_chat
                         .add_error("Claude process exited unexpectedly");
                 }
             }
             AssistantEvent::Error(e) => {
-                state.exo_chat.had_process_error = true;
-                state.exo_chat.add_error(&e);
-                if let Some(msg) = state.exo_chat.messages.last()
+                state.chat_view.exo_chat.had_process_error = true;
+                state.chat_view.exo_chat.add_error(&e);
+                if let Some(msg) = state.chat_view.exo_chat.messages.last()
                     && matches!(msg.role, MessageRole::Assistant)
                     && msg.has_text()
                 {
@@ -1073,7 +1075,7 @@ pub(super) fn drain_project_events<R: Runtime>(
     while let Ok(ev) = project_rx.try_recv() {
         let project_id = ev.project_id;
         let is_active_project = state.project_list.active_project_id.as_ref() == Some(&project_id);
-        let Some(chat) = state.project_chats.get_mut(&project_id) else {
+        let Some(chat) = state.chat_view.project_chats.get_mut(&project_id) else {
             continue;
         };
         match ev.inner {
@@ -1081,7 +1083,7 @@ pub(super) fn drain_project_events<R: Runtime>(
                 if chat.streaming {
                     chat.append_text(&text);
                     if is_active_project {
-                        state.chat_scroll = 0;
+                        state.chat_view.chat_scroll = 0;
                     }
                 }
             }
@@ -1319,10 +1321,10 @@ pub(super) fn drain_telegram<R: Runtime>(
                 }
             }
             telegram::TgInbound::ExoMessage { text } => {
-                state.chat_scroll = 0;
-                if state.exo_chat.streaming {
-                    state.exo_chat.finish_streaming();
-                    if let Some(msg) = state.exo_chat.messages.last()
+                state.chat_view.chat_scroll = 0;
+                if state.chat_view.exo_chat.streaming {
+                    state.chat_view.exo_chat.finish_streaming();
+                    if let Some(msg) = state.chat_view.exo_chat.messages.last()
                         && matches!(msg.role, MessageRole::Assistant)
                         && msg.has_text()
                     {
@@ -1330,8 +1332,8 @@ pub(super) fn drain_telegram<R: Runtime>(
                     }
                 }
                 let _ = app.insert_exo_message(MessageRole::User, &text);
-                state.exo_chat.add_user_message(text.clone());
-                exo_session.send_message(&text, state.exo_chat.session_id.as_deref());
+                state.chat_view.exo_chat.add_user_message(text.clone());
+                exo_session.send_message(&text, state.chat_view.exo_chat.session_id.as_deref());
             }
         }
     }
