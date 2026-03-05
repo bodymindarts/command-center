@@ -112,42 +112,6 @@ fn spawn_caffeinate() -> Option<std::process::Child> {
     }
 }
 
-/// Build a JSON log line for a hook message and broadcast it to all observers.
-fn broadcast_to_observers(
-    observers: &mut Vec<UnixStream>,
-    msg_type: &str,
-    cwd: &str,
-    work_dirs: &[(String, String)],
-    raw_json: &str,
-) {
-    use io::Write;
-    if observers.is_empty() {
-        return;
-    }
-    let now = chrono::Local::now().format("%H:%M:%S").to_string();
-    let task = work_dirs
-        .iter()
-        .find(|(_, wd)| {
-            let canon = std::fs::canonicalize(wd).unwrap_or_else(|_| std::path::PathBuf::from(wd));
-            let cwd_path =
-                std::fs::canonicalize(cwd).unwrap_or_else(|_| std::path::PathBuf::from(cwd));
-            cwd_path.starts_with(&canon)
-        })
-        .map(|(name, _)| name.as_str())
-        .unwrap_or("?");
-    let raw: serde_json::Value = serde_json::from_str(raw_json).unwrap_or(serde_json::Value::Null);
-    let line = serde_json::json!({
-        "ts": now,
-        "type": msg_type,
-        "cwd": cwd,
-        "task": task,
-        "raw": raw,
-    });
-    let msg = format!("{line}\n");
-    let bytes = msg.as_bytes();
-    observers.retain_mut(|stream| stream.write_all(bytes).is_ok());
-}
-
 pub fn run<R: Runtime>(
     service: &TaskService<R>,
     resume_session: Option<&str>,
@@ -198,7 +162,6 @@ pub fn run<R: Runtime>(
         std::env::set_var(crate::permission::SOCKET_ENV, &socket_path);
     }
     crate::permission::write_socket_breadcrumb(service.project_root(), &socket_path);
-
     {
         let work_dirs: Vec<String> = app
             .tasks
@@ -210,70 +173,30 @@ pub fn run<R: Runtime>(
             crate::runtime::reembed_socket_in_worktrees(&work_dirs, &sock_str);
         });
     }
-    {
-        let initial_work_dirs: Vec<(String, String)> = app
-            .tasks
-            .iter()
-            .filter_map(|t| Some((t.name.as_str().to_string(), t.work_dir.clone()?)))
-            .collect();
-        std::thread::spawn(move || {
-            let mut observers: Vec<UnixStream> = Vec::new();
-            while !perm_cancel.load(Ordering::Relaxed) {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        let mut buf = String::new();
-                        if std::io::Read::read_to_string(&mut stream, &mut buf).is_ok() {
-                            if crate::permission::parse_observe_json(&buf) {
-                                // Observer registration — keep the stream for broadcasting.
-                                let _ = stream.set_nonblocking(true);
-                                observers.push(stream);
-                            } else if let Some(cwd) = crate::permission::parse_resolved_json(&buf) {
-                                broadcast_to_observers(
-                                    &mut observers,
-                                    "_resolved",
-                                    &cwd,
-                                    &initial_work_dirs,
-                                    &buf,
-                                );
-                                let _ = resolved_tx.send(cwd);
-                            } else if let Some(cwd) = crate::permission::parse_idle_json(&buf) {
-                                broadcast_to_observers(
-                                    &mut observers,
-                                    "_idle",
-                                    &cwd,
-                                    &initial_work_dirs,
-                                    &buf,
-                                );
-                                let _ = idle_tx.send(cwd);
-                            } else if let Some(cwd) = crate::permission::parse_active_json(&buf) {
-                                broadcast_to_observers(
-                                    &mut observers,
-                                    "_active",
-                                    &cwd,
-                                    &initial_work_dirs,
-                                    &buf,
-                                );
-                                let _ = active_tx.send(cwd);
-                            } else if let Some(req) = crate::permission::parse_request_json(&buf) {
-                                broadcast_to_observers(
-                                    &mut observers,
-                                    "permission",
-                                    &req.cwd,
-                                    &initial_work_dirs,
-                                    &buf,
-                                );
-                                let _ = perm_tx.send((stream, req));
-                            }
+    std::thread::spawn(move || {
+        while !perm_cancel.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut buf = String::new();
+                    if std::io::Read::read_to_string(&mut stream, &mut buf).is_ok() {
+                        if let Some(cwd) = crate::permission::parse_resolved_json(&buf) {
+                            let _ = resolved_tx.send(cwd);
+                        } else if let Some(cwd) = crate::permission::parse_idle_json(&buf) {
+                            let _ = idle_tx.send(cwd);
+                        } else if let Some(cwd) = crate::permission::parse_active_json(&buf) {
+                            let _ = active_tx.send(cwd);
+                        } else if let Some(req) = crate::permission::parse_request_json(&buf) {
+                            let _ = perm_tx.send((stream, req));
                         }
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(100));
-                    }
-                    Err(_) => break,
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(_) => break,
             }
-        });
-    }
+        }
+    });
 
     // Optional Telegram bot for remote permission approval.
     let (tg_tx, tg_rx) = if let (Ok(token), Ok(chat_id)) = (

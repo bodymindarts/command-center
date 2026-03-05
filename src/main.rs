@@ -70,7 +70,6 @@ fn main() -> Result<()> {
         Command::Start { resume, caffeinate } => cmd_start(resume.as_deref(), caffeinate)?,
         Command::Goto { id } => cmd_goto(&service, &id)?,
         Command::Send { id, message } => cmd_send(&service, &id, &message)?,
-        Command::StreamHooks { task } => cmd_stream_hooks(service.project_root(), task.as_deref())?,
         Command::Skill { action } => cmd_skill(action, &service)?,
         Command::Project { action } => cmd_project(action, &service)?,
         Command::Agent { action } => match action {
@@ -384,77 +383,6 @@ fn cmd_complete(
     println!("Task {id} marked as {status} (exit code: {exit_code})");
 
     Ok(())
-}
-
-fn cmd_stream_hooks(project_root: &std::path::Path, task_filter: Option<&str>) -> Result<()> {
-    use std::io::{BufRead, Write};
-    use std::os::unix::net::UnixStream;
-
-    // Find the dashboard socket via breadcrumb or well-known path.
-    let sock_path = crate::permission::read_socket_breadcrumb(project_root)
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(crate::permission::session_socket_path);
-
-    let mut stream = UnixStream::connect(&sock_path).with_context(|| {
-        format!(
-            "failed to connect to dashboard socket at {}",
-            sock_path.display()
-        )
-    })?;
-
-    // Register as observer.
-    stream
-        .write_all(b"{\"_observe\": true}")
-        .context("failed to send observer registration")?;
-    stream
-        .shutdown(std::net::Shutdown::Write)
-        .context("failed to shutdown write half")?;
-
-    eprintln!(
-        "Connected to dashboard socket{}",
-        task_filter
-            .map(|t| format!(" (filter: {t})"))
-            .unwrap_or_default()
-    );
-    eprintln!("Press Ctrl+C to stop.\n");
-
-    let reader = std::io::BufReader::new(stream);
-    for line_result in reader.lines() {
-        let line = line_result.context("error reading from dashboard socket")?;
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Ok(entry) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            let task = entry["task"].as_str().unwrap_or("?");
-            if let Some(filter) = task_filter
-                && !task.to_lowercase().contains(&filter.to_lowercase())
-            {
-                continue;
-            }
-            let ts = entry["ts"].as_str().unwrap_or("");
-            let msg_type = entry["type"].as_str().unwrap_or("");
-            let cwd = entry["cwd"].as_str().unwrap_or("");
-            print_hook_line(ts, msg_type, task, cwd);
-        } else {
-            println!("{trimmed}");
-        }
-    }
-
-    eprintln!("Dashboard disconnected.");
-    Ok(())
-}
-
-fn print_hook_line(ts: &str, msg_type: &str, task: &str, cwd: &str) {
-    // ANSI colors: gray=90, green=32, blue=34, yellow=33, red=31
-    let (color_code, label) = match msg_type {
-        "_idle" => ("90", "idle"),
-        "_active" => ("32", "active"),
-        "_resolved" => ("34", "resolved"),
-        "permission" => ("33", "permission"),
-        other => ("0", other),
-    };
-    println!("\x1b[2m{ts}\x1b[0m \x1b[{color_code}m{label:<10}\x1b[0m \x1b[1m{task}\x1b[0m  {cwd}");
 }
 
 fn cmd_skill(action: SkillAction, service: &TaskService<impl Runtime>) -> Result<()> {
