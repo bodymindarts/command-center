@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 use std::os::unix::net::UnixStream;
-use std::sync::Arc;
 use std::sync::mpsc;
 
 use crossterm::event::KeyEvent;
@@ -15,7 +14,7 @@ use super::ProjectContext;
 use super::permissions::ActivePermission;
 use super::screen_state::{Focus, ScreenState};
 use super::telegram;
-use crate::assistant::{AssistantEvent, AssistantSession, ProjectEvent, project_system_prompt};
+use crate::assistant::{AssistantEvent, AssistantSession, ProjectEvent};
 
 const EXO_PERM_KEY: &str = "exo";
 
@@ -322,10 +321,18 @@ fn handle_cycle_permissions<R: Runtime>(
                     .unwrap_or_else(|| {
                         crate::primitives::ProjectName::from(pid.as_str().to_string())
                     });
+                let proj_name_str = proj_name.as_str().to_string();
                 if let Ok(tasks) = app.list_visible(Some(&pid)) {
                     state.switch_to_project(Some((proj_name, pid.clone())), tasks, Some(&name));
                 }
-                super::ensure_project_context(project_contexts, state, app, &pid, project_tx);
+                super::ensure_project_context(
+                    project_contexts,
+                    state,
+                    app,
+                    &pid,
+                    &proj_name_str,
+                    project_tx,
+                );
             } else if let Ok(tasks) = app.list_visible(None) {
                 state.switch_to_project(None, tasks, Some(&name));
             }
@@ -388,6 +395,7 @@ fn handle_goto_project<R: Runtime>(
                     .map(|p| (p.name.clone(), p.id.clone(), false, None))
             });
         if let Some((name, id, saved_show_detail, saved_task_name)) = target {
+            let name_str = name.as_str().to_string();
             let focus = if saved_show_detail {
                 saved_task_name.as_ref()
             } else {
@@ -396,7 +404,7 @@ fn handle_goto_project<R: Runtime>(
             if let Ok(tasks) = app.list_visible(Some(&id)) {
                 state.switch_to_project(Some((name, id.clone())), tasks, focus);
             }
-            super::ensure_project_context(project_contexts, state, app, &id, project_tx);
+            super::ensure_project_context(project_contexts, state, app, &id, &name_str, project_tx);
         }
     // If in a project PM view, cycle to next project
     } else if state.project_list.active_project_id.is_some() && !state.task_list.show_detail {
@@ -419,10 +427,18 @@ fn handle_goto_project<R: Runtime>(
             let next = &state.project_list.projects[next_idx];
             let next_id = next.id.clone();
             let next_name = next.name.clone();
+            let next_name_str = next_name.as_str().to_string();
             if let Ok(tasks) = app.list_visible(Some(&next_id)) {
                 state.switch_to_project(Some((next_name, next_id.clone())), tasks, None);
             }
-            super::ensure_project_context(project_contexts, state, app, &next_id, project_tx);
+            super::ensure_project_context(
+                project_contexts,
+                state,
+                app,
+                &next_id,
+                &next_name_str,
+                project_tx,
+            );
         }
     }
 }
@@ -446,9 +462,7 @@ pub(super) fn handle_focus_key<R: Runtime>(
         Focus::ChatInput if state.task_list.show_detail => {
             handle_task_chat_input_key(state, key, app)
         }
-        Focus::ChatInput => {
-            handle_chat_input_key(state, key, app, exo_session, project_contexts, project_tx)
-        }
+        Focus::ChatInput => handle_chat_input_key(state, key, app, exo_session, project_contexts),
         Focus::ChatHistory => handle_chat_history_key(state, key),
         Focus::ConfirmDelete(_) => handle_confirm_delete_key(state, key, app),
         Focus::ConfirmCloseTask(_) => handle_confirm_close_task_key(state, key, app),
@@ -612,6 +626,7 @@ fn handle_project_list_key<R: Runtime>(
             if let Some(project) = state.selected_project() {
                 let project_id = project.id.clone();
                 let project_name = project.name.clone();
+                let project_name_str = project_name.as_str().to_string();
                 if let Ok(tasks) = app.list_visible(Some(&project_id)) {
                     state.switch_to_project(Some((project_name, project_id.clone())), tasks, None);
                 }
@@ -620,6 +635,7 @@ fn handle_project_list_key<R: Runtime>(
                     state,
                     app,
                     &project_id,
+                    &project_name_str,
                     project_tx,
                 );
             }
@@ -706,7 +722,6 @@ fn handle_chat_input_key<R: Runtime>(
     app: &ClatApp<R>,
     exo_session: &mut AssistantSession,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
-    project_tx: &mpsc::Sender<ProjectEvent>,
 ) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
@@ -755,7 +770,7 @@ fn handle_chat_input_key<R: Runtime>(
             }
         }
         KeyCode::Enter => {
-            handle_chat_enter(state, app, exo_session, project_contexts, project_tx);
+            handle_chat_enter(state, app, exo_session, project_contexts);
         }
         _ => {
             handle_input_editing(&mut state.input, &key);
@@ -768,16 +783,16 @@ fn handle_chat_enter<R: Runtime>(
     app: &ClatApp<R>,
     exo_session: &mut AssistantSession,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
-    project_tx: &mpsc::Sender<ProjectEvent>,
 ) {
     state.chat_view.chat_scroll = 0;
     if state.input.is_empty() {
         return;
     }
     if let Some(pid) = state.project_list.active_project_id.clone() {
-        if !project_contexts.contains_key(&pid) {
-            project_contexts.insert(pid.clone(), ProjectContext::new(&pid, project_tx));
-        }
+        let Some(ctx) = project_contexts.get_mut(&pid) else {
+            state.status_error = Some("PM session not initialized".to_string());
+            return;
+        };
         let chat = state
             .chat_view
             .project_chats
@@ -796,32 +811,8 @@ fn handle_chat_enter<R: Runtime>(
         let msg = state.input.take();
         let _ = app.insert_project_message(&pid, MessageRole::User, &msg);
         chat.add_user_message(msg.clone());
-        let ctx = project_contexts.get_mut(&pid).unwrap();
-        if ctx.session.is_none() {
-            let sid = app
-                .read_project_session_id(&pid)
-                .or_else(|| chat.session_id.clone());
-            let proj_name = state
-                .project_list
-                .active_project
-                .as_ref()
-                .map(|p| p.as_str())
-                .unwrap_or("unknown");
-            let prompt = project_system_prompt(proj_name);
-            ctx.session = Some(AssistantSession::new(
-                sid.as_deref(),
-                Arc::clone(&ctx.cancel),
-                ctx.bridge_tx.clone(),
-                &prompt,
-            ));
-            if let Some(ref s) = sid {
-                chat.session_id = Some(s.clone());
-            }
-        }
-        if let Some(sess) = &mut ctx.session {
-            sess.send_message(&msg, chat.session_id.as_deref());
-            state.chat_view.chat_scroll = 0;
-        }
+        ctx.session.send_message(&msg, chat.session_id.as_deref());
+        state.chat_view.chat_scroll = 0;
     } else {
         if state.chat_view.exo_chat.streaming {
             state.chat_view.exo_chat.finish_streaming();
@@ -1095,10 +1086,8 @@ pub(super) fn drain_project_events<R: Runtime>(
             AssistantEvent::SessionId(id) => {
                 app.write_project_session_id(&project_id, &id);
                 chat.session_id = Some(id.clone());
-                if let Some(ctx) = project_contexts.get_mut(&project_id)
-                    && let Some(sess) = &mut ctx.session
-                {
-                    sess.set_session_id(id);
+                if let Some(ctx) = project_contexts.get_mut(&project_id) {
+                    ctx.session.set_session_id(id);
                 }
             }
             AssistantEvent::TurnDone => {
@@ -1116,10 +1105,8 @@ pub(super) fn drain_project_events<R: Runtime>(
             }
             AssistantEvent::ProcessExited => {
                 chat.had_process_error = false;
-                if let Some(ctx) = project_contexts.get_mut(&project_id)
-                    && let Some(sess) = &mut ctx.session
-                {
-                    sess.mark_exited();
+                if let Some(ctx) = project_contexts.get_mut(&project_id) {
+                    ctx.session.mark_exited();
                 }
                 if chat.streaming {
                     chat.add_error("PM process exited unexpectedly");

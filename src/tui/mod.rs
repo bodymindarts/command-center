@@ -30,14 +30,17 @@ use screen_state::ScreenState;
 /// Holds the project session and bridge for a single project.
 /// Chat state (messages, streaming) lives in `ScreenState::project_chats`.
 struct ProjectContext {
-    session: Option<AssistantSession>,
+    session: AssistantSession,
     cancel: Arc<AtomicBool>,
-    /// Sender that wraps AssistantEvent → ProjectEvent with this project's ID.
-    bridge_tx: mpsc::Sender<AssistantEvent>,
 }
 
 impl ProjectContext {
-    fn new(project_id: &ProjectId, project_tx: &mpsc::Sender<ProjectEvent>) -> Self {
+    fn new(
+        project_id: &ProjectId,
+        project_tx: &mpsc::Sender<ProjectEvent>,
+        session_id: Option<&str>,
+        system_prompt: &str,
+    ) -> Self {
         let cancel = Arc::new(AtomicBool::new(false));
         let (bridge_tx, bridge_rx) = mpsc::channel::<AssistantEvent>();
         let pid = project_id.clone();
@@ -55,11 +58,9 @@ impl ProjectContext {
                 }
             }
         });
-        ProjectContext {
-            session: None,
-            cancel,
-            bridge_tx,
-        }
+        let session =
+            AssistantSession::new(session_id, Arc::clone(&cancel), bridge_tx, system_prompt);
+        ProjectContext { session, cancel }
     }
 }
 
@@ -81,10 +82,10 @@ fn ensure_project_context<R: Runtime>(
     state: &mut ScreenState,
     app: &ClatApp<R>,
     project_id: &ProjectId,
+    project_name: &str,
     project_tx: &mpsc::Sender<ProjectEvent>,
 ) {
     if !project_contexts.contains_key(project_id) {
-        let ctx = ProjectContext::new(project_id, project_tx);
         let chat = state
             .chat_view
             .project_chats
@@ -95,6 +96,8 @@ fn ensure_project_context<R: Runtime>(
             let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
             chat.load_history(recent.into_iter().rev().collect());
         }
+        let prompt = crate::assistant::project_system_prompt(project_name);
+        let ctx = ProjectContext::new(project_id, project_tx, chat.session_id.as_deref(), &prompt);
         project_contexts.insert(project_id.clone(), ctx);
     }
 }
@@ -155,6 +158,20 @@ pub fn run<R: Runtime>(
     // Project contexts: one per project, keyed by project ID
     let mut project_contexts: HashMap<ProjectId, ProjectContext> = HashMap::new();
     let (project_tx, project_rx) = mpsc::channel::<ProjectEvent>();
+
+    // Boot all PM sessions eagerly so they warm up in the background.
+    if let Ok(projects) = app.list_projects() {
+        for project in &projects {
+            ensure_project_context(
+                &mut project_contexts,
+                &mut state,
+                &app,
+                &project.id,
+                project.name.as_str(),
+                &project_tx,
+            );
+        }
+    }
 
     // Permission socket listener
     let (perm_tx, perm_rx) = mpsc::channel::<(UnixStream, PermissionRequest)>();
