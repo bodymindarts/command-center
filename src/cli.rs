@@ -54,10 +54,6 @@ pub enum Command {
         /// Filter tasks by project name
         #[arg(long)]
         project: Option<String>,
-
-        /// Filter tasks by name (case-insensitive substring match)
-        #[arg(long)]
-        filter: Option<String>,
     },
 
     /// List all tasks (alias for list --all)

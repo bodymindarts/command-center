@@ -50,12 +50,8 @@ fn main() -> anyhow::Result<()> {
                 project,
             },
         )?,
-        Command::List {
-            all,
-            project,
-            filter,
-        } => cmd_list(&app, all, project, filter)?,
-        Command::History => cmd_list(&app, true, None, None)?,
+        Command::List { all, project } => cmd_list(&app, all, project)?,
+        Command::History => cmd_list(&app, true, None)?,
         Command::Log { id } => cmd_log(&app, &id)?,
         Command::Close { id } => cmd_close(&app, &id)?,
         Command::Reopen { id } => cmd_reopen(&app, &id)?,
@@ -140,13 +136,8 @@ fn cmd_spawn(app: &ClatApp<impl Runtime>, opts: SpawnOpts) -> anyhow::Result<()>
     Ok(())
 }
 
-fn cmd_list(
-    app: &ClatApp<impl Runtime>,
-    all: bool,
-    project: Option<String>,
-    filter: Option<String>,
-) -> anyhow::Result<()> {
-    let mut tasks = if all {
+fn cmd_list(app: &ClatApp<impl Runtime>, all: bool, project: Option<String>) -> anyhow::Result<()> {
+    let tasks = if all {
         app.list_all()?
     } else if let Some(ref name) = project {
         let pid = app.resolve_project_id(name)?;
@@ -154,11 +145,6 @@ fn cmd_list(
     } else {
         app.list_active()?
     };
-
-    if let Some(ref pattern) = filter {
-        let pattern_lower = pattern.to_lowercase();
-        tasks.retain(|t| t.name.as_str().to_lowercase().contains(&pattern_lower));
-    }
 
     if tasks.is_empty() {
         println!("No tasks.");
