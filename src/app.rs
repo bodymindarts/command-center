@@ -374,9 +374,12 @@ impl<R: Runtime> ClatApp<R> {
         if all {
             self.store.list_tasks()
         } else if let Some(name) = project {
-            let pid = self.resolve_project_id(name)?;
+            let project = self
+                .store
+                .get_project_by_name(name)?
+                .ok_or_else(|| anyhow::anyhow!("no project found with name '{name}'"))?;
             self.store
-                .list_visible_tasks_for_project(Some(pid.as_str()))
+                .list_visible_tasks_for_project(Some(project.id.as_str()))
         } else {
             self.store.list_active_tasks()
         }
@@ -882,11 +885,9 @@ prompt = "noop prompt"
             .unwrap()
             .unwrap();
         let messages = service.store().list_messages(task.id.as_str()).unwrap();
-        assert!(
-            messages
-                .iter()
-                .any(|m| m.role == MessageRole::User && m.content == "hello agent")
-        );
+        assert!(messages
+            .iter()
+            .any(|m| m.role == MessageRole::User && m.content == "hello agent"));
     }
 
     #[test]
