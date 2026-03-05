@@ -5,9 +5,9 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
 use crate::task::{DisplayStatus, Project};
 
-use super::super::dashboard::{Dashboard, Focus};
+use super::super::screen::{Focus, Screen};
 
-fn task_list_item(dash: &Dashboard, task: &crate::task::Task) -> ListItem<'static> {
+fn task_list_item(dash: &Screen, task: &crate::task::Task) -> ListItem<'static> {
     let ds = task.display_status(&dash.idle_panes);
     let status_char = ds.indicator();
     let color = display_status_color(&ds);
@@ -93,7 +93,7 @@ fn task_list_item(dash: &Dashboard, task: &crate::task::Task) -> ListItem<'stati
 
 pub(in crate::tui) fn render_task_list(
     frame: &mut ratatui::Frame,
-    dash: &mut Dashboard,
+    dash: &mut Screen,
     area: Rect,
     focused: bool,
 ) {
@@ -215,12 +215,7 @@ pub(in crate::tui) fn render_task_list(
     }
 }
 
-fn render_project_list(
-    frame: &mut ratatui::Frame,
-    dash: &mut Dashboard,
-    area: Rect,
-    focused: bool,
-) {
+fn render_project_list(frame: &mut ratatui::Frame, dash: &mut Screen, area: Rect, focused: bool) {
     let searching = matches!(dash.focus, Focus::TaskSearch) && dash.show_projects;
 
     let (list_area, search_area) = if searching {

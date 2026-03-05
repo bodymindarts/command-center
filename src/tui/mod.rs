@@ -1,9 +1,9 @@
 mod chat;
 mod claude;
-mod dashboard;
 mod handlers;
 mod input;
 mod permissions;
+mod screen;
 mod telegram;
 mod widgets;
 
@@ -27,7 +27,7 @@ use crate::primitives::ProjectId;
 use crate::runtime::Runtime;
 use chat::ExoState;
 use claude::{EXO_SYSTEM_PROMPT, ExoEvent, ExoSession, PmEvent};
-use dashboard::Dashboard;
+use screen::Screen;
 
 /// Holds the PM state and session for a single project.
 struct PmContext {
@@ -76,7 +76,7 @@ fn cancel_pm_context(pm_contexts: &mut HashMap<ProjectId, PmContext>, project_id
 /// Ensure a PmContext exists for the project, creating and loading history if needed.
 fn ensure_pm_context<R: Runtime>(
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
-    dash: &mut Dashboard,
+    dash: &mut Screen,
     app: &ClatApp<R>,
     project_id: &ProjectId,
     pm_tx: &mpsc::Sender<PmEvent>,
@@ -126,7 +126,7 @@ pub fn run<R: Runtime>(
     let mut terminal = Terminal::new(backend)?;
 
     let tasks = app.list_visible(None)?;
-    let mut dash = Dashboard::new(tasks);
+    let mut dash = Screen::new(tasks);
     let mut exo = ExoState::new();
     if let Some(sid) = resume_session {
         exo.session_id = Some(sid.to_string());
@@ -277,7 +277,7 @@ pub fn run<R: Runtime>(
 #[allow(clippy::too_many_arguments)]
 fn run_loop<R: Runtime>(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    dash: &mut Dashboard,
+    dash: &mut Screen,
     exo: &mut ExoState,
     exo_session: &mut ExoSession,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,

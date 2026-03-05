@@ -3,11 +3,11 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use super::super::dashboard::{Dashboard, Focus};
+use super::super::screen::{Focus, Screen};
 
 pub(in crate::tui) fn render_permission_panel(
     frame: &mut ratatui::Frame,
-    dash: &Dashboard,
+    dash: &Screen,
     area: Rect,
 ) {
     let perm_key = dash.focused_perm_key();
@@ -71,11 +71,7 @@ pub(in crate::tui) fn render_permission_panel(
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-pub(in crate::tui) fn render_askuser_panel(
-    frame: &mut ratatui::Frame,
-    dash: &Dashboard,
-    area: Rect,
-) {
+pub(in crate::tui) fn render_askuser_panel(frame: &mut ratatui::Frame, dash: &Screen, area: Rect) {
     let perm_key = dash.focused_perm_key();
     let Some(perm) = dash.permissions.peek(&perm_key) else {
         return;
@@ -134,7 +130,7 @@ pub(in crate::tui) fn render_askuser_panel(
 
 pub(in crate::tui) fn render_delete_confirm_panel(
     frame: &mut ratatui::Frame,
-    dash: &Dashboard,
+    dash: &Screen,
     area: Rect,
 ) {
     let Focus::ConfirmDelete(ref id) = dash.focus else {
@@ -183,7 +179,7 @@ pub(in crate::tui) fn render_delete_confirm_panel(
 
 pub(in crate::tui) fn render_close_task_panel(
     frame: &mut ratatui::Frame,
-    dash: &Dashboard,
+    dash: &Screen,
     area: Rect,
 ) {
     let Focus::ConfirmCloseTask(ref id) = dash.focus else {
@@ -232,7 +228,7 @@ pub(in crate::tui) fn render_close_task_panel(
 
 pub(in crate::tui) fn render_close_project_panel(
     frame: &mut ratatui::Frame,
-    dash: &Dashboard,
+    dash: &Screen,
     area: Rect,
 ) {
     let name = dash
@@ -277,7 +273,7 @@ pub(in crate::tui) fn render_close_project_panel(
 
 pub(in crate::tui) fn render_delete_project_panel(
     frame: &mut ratatui::Frame,
-    dash: &Dashboard,
+    dash: &Screen,
     area: Rect,
 ) {
     let Focus::ConfirmDeleteProject(ref name) = dash.focus else {

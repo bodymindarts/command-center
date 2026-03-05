@@ -6,11 +6,11 @@ mod task_panel;
 use ratatui::layout::{Constraint, Direction, Layout};
 
 use super::chat::ExoState;
-use super::dashboard::{Dashboard, Focus};
+use super::screen::{Focus, Screen};
 
 pub(in crate::tui) fn ui(
     frame: &mut ratatui::Frame,
-    dash: &mut Dashboard,
+    dash: &mut Screen,
     exo: &ExoState,
     pm: Option<&ExoState>,
 ) {

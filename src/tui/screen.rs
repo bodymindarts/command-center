@@ -28,7 +28,7 @@ pub struct SavedProjectState {
     pub selected_task_name: Option<TaskName>,
 }
 
-pub struct Dashboard {
+pub struct Screen {
     pub tasks: Vec<Task>,
     pub list_state: ListState,
     pub should_quit: bool,
@@ -76,7 +76,7 @@ pub struct Dashboard {
     pub global_task_work_dirs: Vec<(TaskName, String)>,
 }
 
-impl Dashboard {
+impl Screen {
     pub fn new(tasks: Vec<Task>) -> Self {
         let mut list_state = ListState::default();
         if !tasks.is_empty() {

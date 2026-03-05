@@ -14,8 +14,8 @@ use crate::runtime::Runtime;
 use super::PmContext;
 use super::chat::ExoState;
 use super::claude::{ExoEvent, ExoSession, PmEvent, pm_system_prompt};
-use super::dashboard::{Dashboard, Focus};
 use super::permissions::ActivePermission;
+use super::screen::{Focus, Screen};
 use super::telegram;
 
 const EXO_PERM_KEY: &str = "exo";
@@ -87,7 +87,7 @@ fn parse_ask_user_options(
 
 /// Resolve and consume the active permission request.
 fn resolve_permission(
-    dash: &mut Dashboard,
+    dash: &mut Screen,
     allow: bool,
 ) -> Option<(UnixStream, bool, Vec<serde_json::Value>, u64)> {
     let perm_key = dash.active_permission_key()?;
@@ -171,7 +171,7 @@ fn handle_input_editing(input: &mut super::input::InputState, key: &KeyEvent) ->
 
 // ── Paste handling ──────────────────────────────────────────────────
 
-pub(super) fn handle_paste(dash: &mut Dashboard, text: String) {
+pub(super) fn handle_paste(dash: &mut Screen, text: String) {
     if matches!(dash.focus, Focus::ChatInput) {
         if text.contains('\n') || text.contains('\r') {
             dash.input.set_paste(text);
@@ -188,7 +188,7 @@ pub(super) fn handle_paste(dash: &mut Dashboard, text: String) {
 /// Handle global key shortcuts (Ctrl+C, Ctrl+P, Ctrl+Y/T/N, number keys, Ctrl+O, Ctrl+R).
 /// Returns true if the key was consumed.
 pub(super) fn handle_global_keys<R: Runtime>(
-    dash: &mut Dashboard,
+    dash: &mut Screen,
     key: KeyEvent,
     app: &ClatApp<R>,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
@@ -280,7 +280,7 @@ pub(super) fn handle_global_keys<R: Runtime>(
 }
 
 fn handle_cycle_permissions<R: Runtime>(
-    dash: &mut Dashboard,
+    dash: &mut Screen,
     app: &ClatApp<R>,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
@@ -364,7 +364,7 @@ fn handle_cycle_permissions<R: Runtime>(
 }
 
 fn handle_askuser_select(
-    dash: &mut Dashboard,
+    dash: &mut Screen,
     key: KeyEvent,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
 ) {
@@ -387,7 +387,7 @@ fn handle_askuser_select(
 }
 
 fn handle_goto_pm<R: Runtime>(
-    dash: &mut Dashboard,
+    dash: &mut Screen,
     app: &ClatApp<R>,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
@@ -454,7 +454,7 @@ fn handle_goto_pm<R: Runtime>(
 // ── Per-focus key handlers ──────────────────────────────────────────
 
 pub(super) fn handle_focus_key<R: Runtime>(
-    dash: &mut Dashboard,
+    dash: &mut Screen,
     key: KeyEvent,
     app: &ClatApp<R>,
     exo: &mut ExoState,
@@ -478,7 +478,7 @@ pub(super) fn handle_focus_key<R: Runtime>(
     }
 }
 
-fn handle_task_list_key<R: Runtime>(dash: &mut Dashboard, key: KeyEvent, app: &ClatApp<R>) {
+fn handle_task_list_key<R: Runtime>(dash: &mut Screen, key: KeyEvent, app: &ClatApp<R>) {
     match key.code {
         KeyCode::Char('q') => dash.should_quit = true,
         KeyCode::Esc => {
@@ -564,10 +564,10 @@ fn handle_task_list_key<R: Runtime>(dash: &mut Dashboard, key: KeyEvent, app: &C
     }
 }
 
-fn handle_task_search_key(dash: &mut Dashboard, key: KeyEvent) {
+fn handle_task_search_key(dash: &mut Screen, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let searching_projects = dash.show_projects;
-    let do_filter = |dash: &mut Dashboard| {
+    let do_filter = |dash: &mut Screen| {
         if dash.show_projects {
             dash.update_project_search_filter();
         } else {
@@ -665,7 +665,7 @@ fn handle_task_search_key(dash: &mut Dashboard, key: KeyEvent) {
 }
 
 fn handle_project_list_key<R: Runtime>(
-    dash: &mut Dashboard,
+    dash: &mut Screen,
     key: KeyEvent,
     app: &ClatApp<R>,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
@@ -708,7 +708,7 @@ fn handle_project_list_key<R: Runtime>(
     }
 }
 
-fn handle_task_chat_input_key<R: Runtime>(dash: &mut Dashboard, key: KeyEvent, app: &ClatApp<R>) {
+fn handle_task_chat_input_key<R: Runtime>(dash: &mut Screen, key: KeyEvent, app: &ClatApp<R>) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Esc => {
@@ -785,7 +785,7 @@ fn handle_task_chat_input_key<R: Runtime>(dash: &mut Dashboard, key: KeyEvent, a
 }
 
 fn handle_chat_input_key<R: Runtime>(
-    dash: &mut Dashboard,
+    dash: &mut Screen,
     key: KeyEvent,
     app: &ClatApp<R>,
     exo: &mut ExoState,
@@ -851,7 +851,7 @@ fn handle_chat_input_key<R: Runtime>(
 }
 
 fn handle_chat_enter<R: Runtime>(
-    dash: &mut Dashboard,
+    dash: &mut Screen,
     app: &ClatApp<R>,
     exo: &mut ExoState,
     exo_session: &mut ExoSession,
@@ -921,7 +921,7 @@ fn handle_chat_enter<R: Runtime>(
     }
 }
 
-fn handle_chat_history_key(dash: &mut Dashboard, key: KeyEvent) {
+fn handle_chat_history_key(dash: &mut Screen, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Char('j') if ctrl => {
@@ -946,7 +946,7 @@ fn handle_chat_history_key(dash: &mut Dashboard, key: KeyEvent) {
     }
 }
 
-fn handle_confirm_delete_key<R: Runtime>(dash: &mut Dashboard, key: KeyEvent, app: &ClatApp<R>) {
+fn handle_confirm_delete_key<R: Runtime>(dash: &mut Screen, key: KeyEvent, app: &ClatApp<R>) {
     let task_id = match &dash.focus {
         Focus::ConfirmDelete(id) => id.clone(),
         _ => return,
@@ -966,11 +966,7 @@ fn handle_confirm_delete_key<R: Runtime>(dash: &mut Dashboard, key: KeyEvent, ap
     }
 }
 
-fn handle_confirm_close_task_key<R: Runtime>(
-    dash: &mut Dashboard,
-    key: KeyEvent,
-    app: &ClatApp<R>,
-) {
+fn handle_confirm_close_task_key<R: Runtime>(dash: &mut Screen, key: KeyEvent, app: &ClatApp<R>) {
     let task_id = match &dash.focus {
         Focus::ConfirmCloseTask(id) => id.clone(),
         _ => return,
@@ -997,7 +993,7 @@ fn handle_confirm_close_task_key<R: Runtime>(
 }
 
 fn handle_confirm_delete_project_key<R: Runtime>(
-    dash: &mut Dashboard,
+    dash: &mut Screen,
     key: KeyEvent,
     app: &ClatApp<R>,
 ) {
@@ -1031,7 +1027,7 @@ fn handle_confirm_delete_project_key<R: Runtime>(
 }
 
 fn handle_confirm_close_project_key<R: Runtime>(
-    dash: &mut Dashboard,
+    dash: &mut Screen,
     key: KeyEvent,
     app: &ClatApp<R>,
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
@@ -1056,7 +1052,7 @@ fn handle_confirm_close_project_key<R: Runtime>(
 }
 
 /// Shared: go to the selected task's tmux window (or reopen if closed).
-fn goto_task_window<R: Runtime>(dash: &mut Dashboard, app: &ClatApp<R>) {
+fn goto_task_window<R: Runtime>(dash: &mut Screen, app: &ClatApp<R>) {
     if let Some(task) = dash.selected_task() {
         if task.status.is_running() {
             if let Some(window_id) = &task.tmux_window {
@@ -1080,7 +1076,7 @@ fn goto_task_window<R: Runtime>(dash: &mut Dashboard, app: &ClatApp<R>) {
 }
 
 /// Shared: reopen a closed task.
-fn reopen_task<R: Runtime>(dash: &mut Dashboard, app: &ClatApp<R>) {
+fn reopen_task<R: Runtime>(dash: &mut Screen, app: &ClatApp<R>) {
     if let Some(task) = dash.selected_task()
         && !task.status.is_running()
     {
@@ -1105,7 +1101,7 @@ pub(super) fn drain_exo_events<R: Runtime>(
     exo_session: &mut ExoSession,
     app: &ClatApp<R>,
     rx: &mpsc::Receiver<ExoEvent>,
-    dash: &mut Dashboard,
+    dash: &mut Screen,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
 ) {
     while let Ok(ev) = rx.try_recv() {
@@ -1166,7 +1162,7 @@ pub(super) fn drain_pm_events<R: Runtime>(
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     app: &ClatApp<R>,
     pm_rx: &mpsc::Receiver<PmEvent>,
-    dash: &mut Dashboard,
+    dash: &mut Screen,
 ) {
     while let Ok(pm_ev) = pm_rx.try_recv() {
         let project_id = pm_ev.project_id;
@@ -1236,7 +1232,7 @@ pub(super) fn drain_pm_events<R: Runtime>(
 }
 
 pub(super) fn drain_resolved(
-    dash: &mut Dashboard,
+    dash: &mut Screen,
     resolved_rx: &mpsc::Receiver<String>,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
     tg_perm_ids: &mut HashSet<u64>,
@@ -1264,7 +1260,7 @@ pub(super) fn drain_resolved(
     }
 }
 
-pub(super) fn drain_idle(dash: &mut Dashboard, idle_rx: &mpsc::Receiver<String>) {
+pub(super) fn drain_idle(dash: &mut Screen, idle_rx: &mpsc::Receiver<String>) {
     while let Ok(cwd) = idle_rx.try_recv() {
         let cwd_path =
             std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
@@ -1281,7 +1277,7 @@ pub(super) fn drain_idle(dash: &mut Dashboard, idle_rx: &mpsc::Receiver<String>)
 }
 
 /// Drain active notifications from Notification hooks — mark pane as not idle.
-pub(super) fn drain_active(dash: &mut Dashboard, active_rx: &mpsc::Receiver<String>) {
+pub(super) fn drain_active(dash: &mut Screen, active_rx: &mpsc::Receiver<String>) {
     while let Ok(cwd) = active_rx.try_recv() {
         let cwd_path =
             std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
@@ -1298,7 +1294,7 @@ pub(super) fn drain_active(dash: &mut Dashboard, active_rx: &mpsc::Receiver<Stri
 }
 
 pub(super) fn drain_permissions(
-    dash: &mut Dashboard,
+    dash: &mut Screen,
     perm_rx: &mpsc::Receiver<(UnixStream, PermissionRequest)>,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
     tg_perm_ids: &mut HashSet<u64>,
@@ -1361,7 +1357,7 @@ pub(super) fn drain_permissions(
 }
 
 pub(super) fn drain_telegram<R: Runtime>(
-    dash: &mut Dashboard,
+    dash: &mut Screen,
     exo: &mut ExoState,
     exo_session: &mut ExoSession,
     app: &ClatApp<R>,
@@ -1429,7 +1425,7 @@ pub(super) fn drain_telegram<R: Runtime>(
 }
 
 pub(super) fn tick_refresh<R: Runtime>(
-    dash: &mut Dashboard,
+    dash: &mut Screen,
     app: &ClatApp<R>,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
 ) {
@@ -1483,7 +1479,7 @@ pub(super) fn tick_refresh<R: Runtime>(
 }
 
 pub(super) fn detect_vanished_perms(
-    dash: &Dashboard,
+    dash: &Screen,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
     tg_perm_ids: &mut HashSet<u64>,
 ) {
