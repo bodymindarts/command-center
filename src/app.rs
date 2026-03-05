@@ -31,7 +31,7 @@ pub struct SpawnRequest<'a> {
     pub params: Vec<(String, String)>,
     pub work_dir_mode: WorkDirMode<'a>,
     pub prompt_mode: PromptMode,
-    pub project_id: Option<ProjectId>,
+    pub project: Option<String>,
 }
 
 #[derive(Debug)]
@@ -181,14 +181,21 @@ impl<R: Runtime> ClatApp<R> {
             }
         };
 
-        // 4. Insert task + session into DB
+        // 4. Resolve project name → ID (if given)
+        let project_id = req
+            .project
+            .as_deref()
+            .map(|name| self.resolve_project_id(name))
+            .transpose()?;
+
+        // 5. Insert task + session into DB
         let task = Task::new(
             id,
             TaskName::from(req.task_name.to_string()),
             req.skill_name,
             &params_map,
             &work_dir,
-            req.project_id,
+            project_id,
         );
         let session_id = uuid::Uuid::now_v7().to_string();
 
@@ -202,7 +209,7 @@ impl<R: Runtime> ClatApp<R> {
                 .insert_message(&chat, MessageRole::System, prompt)?;
         }
 
-        // 5. Launch agent
+        // 6. Launch agent
         let result = self.runtime.launch_agent(LaunchConfig {
             task_name: req.task_name,
             session_id: &session_id,
@@ -742,7 +749,7 @@ prompt = "noop prompt"
                     branch: None,
                 },
                 prompt_mode: PromptMode::Full,
-                project_id: None,
+                project: None,
             })
             .expect("spawn should succeed")
     }
@@ -1149,7 +1156,7 @@ prompt = "deploy to {{ env }}"
                     dir: service.project_root(),
                 },
                 prompt_mode: PromptMode::Interactive,
-                project_id: None,
+                project: None,
             })
             .unwrap();
 
@@ -1202,7 +1209,7 @@ prompt = "deploy to {{ env }}"
                 params: vec![],
                 work_dir_mode: WorkDirMode::Existing { dir: &custom_repo },
                 prompt_mode: PromptMode::Interactive,
-                project_id: None,
+                project: None,
             })
             .unwrap();
         assert_eq!(output.task_name, "nw-task");
@@ -1246,7 +1253,7 @@ prompt = "deploy to {{ env }}"
                 params: vec![],
                 work_dir_mode: WorkDirMode::Scratch,
                 prompt_mode: PromptMode::Full,
-                project_id: None,
+                project: None,
             })
             .unwrap();
 
@@ -1344,7 +1351,8 @@ prompt = "deploy to {{ env }}"
         let service = ClatApp::new(store, runtime, paths);
 
         // Spawn two tasks: one with project, one without
-        let proj_id = ProjectId::generate();
+        let proj = service.create_project("test-proj", "").unwrap();
+        let proj_id = proj.id;
         let out1 = service
             .spawn(SpawnRequest {
                 task_name: "proj-task",
@@ -1355,7 +1363,7 @@ prompt = "deploy to {{ env }}"
                     branch: None,
                 },
                 prompt_mode: PromptMode::Full,
-                project_id: Some(proj_id.clone()),
+                project: Some("test-proj".to_string()),
             })
             .unwrap();
         let out2 = spawn_test_task(&service); // no project

@@ -92,23 +92,18 @@ struct SpawnOpts {
 }
 
 fn cmd_spawn(app: &ClatApp<impl Runtime>, opts: SpawnOpts) -> anyhow::Result<()> {
-    use crate::primitives::ProjectId;
-    let project_id: Option<ProjectId> = opts
-        .project
-        .as_deref()
-        .map(|name| app.resolve_project_id(name))
-        .transpose()?;
-
-    let repo_path = opts.repo.as_deref();
-    let default_repo = app.project_root().to_path_buf();
-
     let (work_dir_mode, prompt_mode) = if opts.scratch {
         (WorkDirMode::Scratch, PromptMode::Full)
     } else if opts.no_worktree {
-        let dir = repo_path.unwrap_or(&default_repo);
-        (WorkDirMode::Existing { dir }, PromptMode::Interactive)
+        match opts.repo.as_deref() {
+            Some(dir) => (WorkDirMode::Existing { dir }, PromptMode::Interactive),
+            None => (WorkDirMode::Scratch, PromptMode::Interactive),
+        }
     } else {
-        let repo = repo_path.unwrap_or(&default_repo);
+        let repo = opts
+            .repo
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("--repo is required for worktree tasks"))?;
         (
             WorkDirMode::Worktree {
                 repo,
@@ -124,7 +119,7 @@ fn cmd_spawn(app: &ClatApp<impl Runtime>, opts: SpawnOpts) -> anyhow::Result<()>
         params: opts.params,
         work_dir_mode,
         prompt_mode,
-        project_id,
+        project: opts.project,
     })?;
     println!(
         "Spawned task {} ({})",
