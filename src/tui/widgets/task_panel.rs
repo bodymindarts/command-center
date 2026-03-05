@@ -8,7 +8,7 @@ use crate::task::{DisplayStatus, Project};
 use super::super::screen_state::{Focus, ScreenState};
 
 fn task_list_item(state: &ScreenState, task: &crate::task::Task) -> ListItem<'static> {
-    let ds = task.display_status(&state.idle_panes);
+    let ds = task.display_status(&state.task_list.idle_panes);
     let status_char = ds.indicator();
     let color = display_status_color(&ds);
     let dim = if ds.is_dim() {
@@ -25,7 +25,7 @@ fn task_list_item(state: &ScreenState, task: &crate::task::Task) -> ListItem<'st
     let win_num = task
         .tmux_window
         .as_ref()
-        .and_then(|w| state.window_numbers.get(w))
+        .and_then(|w| state.task_list.window_numbers.get(w))
         .map(|s| s.as_str())
         .unwrap_or("-");
     let main_line = Line::from(vec![
@@ -116,13 +116,15 @@ pub(in crate::tui) fn render_task_list(
 
     let items: Vec<ListItem> = if searching {
         state
+            .task_list
             .filtered_indices
             .iter()
-            .filter_map(|&i| state.tasks.get(i))
+            .filter_map(|&i| state.task_list.tasks.get(i))
             .map(|task| task_list_item(state, task))
             .collect()
     } else {
         state
+            .task_list
             .tasks
             .iter()
             .map(|task| task_list_item(state, task))
@@ -144,8 +146,8 @@ pub(in crate::tui) fn render_task_list(
     if searching {
         title_spans.push(Span::raw(format!(
             " Tasks ({}/{}) ",
-            state.filtered_indices.len(),
-            state.tasks.len()
+            state.task_list.filtered_indices.len(),
+            state.task_list.tasks.len()
         )));
     } else if let Some(ref name) = state.active_project {
         let name = name.as_str();
@@ -188,7 +190,7 @@ pub(in crate::tui) fn render_task_list(
     }
     let title = Line::from(title_spans);
 
-    let show_highlight = state.show_detail || focused;
+    let show_highlight = state.task_list.show_detail || focused;
 
     let list = List::new(items)
         .block(
@@ -210,7 +212,7 @@ pub(in crate::tui) fn render_task_list(
             "  "
         });
 
-    frame.render_stateful_widget(list, list_area, &mut state.list_state);
+    frame.render_stateful_widget(list, list_area, &mut state.task_list.list_state);
 
     if let Some(search_area) = search_area {
         render_search_bar(frame, &state.search_input.buffer(), search_area);

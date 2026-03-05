@@ -10,7 +10,7 @@ use super::super::screen_state::{Focus, ScreenState};
 
 pub(in crate::tui) fn render_chat(frame: &mut ratatui::Frame, state: &ScreenState, area: Rect) {
     let searching = matches!(state.current_focus(), Focus::TaskSearch);
-    let in_task_chat = !searching && state.show_detail && state.selected_task().is_some();
+    let in_task_chat = !searching && state.task_list.show_detail && state.selected_task().is_some();
 
     let title = if in_task_chat {
         let name = state
@@ -43,13 +43,13 @@ pub(in crate::tui) fn render_chat(frame: &mut ratatui::Frame, state: &ScreenStat
 
     if in_task_chat {
         // Render task messages
-        if state.selected_messages.is_empty() {
+        if state.task_list.selected_messages.is_empty() {
             lines.push(Line::from(Span::styled(
                 "No messages yet.",
                 Style::default().fg(Color::DarkGray),
             )));
         } else {
-            for msg in &state.selected_messages {
+            for msg in &state.task_list.selected_messages {
                 let (label, label_color) = match msg.role {
                     MessageRole::System => ("PROMPT", Color::Cyan),
                     MessageRole::User => ("YOU", Color::Green),
@@ -69,7 +69,7 @@ pub(in crate::tui) fn render_chat(frame: &mut ratatui::Frame, state: &ScreenStat
             }
         }
 
-        if let Some(output) = &state.detail_live_output {
+        if let Some(output) = &state.task_list.detail_live_output {
             let tail: Vec<&str> = output.lines().collect();
             let start = tail.len().saturating_sub(500);
             lines.push(Line::from(Span::styled(

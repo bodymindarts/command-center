@@ -12,8 +12,10 @@ pub(in crate::tui) fn render_input(
     focused: bool,
 ) {
     let front_input_perm = state.permissions.peek(&state.focused_perm_key());
-    let focused_has_perms = state.show_detail && front_input_perm.is_some_and(|p| !p.is_askuser());
-    let focused_has_askuser = state.show_detail && front_input_perm.is_some_and(|p| p.is_askuser());
+    let focused_has_perms =
+        state.task_list.show_detail && front_input_perm.is_some_and(|p| !p.is_askuser());
+    let focused_has_askuser =
+        state.task_list.show_detail && front_input_perm.is_some_and(|p| p.is_askuser());
     let border_color = if focused && focused_has_perms {
         Color::Yellow
     } else if focused && focused_has_askuser {
@@ -24,7 +26,7 @@ pub(in crate::tui) fn render_input(
         Color::DarkGray
     };
     let searching = matches!(state.current_focus(), Focus::TaskSearch);
-    let prefix = if !searching && state.show_detail {
+    let prefix = if !searching && state.task_list.show_detail {
         let name = state
             .selected_task()
             .map(|t| t.name.as_str())
@@ -111,9 +113,9 @@ pub(in crate::tui) fn render_prompt_bar(
     }
 
     let front_p = state.permissions.peek(&state.focused_perm_key());
-    let has_perms = state.show_detail && front_p.is_some_and(|p| !p.is_askuser());
+    let has_perms = state.task_list.show_detail && front_p.is_some_and(|p| !p.is_askuser());
     let mut spans = match state.current_focus() {
-        Focus::ChatInput if state.show_detail => {
+        Focus::ChatInput if state.task_list.show_detail => {
             vec![
                 Span::styled(" ^G", Style::default().fg(Color::Yellow)),
                 Span::raw(" goto  "),
@@ -206,7 +208,7 @@ pub(in crate::tui) fn render_prompt_bar(
             ]
         }
     };
-    let has_askuser = state.show_detail && front_p.is_some_and(|p| p.is_askuser());
+    let has_askuser = state.task_list.show_detail && front_p.is_some_and(|p| p.is_askuser());
     if has_perms {
         spans.extend(perm_hint_spans());
     } else if has_askuser {

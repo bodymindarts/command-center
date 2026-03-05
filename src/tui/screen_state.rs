@@ -30,58 +30,24 @@ pub struct SavedProjectState {
     pub selected_task_name: Option<TaskName>,
 }
 
-pub struct ScreenState {
+// ── Task list component ─────────────────────────────────────────────
+
+pub struct TaskListState {
     pub tasks: Vec<Task>,
     pub list_state: ListState,
-    pub should_quit: bool,
-    pub focus: Focus,
-    pub input: InputState,
     pub show_detail: bool,
-    pub permissions: PermissionStore,
     pub selected_messages: Vec<TaskMessage>,
     pub detail_scroll: u16,
     pub detail_live_output: Option<String>,
     pub window_numbers: HashMap<WindowId, String>,
-    pub chat_buffers: HashMap<ChatId, String>,
-    pub chat_scroll: u16,
-    pub chat_viewport_height: u16,
     /// Pane IDs that appear idle (shell prompt visible), refreshed periodically.
     pub idle_panes: HashSet<PaneId>,
-    /// Transient error message shown in the prompt bar. Cleared on next keypress.
-    pub status_error: Option<String>,
-    /// Currently active project name (for display). None = default (ExO).
-    pub active_project: Option<ProjectName>,
-    /// Currently active project ID (for queries). None = default (ExO).
-    pub active_project_id: Option<ProjectId>,
-    /// Last active project state — remembered when Ctrl+O leaves a project.
-    pub last_project: Option<SavedProjectState>,
-    /// ExO assistant chat state (messages, streaming flag).
-    pub exo_chat: AssistantChat,
-    /// Per-project PM assistant chat states.
-    pub project_chats: HashMap<ProjectId, AssistantChat>,
-    /// Whether the right panel shows the project list instead of the task list.
-    pub show_projects: bool,
-    /// Cached list of projects for rendering.
-    pub projects: Vec<Project>,
-    /// Selection state for the project list.
-    pub project_list_state: ListState,
-    /// Input state for the task search filter.
-    pub search_input: InputState,
     /// Indices into `tasks` that match the current search query.
     pub filtered_indices: Vec<usize>,
-    /// Indices into `projects` that match the current search query.
-    pub filtered_project_indices: Vec<usize>,
-    /// Global map of task_name → project_id for all running tasks.
-    /// Updated every tick from the full (unscoped) active task list.
-    pub global_task_projects: HashMap<TaskName, Option<ProjectId>>,
-    /// Global list of (task_name, work_dir) for all running tasks.
-    /// Used for CWD→task matching in permission/resolved/idle handlers
-    /// so lookups work regardless of which project is currently displayed.
-    pub global_task_work_dirs: Vec<(TaskName, String)>,
 }
 
-impl ScreenState {
-    pub fn new(tasks: Vec<Task>) -> Self {
+impl TaskListState {
+    fn new(tasks: Vec<Task>) -> Self {
         let mut list_state = ListState::default();
         if !tasks.is_empty() {
             list_state.select(Some(0));
@@ -89,60 +55,14 @@ impl ScreenState {
         Self {
             tasks,
             list_state,
-            should_quit: false,
-            focus: Focus::ChatInput,
-            input: InputState::new(),
             show_detail: false,
-            permissions: PermissionStore::new(),
             selected_messages: Vec::new(),
             detail_scroll: 0,
             detail_live_output: None,
             window_numbers: HashMap::new(),
-            chat_buffers: HashMap::new(),
-            chat_scroll: 0,
-            chat_viewport_height: 0,
             idle_panes: HashSet::new(),
-            status_error: None,
-            active_project: None,
-            active_project_id: None,
-            last_project: None,
-            exo_chat: AssistantChat::new(),
-            project_chats: HashMap::new(),
-            show_projects: false,
-            projects: Vec::new(),
-            project_list_state: ListState::default(),
-            search_input: InputState::new(),
             filtered_indices: Vec::new(),
-            filtered_project_indices: Vec::new(),
-            global_task_projects: HashMap::new(),
-            global_task_work_dirs: Vec::new(),
         }
-    }
-
-    pub fn current_focus(&self) -> &Focus {
-        &self.focus
-    }
-
-    pub fn update_chat_viewport_height(&mut self, area_height: u16) {
-        self.chat_viewport_height = area_height.saturating_sub(2);
-    }
-
-    pub fn scroll_chat_up(&mut self) {
-        let half = (self.chat_viewport_height / 2).max(1);
-        self.chat_scroll = self.chat_scroll.saturating_add(half);
-    }
-
-    pub fn scroll_chat_down(&mut self) {
-        let half = (self.chat_viewport_height / 2).max(1);
-        self.chat_scroll = self.chat_scroll.saturating_sub(half);
-    }
-
-    pub fn navigate_focus_down(&mut self) {
-        self.focus = Focus::ChatInput;
-    }
-
-    pub fn navigate_focus_right(&mut self) {
-        self.focus = Focus::TaskList;
     }
 
     pub fn selected_task(&self) -> Option<&Task> {
@@ -185,7 +105,6 @@ impl ScreenState {
             if let Some(pos) = self.tasks.iter().position(|t| t.id == id) {
                 self.list_state.select(Some(pos));
             } else if !self.tasks.is_empty() {
-                // Selection changed — reset scroll
                 self.detail_scroll = 0;
                 let clamped = self
                     .list_state
@@ -201,6 +120,183 @@ impl ScreenState {
             self.list_state.select(Some(0));
         }
     }
+
+    pub fn scroll_detail_down(&mut self) {
+        self.detail_scroll = self.detail_scroll.saturating_add(10);
+    }
+
+    pub fn scroll_detail_up(&mut self) {
+        self.detail_scroll = self.detail_scroll.saturating_sub(10);
+    }
+
+    /// Resolve the currently selected filtered index back to the real task index.
+    pub fn selected_filtered_task_index(&self) -> Option<usize> {
+        self.list_state
+            .selected()
+            .and_then(|i| self.filtered_indices.get(i).copied())
+    }
+
+    /// Move to the next item in filtered search results.
+    pub fn search_next(&mut self) {
+        if self.filtered_indices.is_empty() {
+            return;
+        }
+        let i = match self.list_state.selected() {
+            Some(i) => (i + 1) % self.filtered_indices.len(),
+            None => 0,
+        };
+        self.list_state.select(Some(i));
+    }
+
+    /// Move to the previous item in filtered search results.
+    pub fn search_prev(&mut self) {
+        if self.filtered_indices.is_empty() {
+            return;
+        }
+        let i = match self.list_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.filtered_indices.len() - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.list_state.select(Some(i));
+    }
+}
+
+// ── Top-level screen state ──────────────────────────────────────────
+
+pub struct ScreenState {
+    pub task_list: TaskListState,
+    pub should_quit: bool,
+    pub focus: Focus,
+    pub input: InputState,
+    pub permissions: PermissionStore,
+    pub chat_buffers: HashMap<ChatId, String>,
+    pub chat_scroll: u16,
+    pub chat_viewport_height: u16,
+    /// Transient error message shown in the prompt bar. Cleared on next keypress.
+    pub status_error: Option<String>,
+    /// Currently active project name (for display). None = default (ExO).
+    pub active_project: Option<ProjectName>,
+    /// Currently active project ID (for queries). None = default (ExO).
+    pub active_project_id: Option<ProjectId>,
+    /// Last active project state — remembered when Ctrl+O leaves a project.
+    pub last_project: Option<SavedProjectState>,
+    /// ExO assistant chat state (messages, streaming flag).
+    pub exo_chat: AssistantChat,
+    /// Per-project PM assistant chat states.
+    pub project_chats: HashMap<ProjectId, AssistantChat>,
+    /// Whether the right panel shows the project list instead of the task list.
+    pub show_projects: bool,
+    /// Cached list of projects for rendering.
+    pub projects: Vec<Project>,
+    /// Selection state for the project list.
+    pub project_list_state: ListState,
+    /// Input state for the task search filter.
+    pub search_input: InputState,
+    /// Indices into `projects` that match the current search query.
+    pub filtered_project_indices: Vec<usize>,
+    /// Global map of task_name → project_id for all running tasks.
+    /// Updated every tick from the full (unscoped) active task list.
+    pub global_task_projects: HashMap<TaskName, Option<ProjectId>>,
+    /// Global list of (task_name, work_dir) for all running tasks.
+    /// Used for CWD→task matching in permission/resolved/idle handlers
+    /// so lookups work regardless of which project is currently displayed.
+    pub global_task_work_dirs: Vec<(TaskName, String)>,
+}
+
+impl ScreenState {
+    pub fn new(tasks: Vec<Task>) -> Self {
+        Self {
+            task_list: TaskListState::new(tasks),
+            should_quit: false,
+            focus: Focus::ChatInput,
+            input: InputState::new(),
+            permissions: PermissionStore::new(),
+            chat_buffers: HashMap::new(),
+            chat_scroll: 0,
+            chat_viewport_height: 0,
+            status_error: None,
+            active_project: None,
+            active_project_id: None,
+            last_project: None,
+            exo_chat: AssistantChat::new(),
+            project_chats: HashMap::new(),
+            show_projects: false,
+            projects: Vec::new(),
+            project_list_state: ListState::default(),
+            search_input: InputState::new(),
+            filtered_project_indices: Vec::new(),
+            global_task_projects: HashMap::new(),
+            global_task_work_dirs: Vec::new(),
+        }
+    }
+
+    // ── Delegates to TaskListState ──────────────────────────────────
+
+    pub fn selected_task(&self) -> Option<&Task> {
+        self.task_list.selected_task()
+    }
+
+    pub fn next(&mut self) {
+        self.task_list.next();
+    }
+
+    pub fn previous(&mut self) {
+        self.task_list.previous();
+    }
+
+    pub fn refresh_tasks(&mut self, tasks: Vec<Task>) {
+        self.task_list.refresh_tasks(tasks);
+    }
+
+    pub fn scroll_detail_down(&mut self) {
+        self.task_list.scroll_detail_down();
+    }
+
+    pub fn scroll_detail_up(&mut self) {
+        self.task_list.scroll_detail_up();
+    }
+
+    pub fn selected_filtered_task_index(&self) -> Option<usize> {
+        self.task_list.selected_filtered_task_index()
+    }
+
+    // ── Focus ───────────────────────────────────────────────────────
+
+    pub fn current_focus(&self) -> &Focus {
+        &self.focus
+    }
+
+    pub fn navigate_focus_down(&mut self) {
+        self.focus = Focus::ChatInput;
+    }
+
+    pub fn navigate_focus_right(&mut self) {
+        self.focus = Focus::TaskList;
+    }
+
+    // ── Chat scroll ─────────────────────────────────────────────────
+
+    pub fn update_chat_viewport_height(&mut self, area_height: u16) {
+        self.chat_viewport_height = area_height.saturating_sub(2);
+    }
+
+    pub fn scroll_chat_up(&mut self) {
+        let half = (self.chat_viewport_height / 2).max(1);
+        self.chat_scroll = self.chat_scroll.saturating_add(half);
+    }
+
+    pub fn scroll_chat_down(&mut self) {
+        let half = (self.chat_viewport_height / 2).max(1);
+        self.chat_scroll = self.chat_scroll.saturating_sub(half);
+    }
+
+    // ── Permissions ─────────────────────────────────────────────────
 
     /// Count pending permissions only for tasks in the current project.
     pub fn current_project_perm_count(&self) -> usize {
@@ -223,8 +319,36 @@ impl ScreenState {
             .askuser_count_for_project(self.active_project_id.as_ref(), &self.global_task_projects)
     }
 
+    /// Returns the permission key for the currently visible pane.
+    /// Task name if viewing a task's detail, "exo" otherwise.
+    pub fn focused_perm_key(&self) -> TaskName {
+        if self.task_list.show_detail {
+            self.selected_task()
+                .map(|t| t.name.clone())
+                .unwrap_or_else(|| TaskName::from("exo".to_string()))
+        } else {
+            TaskName::from("exo".to_string())
+        }
+    }
+
+    /// Returns the permission key to display in the overlay and act on
+    /// with global keybindings. Prefers the focused task's key; falls
+    /// back to any task with pending permissions.
+    pub fn active_permission_key(&self) -> Option<TaskName> {
+        let focused = self.focused_perm_key();
+        if self.permissions.peek(&focused).is_some() {
+            return Some(focused);
+        }
+        self.permissions
+            .task_names_with_pending()
+            .into_iter()
+            .next()
+    }
+
+    // ── Input save/restore ──────────────────────────────────────────
+
     fn current_chat_id(&self) -> ChatId {
-        if self.show_detail {
+        if self.task_list.show_detail {
             self.selected_task()
                 .map(|t| ChatId::Task(t.id.clone()))
                 .unwrap_or(ChatId::Exo)
@@ -252,6 +376,62 @@ impl ScreenState {
         self.input.set(&text);
     }
 
+    // ── Detail view ─────────────────────────────────────────────────
+
+    /// Open a task's detail view: select it, show detail panel, reset scrolls,
+    /// focus chat input, and restore that task's input buffer.
+    /// Callers that need to preserve the *current* input should call
+    /// `save_current_input()` **before** this method.
+    pub fn open_task_detail(&mut self, index: usize) {
+        self.task_list.list_state.select(Some(index));
+        self.task_list.show_detail = true;
+        self.task_list.detail_scroll = 0;
+        self.focus = Focus::ChatInput;
+        self.chat_scroll = 0;
+        self.restore_input();
+    }
+
+    /// Leave the task detail view and return to the main chat.
+    /// Resets chat scroll and restores the main chat input buffer.
+    /// Callers that need to preserve the *current* input should call
+    /// `save_current_input()` **before** this method.
+    pub fn close_task_detail(&mut self) {
+        self.task_list.show_detail = false;
+        self.chat_scroll = 0;
+        self.focus = Focus::ChatInput;
+        self.restore_input();
+    }
+
+    /// Move to the next (forward=true) or previous (forward=false) task
+    /// from within the task chat input. Returns `true` if navigation stayed
+    /// within bounds, `false` if it wrapped past the edge (detail is hidden).
+    pub fn navigate_to_adjacent_task(&mut self, forward: bool) -> bool {
+        self.save_current_input();
+        self.chat_scroll = 0;
+        let current = self.task_list.list_state.selected().unwrap_or(0);
+        let in_bounds = if forward {
+            if current + 1 < self.task_list.tasks.len() {
+                self.task_list.list_state.select(Some(current + 1));
+                self.task_list.detail_scroll = 0;
+                true
+            } else {
+                self.task_list.show_detail = false;
+                false
+            }
+        } else if current > 0 {
+            self.task_list.list_state.select(Some(current - 1));
+            self.task_list.detail_scroll = 0;
+            true
+        } else {
+            self.task_list.show_detail = false;
+            false
+        };
+        self.restore_input();
+        in_bounds
+    }
+
+    // ── Project switching ───────────────────────────────────────────
+
     /// Switch to a project (or ExO when `project` is `None`).
     /// Saves current project state, swaps project context, loads tasks,
     /// and optionally focuses a specific task by name.
@@ -268,7 +448,7 @@ impl ScreenState {
             self.last_project = Some(SavedProjectState {
                 name,
                 id,
-                show_detail: self.show_detail,
+                show_detail: self.task_list.show_detail,
                 selected_task_name,
             });
         }
@@ -278,7 +458,7 @@ impl ScreenState {
         self.active_project = project.as_ref().map(|(n, _)| n.clone());
         self.active_project_id = project.map(|(_, id)| id);
         self.show_projects = false;
-        self.show_detail = false;
+        self.task_list.show_detail = false;
         self.focus = Focus::ChatInput;
         self.chat_scroll = 0;
 
@@ -288,74 +468,12 @@ impl ScreenState {
 
         // Focus a specific task if requested
         if let Some(name) = focus_task
-            && let Some(pos) = self.tasks.iter().position(|t| &t.name == name)
+            && let Some(pos) = self.task_list.tasks.iter().position(|t| &t.name == name)
         {
-            self.list_state.select(Some(pos));
-            self.show_detail = true;
-            self.detail_scroll = 0;
+            self.task_list.list_state.select(Some(pos));
+            self.task_list.show_detail = true;
+            self.task_list.detail_scroll = 0;
         }
-    }
-
-    // ── Detail view ──────────────────────────────────────────────────
-
-    pub fn scroll_detail_down(&mut self) {
-        self.detail_scroll = self.detail_scroll.saturating_add(10);
-    }
-
-    pub fn scroll_detail_up(&mut self) {
-        self.detail_scroll = self.detail_scroll.saturating_sub(10);
-    }
-
-    /// Open a task's detail view: select it, show detail panel, reset scrolls,
-    /// focus chat input, and restore that task's input buffer.
-    /// Callers that need to preserve the *current* input should call
-    /// `save_current_input()` **before** this method.
-    pub fn open_task_detail(&mut self, index: usize) {
-        self.list_state.select(Some(index));
-        self.show_detail = true;
-        self.detail_scroll = 0;
-        self.focus = Focus::ChatInput;
-        self.chat_scroll = 0;
-        self.restore_input();
-    }
-
-    /// Leave the task detail view and return to the main chat.
-    /// Resets chat scroll and restores the main chat input buffer.
-    /// Callers that need to preserve the *current* input should call
-    /// `save_current_input()` **before** this method.
-    pub fn close_task_detail(&mut self) {
-        self.show_detail = false;
-        self.chat_scroll = 0;
-        self.focus = Focus::ChatInput;
-        self.restore_input();
-    }
-
-    /// Move to the next (forward=true) or previous (forward=false) task
-    /// from within the task chat input. Returns `true` if navigation stayed
-    /// within bounds, `false` if it wrapped past the edge (detail is hidden).
-    pub fn navigate_to_adjacent_task(&mut self, forward: bool) -> bool {
-        self.save_current_input();
-        self.chat_scroll = 0;
-        let current = self.list_state.selected().unwrap_or(0);
-        let in_bounds = if forward {
-            if current + 1 < self.tasks.len() {
-                self.list_state.select(Some(current + 1));
-                self.detail_scroll = 0;
-                true
-            } else {
-                self.show_detail = false;
-                false
-            }
-        } else if current > 0 {
-            self.list_state.select(Some(current - 1));
-            self.detail_scroll = 0;
-            true
-        } else {
-            self.show_detail = false;
-            false
-        };
-        self.restore_input();
-        in_bounds
     }
 
     // ── Project list ────────────────────────────────────────────────
@@ -383,94 +501,6 @@ impl ScreenState {
                 .min(self.projects.len().saturating_sub(1));
             self.project_list_state.select(Some(sel));
         }
-    }
-
-    // ── Search ──────────────────────────────────────────────────────
-
-    /// Enter search mode: clear the search input and focus the search bar.
-    pub fn enter_search_mode(&mut self) {
-        self.search_input.take();
-        self.update_search_filter();
-        self.focus = Focus::TaskSearch;
-    }
-
-    /// Exit search mode: clear filters, clamp selection, restore focus.
-    pub fn exit_search(&mut self) {
-        self.search_input.take();
-        if self.show_projects {
-            self.filtered_project_indices.clear();
-            if !self.projects.is_empty() {
-                let sel = self
-                    .project_list_state
-                    .selected()
-                    .unwrap_or(0)
-                    .min(self.projects.len() - 1);
-                self.project_list_state.select(Some(sel));
-            }
-            self.focus = Focus::ProjectList;
-        } else {
-            self.filtered_indices.clear();
-            if !self.tasks.is_empty() {
-                let sel = self
-                    .list_state
-                    .selected()
-                    .unwrap_or(0)
-                    .min(self.tasks.len() - 1);
-                self.list_state.select(Some(sel));
-            }
-            self.focus = Focus::TaskList;
-        }
-    }
-
-    /// Confirm the current search selection. For tasks, opens the detail view.
-    /// For projects, selects the project. Returns `true` if a selection was made.
-    pub fn confirm_search_selection(&mut self) -> bool {
-        if self.show_projects {
-            if let Some(real_idx) = self.selected_filtered_project_index() {
-                self.project_list_state.select(Some(real_idx));
-            }
-            self.search_input.take();
-            self.filtered_project_indices.clear();
-            self.focus = Focus::ProjectList;
-            true
-        } else {
-            let selected = if let Some(real_idx) = self.selected_filtered_task_index() {
-                self.open_task_detail(real_idx);
-                true
-            } else {
-                self.focus = Focus::TaskList;
-                false
-            };
-            self.search_input.take();
-            self.filtered_indices.clear();
-            selected
-        }
-    }
-
-    /// Returns the permission key for the currently visible pane.
-    /// Task name if viewing a task's detail, "exo" otherwise.
-    pub fn focused_perm_key(&self) -> TaskName {
-        if self.show_detail {
-            self.selected_task()
-                .map(|t| t.name.clone())
-                .unwrap_or_else(|| TaskName::from("exo".to_string()))
-        } else {
-            TaskName::from("exo".to_string())
-        }
-    }
-
-    /// Returns the permission key to display in the overlay and act on
-    /// with global keybindings. Prefers the focused task's key; falls
-    /// back to any task with pending permissions.
-    pub fn active_permission_key(&self) -> Option<TaskName> {
-        let focused = self.focused_perm_key();
-        if self.permissions.peek(&focused).is_some() {
-            return Some(focused);
-        }
-        self.permissions
-            .task_names_with_pending()
-            .into_iter()
-            .next()
     }
 
     pub fn next_project(&mut self) {
@@ -507,11 +537,75 @@ impl ScreenState {
             .and_then(|i| self.projects.get(i))
     }
 
+    // ── Search ──────────────────────────────────────────────────────
+
+    /// Enter search mode: clear the search input and focus the search bar.
+    pub fn enter_search_mode(&mut self) {
+        self.search_input.take();
+        self.update_search_filter();
+        self.focus = Focus::TaskSearch;
+    }
+
+    /// Exit search mode: clear filters, clamp selection, restore focus.
+    pub fn exit_search(&mut self) {
+        self.search_input.take();
+        if self.show_projects {
+            self.filtered_project_indices.clear();
+            if !self.projects.is_empty() {
+                let sel = self
+                    .project_list_state
+                    .selected()
+                    .unwrap_or(0)
+                    .min(self.projects.len() - 1);
+                self.project_list_state.select(Some(sel));
+            }
+            self.focus = Focus::ProjectList;
+        } else {
+            self.task_list.filtered_indices.clear();
+            if !self.task_list.tasks.is_empty() {
+                let sel = self
+                    .task_list
+                    .list_state
+                    .selected()
+                    .unwrap_or(0)
+                    .min(self.task_list.tasks.len() - 1);
+                self.task_list.list_state.select(Some(sel));
+            }
+            self.focus = Focus::TaskList;
+        }
+    }
+
+    /// Confirm the current search selection. For tasks, opens the detail view.
+    /// For projects, selects the project. Returns `true` if a selection was made.
+    pub fn confirm_search_selection(&mut self) -> bool {
+        if self.show_projects {
+            if let Some(real_idx) = self.selected_filtered_project_index() {
+                self.project_list_state.select(Some(real_idx));
+            }
+            self.search_input.take();
+            self.filtered_project_indices.clear();
+            self.focus = Focus::ProjectList;
+            true
+        } else {
+            let selected = if let Some(real_idx) = self.selected_filtered_task_index() {
+                self.open_task_detail(real_idx);
+                true
+            } else {
+                self.focus = Focus::TaskList;
+                false
+            };
+            self.search_input.take();
+            self.task_list.filtered_indices.clear();
+            selected
+        }
+    }
+
     /// Recompute `filtered_indices` based on `search_query`.
     /// Fuzzy match: each query char must appear in order (e.g. "res" matches "r.*e.*s.*").
     pub fn update_search_filter(&mut self) {
         let query: Vec<char> = self.search_input.buffer().to_lowercase().chars().collect();
-        self.filtered_indices = self
+        self.task_list.filtered_indices = self
+            .task_list
             .tasks
             .iter()
             .enumerate()
@@ -534,46 +628,21 @@ impl ScreenState {
             .map(|(i, _)| i)
             .collect();
         // Clamp selection to filtered range
-        if self.filtered_indices.is_empty() {
-            self.list_state.select(None);
+        if self.task_list.filtered_indices.is_empty() {
+            self.task_list.list_state.select(None);
         } else {
-            let sel = self.list_state.selected().unwrap_or(0);
-            if let Some(filtered_pos) = self.filtered_indices.iter().position(|&i| i == sel) {
-                self.list_state.select(Some(filtered_pos));
+            let sel = self.task_list.list_state.selected().unwrap_or(0);
+            if let Some(filtered_pos) = self
+                .task_list
+                .filtered_indices
+                .iter()
+                .position(|&i| i == sel)
+            {
+                self.task_list.list_state.select(Some(filtered_pos));
             } else {
-                self.list_state.select(Some(0));
+                self.task_list.list_state.select(Some(0));
             }
         }
-    }
-
-    /// Move to the next item in filtered search results.
-    pub fn search_next(&mut self) {
-        if self.filtered_indices.is_empty() {
-            return;
-        }
-        let i = match self.list_state.selected() {
-            Some(i) => (i + 1) % self.filtered_indices.len(),
-            None => 0,
-        };
-        self.list_state.select(Some(i));
-    }
-
-    /// Move to the previous item in filtered search results.
-    pub fn search_prev(&mut self) {
-        if self.filtered_indices.is_empty() {
-            return;
-        }
-        let i = match self.list_state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.filtered_indices.len() - 1
-                } else {
-                    i - 1
-                }
-            }
-            None => 0,
-        };
-        self.list_state.select(Some(i));
     }
 
     pub fn update_project_search_filter(&mut self) {
@@ -645,13 +714,6 @@ impl ScreenState {
             .selected()
             .and_then(|i| self.filtered_project_indices.get(i).copied())
     }
-
-    /// Resolve the currently selected filtered index back to the real task index.
-    pub fn selected_filtered_task_index(&self) -> Option<usize> {
-        self.list_state
-            .selected()
-            .and_then(|i| self.filtered_indices.get(i).copied())
-    }
 }
 
 #[cfg(test)]
@@ -694,25 +756,25 @@ mod tests {
     fn scroll_detail_down_increments() {
         let mut s = state_with_tasks(0);
         s.scroll_detail_down();
-        assert_eq!(s.detail_scroll, 10);
+        assert_eq!(s.task_list.detail_scroll, 10);
         s.scroll_detail_down();
-        assert_eq!(s.detail_scroll, 20);
+        assert_eq!(s.task_list.detail_scroll, 20);
     }
 
     #[test]
     fn scroll_detail_up_decrements() {
         let mut s = state_with_tasks(0);
-        s.detail_scroll = 25;
+        s.task_list.detail_scroll = 25;
         s.scroll_detail_up();
-        assert_eq!(s.detail_scroll, 15);
+        assert_eq!(s.task_list.detail_scroll, 15);
     }
 
     #[test]
     fn scroll_detail_up_saturates_at_zero() {
         let mut s = state_with_tasks(0);
-        s.detail_scroll = 5;
+        s.task_list.detail_scroll = 5;
         s.scroll_detail_up();
-        assert_eq!(s.detail_scroll, 0);
+        assert_eq!(s.task_list.detail_scroll, 0);
     }
 
     // ── open_task_detail ────────────────────────────────────────────
@@ -720,16 +782,16 @@ mod tests {
     #[test]
     fn open_task_detail_sets_expected_fields() {
         let mut s = state_with_tasks(3);
-        s.show_detail = false;
-        s.detail_scroll = 99;
+        s.task_list.show_detail = false;
+        s.task_list.detail_scroll = 99;
         s.chat_scroll = 42;
         s.focus = Focus::TaskList;
 
         s.open_task_detail(2);
 
-        assert!(s.show_detail);
-        assert_eq!(s.list_state.selected(), Some(2));
-        assert_eq!(s.detail_scroll, 0);
+        assert!(s.task_list.show_detail);
+        assert_eq!(s.task_list.list_state.selected(), Some(2));
+        assert_eq!(s.task_list.detail_scroll, 0);
         assert_eq!(s.chat_scroll, 0);
         assert!(matches!(s.focus, Focus::ChatInput));
     }
@@ -739,13 +801,13 @@ mod tests {
     #[test]
     fn close_task_detail_hides_and_resets() {
         let mut s = state_with_tasks(2);
-        s.show_detail = true;
+        s.task_list.show_detail = true;
         s.chat_scroll = 10;
         s.focus = Focus::TaskList;
 
         s.close_task_detail();
 
-        assert!(!s.show_detail);
+        assert!(!s.task_list.show_detail);
         assert_eq!(s.chat_scroll, 0);
         assert!(matches!(s.focus, Focus::ChatInput));
     }
@@ -755,52 +817,52 @@ mod tests {
     #[test]
     fn navigate_forward_within_bounds() {
         let mut s = state_with_tasks(3);
-        s.show_detail = true;
-        s.list_state.select(Some(0));
+        s.task_list.show_detail = true;
+        s.task_list.list_state.select(Some(0));
 
         let result = s.navigate_to_adjacent_task(true);
 
         assert!(result);
-        assert_eq!(s.list_state.selected(), Some(1));
-        assert!(s.show_detail);
-        assert_eq!(s.detail_scroll, 0);
+        assert_eq!(s.task_list.list_state.selected(), Some(1));
+        assert!(s.task_list.show_detail);
+        assert_eq!(s.task_list.detail_scroll, 0);
     }
 
     #[test]
     fn navigate_forward_past_end_hides_detail() {
         let mut s = state_with_tasks(2);
-        s.show_detail = true;
-        s.list_state.select(Some(1));
+        s.task_list.show_detail = true;
+        s.task_list.list_state.select(Some(1));
 
         let result = s.navigate_to_adjacent_task(true);
 
         assert!(!result);
-        assert!(!s.show_detail);
+        assert!(!s.task_list.show_detail);
     }
 
     #[test]
     fn navigate_backward_within_bounds() {
         let mut s = state_with_tasks(3);
-        s.show_detail = true;
-        s.list_state.select(Some(2));
+        s.task_list.show_detail = true;
+        s.task_list.list_state.select(Some(2));
 
         let result = s.navigate_to_adjacent_task(false);
 
         assert!(result);
-        assert_eq!(s.list_state.selected(), Some(1));
-        assert!(s.show_detail);
+        assert_eq!(s.task_list.list_state.selected(), Some(1));
+        assert!(s.task_list.show_detail);
     }
 
     #[test]
     fn navigate_backward_past_start_hides_detail() {
         let mut s = state_with_tasks(2);
-        s.show_detail = true;
-        s.list_state.select(Some(0));
+        s.task_list.show_detail = true;
+        s.task_list.list_state.select(Some(0));
 
         let result = s.navigate_to_adjacent_task(false);
 
         assert!(!result);
-        assert!(!s.show_detail);
+        assert!(!s.task_list.show_detail);
     }
 
     // ── show_project_list ───────────────────────────────────────────
@@ -837,7 +899,6 @@ mod tests {
         s.projects = vec![make_project("a"), make_project("b"), make_project("c")];
         s.project_list_state.select(Some(2));
 
-        // Shrink to 2 projects — selection should clamp from 2 to 1
         s.refresh_projects(vec![make_project("a"), make_project("b")]);
 
         assert_eq!(s.project_list_state.selected(), Some(1));
@@ -874,13 +935,13 @@ mod tests {
         let mut s = state_with_tasks(3);
         s.show_projects = false;
         s.focus = Focus::TaskSearch;
-        s.filtered_indices = vec![0, 2];
-        s.list_state.select(Some(0));
+        s.task_list.filtered_indices = vec![0, 2];
+        s.task_list.list_state.select(Some(0));
 
         s.exit_search();
 
         assert!(matches!(s.focus, Focus::TaskList));
-        assert!(s.filtered_indices.is_empty());
+        assert!(s.task_list.filtered_indices.is_empty());
     }
 
     #[test]
@@ -905,24 +966,24 @@ mod tests {
     fn confirm_search_selection_opens_task_detail() {
         let mut s = state_with_tasks(3);
         s.show_projects = false;
-        s.filtered_indices = vec![0, 2];
-        s.list_state.select(Some(1)); // points to filtered_indices[1] = 2
+        s.task_list.filtered_indices = vec![0, 2];
+        s.task_list.list_state.select(Some(1)); // points to filtered_indices[1] = 2
 
         let result = s.confirm_search_selection();
 
         assert!(result);
-        assert!(s.show_detail);
-        assert_eq!(s.list_state.selected(), Some(2)); // real index
+        assert!(s.task_list.show_detail);
+        assert_eq!(s.task_list.list_state.selected(), Some(2)); // real index
         assert!(matches!(s.focus, Focus::ChatInput));
-        assert!(s.filtered_indices.is_empty());
+        assert!(s.task_list.filtered_indices.is_empty());
     }
 
     #[test]
     fn confirm_search_selection_no_match_goes_to_task_list() {
         let mut s = state_with_tasks(3);
         s.show_projects = false;
-        s.filtered_indices = vec![];
-        s.list_state.select(None);
+        s.task_list.filtered_indices = vec![];
+        s.task_list.list_state.select(None);
 
         let result = s.confirm_search_selection();
 

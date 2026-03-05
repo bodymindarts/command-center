@@ -141,6 +141,7 @@ pub(in crate::tui) fn render_delete_confirm_panel(
         return;
     };
     let name = state
+        .task_list
         .tasks
         .iter()
         .find(|t| t.id == *id)
@@ -190,6 +191,7 @@ pub(in crate::tui) fn render_close_task_panel(
         return;
     };
     let name = state
+        .task_list
         .tasks
         .iter()
         .find(|t| t.id == *id)

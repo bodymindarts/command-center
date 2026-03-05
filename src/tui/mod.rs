@@ -168,6 +168,7 @@ pub fn run<R: Runtime>(
     crate::permission::write_socket_breadcrumb(app.project_root(), &socket_path);
     {
         let work_dirs: Vec<String> = state
+            .task_list
             .tasks
             .iter()
             .filter_map(|t| t.work_dir.clone())
@@ -301,7 +302,8 @@ fn run_loop<R: Runtime>(
     // Start with all running panes assumed idle. Notification hooks
     // (idle_prompt → idle, permission_prompt/elicitation_dialog → active)
     // and message-sent will flip state — no screen-capture polling needed.
-    state.idle_panes = state
+    state.task_list.idle_panes = state
+        .task_list
         .tasks
         .iter()
         .filter(|t| t.status.is_running())
