@@ -137,14 +137,7 @@ fn cmd_spawn(app: &ClatApp<impl Runtime>, opts: SpawnOpts) -> anyhow::Result<()>
 }
 
 fn cmd_list(app: &ClatApp<impl Runtime>, all: bool, project: Option<String>) -> anyhow::Result<()> {
-    let tasks = if all {
-        app.list_all()?
-    } else if let Some(ref name) = project {
-        let pid = app.resolve_project_id(name)?;
-        app.list_visible(Some(&pid))?
-    } else {
-        app.list_active()?
-    };
+    let tasks = app.list_tasks(all, project.as_deref())?;
 
     if tasks.is_empty() {
         println!("No tasks.");

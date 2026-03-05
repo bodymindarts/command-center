@@ -370,12 +370,20 @@ impl<R: Runtime> ClatApp<R> {
         })
     }
 
-    pub fn list_active(&self) -> anyhow::Result<Vec<Task>> {
-        self.store.list_active_tasks()
+    pub fn list_tasks(&self, all: bool, project: Option<&str>) -> anyhow::Result<Vec<Task>> {
+        if all {
+            self.store.list_tasks()
+        } else if let Some(name) = project {
+            let pid = self.resolve_project_id(name)?;
+            self.store
+                .list_visible_tasks_for_project(Some(pid.as_str()))
+        } else {
+            self.store.list_active_tasks()
+        }
     }
 
-    pub fn list_all(&self) -> anyhow::Result<Vec<Task>> {
-        self.store.list_tasks()
+    pub fn list_active(&self) -> anyhow::Result<Vec<Task>> {
+        self.store.list_active_tasks()
     }
 
     pub fn list_visible(&self, project_id: Option<&ProjectId>) -> anyhow::Result<Vec<Task>> {
@@ -970,7 +978,7 @@ prompt = "noop prompt"
         let active = service.list_active().unwrap();
         assert_eq!(active.len(), 1);
 
-        let all = service.list_all().unwrap();
+        let all = service.list_tasks(true, None).unwrap();
         assert_eq!(all.len(), 2);
     }
 
