@@ -100,8 +100,26 @@ pub(in crate::tui) fn ui(frame: &mut ratatui::Frame, state: &mut ScreenState) {
     }
 
     let focused_input = matches!(state.current_focus(), Focus::ChatInput);
-    input_panel::render_input(frame, state, left[2], focused_input);
-    input_panel::render_prompt_bar(frame, state, left[3]);
+    input_panel::render_input(
+        frame,
+        state.current_focus(),
+        &state.task_list,
+        &state.project_list,
+        &state.permissions,
+        &focused_perm_key,
+        &state.input,
+        left[2],
+        focused_input,
+    );
+    input_panel::render_prompt_bar(
+        frame,
+        state.current_focus(),
+        state.task_list.show_detail,
+        &state.permissions,
+        &focused_perm_key,
+        state.status_error.as_deref(),
+        left[3],
+    );
 
     // Right side: task list or project list
     let focused_task_list = matches!(

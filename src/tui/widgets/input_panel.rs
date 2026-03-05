@@ -3,19 +3,28 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use super::super::screen_state::{Focus, ScreenState};
+use crate::primitives::TaskName;
 
+use super::super::permissions::PermissionStore;
+use super::super::screen_state::{Focus, InputState, ProjectListState, TaskListState};
+
+#[allow(clippy::too_many_arguments)]
 pub(in crate::tui) fn render_input(
     frame: &mut ratatui::Frame,
-    state: &ScreenState,
+    focus: &Focus,
+    task_list: &TaskListState,
+    project_list: &ProjectListState,
+    permissions: &PermissionStore,
+    perm_key: &TaskName,
+    input: &InputState,
     area: Rect,
     focused: bool,
 ) {
-    let front_input_perm = state.permissions.peek(&state.focused_perm_key());
+    let front_input_perm = permissions.peek(perm_key);
     let focused_has_perms =
-        state.task_list.show_detail && front_input_perm.is_some_and(|p| !p.is_askuser());
+        task_list.show_detail && front_input_perm.is_some_and(|p| !p.is_askuser());
     let focused_has_askuser =
-        state.task_list.show_detail && front_input_perm.is_some_and(|p| p.is_askuser());
+        task_list.show_detail && front_input_perm.is_some_and(|p| p.is_askuser());
     let border_color = if focused && focused_has_perms {
         Color::Yellow
     } else if focused && focused_has_askuser {
@@ -25,14 +34,14 @@ pub(in crate::tui) fn render_input(
     } else {
         Color::DarkGray
     };
-    let searching = matches!(state.current_focus(), Focus::TaskSearch);
-    let prefix = if !searching && state.task_list.show_detail {
-        let name = state
+    let searching = matches!(focus, Focus::TaskSearch);
+    let prefix = if !searching && task_list.show_detail {
+        let name = task_list
             .selected_task()
             .map(|t| t.name.as_str())
             .unwrap_or("?");
         format!("[{name}] > ")
-    } else if let Some(ref name) = state.project_list.active_project {
+    } else if let Some(ref name) = project_list.active_project {
         format!("[{}] > ", name.as_str())
     } else {
         "[ExO] > ".to_string()
@@ -42,8 +51,8 @@ pub(in crate::tui) fn render_input(
     // Visible width inside borders
     let visible_width = area.width.saturating_sub(2);
 
-    let display_buf = state.input.display_text();
-    let cursor_pos = prefix_len + state.input.display_cursor() as u16;
+    let display_buf = input.display_text();
+    let cursor_pos = prefix_len + input.display_cursor() as u16;
     let scroll = if cursor_pos >= visible_width {
         cursor_pos - visible_width + 1
     } else {
@@ -99,11 +108,15 @@ fn askuser_hint_spans(n_opts: usize) -> Vec<Span<'static>> {
 
 pub(in crate::tui) fn render_prompt_bar(
     frame: &mut ratatui::Frame,
-    state: &ScreenState,
+    focus: &Focus,
+    show_detail: bool,
+    permissions: &PermissionStore,
+    perm_key: &TaskName,
+    status_error: Option<&str>,
     area: Rect,
 ) {
     // Show transient error in red, replacing normal keybinding hints
-    if let Some(ref err) = state.status_error {
+    if let Some(err) = status_error {
         let bar = Paragraph::new(Line::from(vec![Span::styled(
             format!(" {err}"),
             Style::default().fg(Color::Red),
@@ -112,10 +125,10 @@ pub(in crate::tui) fn render_prompt_bar(
         return;
     }
 
-    let front_p = state.permissions.peek(&state.focused_perm_key());
-    let has_perms = state.task_list.show_detail && front_p.is_some_and(|p| !p.is_askuser());
-    let mut spans = match state.current_focus() {
-        Focus::ChatInput if state.task_list.show_detail => {
+    let front_p = permissions.peek(perm_key);
+    let has_perms = show_detail && front_p.is_some_and(|p| !p.is_askuser());
+    let mut spans = match focus {
+        Focus::ChatInput if show_detail => {
             vec![
                 Span::styled(" ^G", Style::default().fg(Color::Yellow)),
                 Span::raw(" goto  "),
@@ -208,7 +221,7 @@ pub(in crate::tui) fn render_prompt_bar(
             ]
         }
     };
-    let has_askuser = state.task_list.show_detail && front_p.is_some_and(|p| p.is_askuser());
+    let has_askuser = show_detail && front_p.is_some_and(|p| p.is_askuser());
     if has_perms {
         spans.extend(perm_hint_spans());
     } else if has_askuser {
