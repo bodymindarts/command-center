@@ -238,6 +238,7 @@ pub(in crate::tui) fn render_close_project_panel(
     area: Rect,
 ) {
     let name = state
+        .project_list
         .active_project
         .as_ref()
         .map(|n| n.as_str())

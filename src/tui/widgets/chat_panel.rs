@@ -18,7 +18,7 @@ pub(in crate::tui) fn render_chat(frame: &mut ratatui::Frame, state: &ScreenStat
             .map(|t| t.name.as_str())
             .unwrap_or("?");
         format!(" Chat: {name} ")
-    } else if let Some(ref name) = state.active_project {
+    } else if let Some(ref name) = state.project_list.active_project {
         format!(" PM: {} ", name.as_str())
     } else {
         " ExO Chat ".to_string()
@@ -82,7 +82,7 @@ pub(in crate::tui) fn render_chat(frame: &mut ratatui::Frame, state: &ScreenStat
                 lines.push(Line::from(l.to_string()));
             }
         }
-    } else if let Some(ref pid) = state.active_project_id {
+    } else if let Some(ref pid) = state.project_list.active_project_id {
         // Render PM chat
         if let Some(pm) = state.project_chats.get(pid) {
             render_chat_messages(&mut lines, &pm.messages, "PM", pm.streaming);

@@ -97,7 +97,7 @@ pub(in crate::tui) fn render_task_list(
     area: Rect,
     focused: bool,
 ) {
-    if state.show_projects {
+    if state.project_list.show_projects {
         render_project_list(frame, state, area, focused);
         return;
     }
@@ -149,7 +149,7 @@ pub(in crate::tui) fn render_task_list(
             state.task_list.filtered_indices.len(),
             state.task_list.tasks.len()
         )));
-    } else if let Some(ref name) = state.active_project {
+    } else if let Some(ref name) = state.project_list.active_project {
         let name = name.as_str();
         let mut badges = Vec::new();
         if total_perm > 0 {
@@ -225,7 +225,8 @@ fn render_project_list(
     area: Rect,
     focused: bool,
 ) {
-    let searching = matches!(state.current_focus(), Focus::TaskSearch) && state.show_projects;
+    let searching =
+        matches!(state.current_focus(), Focus::TaskSearch) && state.project_list.show_projects;
 
     let (list_area, search_area) = if searching {
         let chunks = Layout::default()
@@ -259,20 +260,26 @@ fn render_project_list(
 
     let items: Vec<ListItem> = if searching {
         state
+            .project_list
             .filtered_project_indices
             .iter()
-            .filter_map(|&i| state.projects.get(i))
+            .filter_map(|&i| state.project_list.projects.get(i))
             .map(project_item)
             .collect()
     } else {
-        state.projects.iter().map(project_item).collect()
+        state
+            .project_list
+            .projects
+            .iter()
+            .map(project_item)
+            .collect()
     };
 
     let title = if searching {
         format!(
             " Projects ({}/{}) ",
-            state.filtered_project_indices.len(),
-            state.projects.len()
+            state.project_list.filtered_project_indices.len(),
+            state.project_list.projects.len()
         )
     } else {
         " Projects ".to_string()
@@ -292,7 +299,7 @@ fn render_project_list(
         )
         .highlight_symbol("> ");
 
-    frame.render_stateful_widget(list, list_area, &mut state.project_list_state);
+    frame.render_stateful_widget(list, list_area, &mut state.project_list.list_state);
 
     if let Some(search_area) = search_area {
         render_search_bar(frame, &state.search_input.buffer(), search_area);

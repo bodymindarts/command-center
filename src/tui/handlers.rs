@@ -295,7 +295,7 @@ fn handle_cycle_permissions<R: Runtime>(
         let name = names[idx].clone();
         if name == EXO_PERM_KEY {
             // Navigate to ExO view
-            if state.active_project_id.is_some() {
+            if state.project_list.active_project_id.is_some() {
                 if let Ok(tasks) = app.list_visible(None) {
                     state.switch_to_project(None, tasks, None);
                 }
@@ -311,9 +311,10 @@ fn handle_cycle_permissions<R: Runtime>(
             let target_pid = state.global_task_projects.get(&name).cloned().flatten();
             if let Some(pid) = target_pid {
                 if let Ok(projects) = app.list_projects() {
-                    state.projects = projects;
+                    state.project_list.projects = projects;
                 }
                 let proj_name = state
+                    .project_list
                     .projects
                     .iter()
                     .find(|p| p.id == pid)
@@ -366,20 +367,22 @@ fn handle_goto_project<R: Runtime>(
     project_tx: &mpsc::Sender<ProjectEvent>,
 ) {
     // If in a project's task detail, go back to PM chat
-    if state.task_list.show_detail && state.active_project_id.is_some() {
+    if state.task_list.show_detail && state.project_list.active_project_id.is_some() {
         state.save_current_input();
         state.close_task_detail();
     // If in ExO view, restore last active project (or first project)
-    } else if state.active_project_id.is_none() {
+    } else if state.project_list.active_project_id.is_none() {
         if let Ok(projects) = app.list_projects() {
-            state.projects = projects;
+            state.project_list.projects = projects;
         }
         let target = state
+            .project_list
             .last_project
             .take()
             .map(|s| (s.name, s.id, s.show_detail, s.selected_task_name))
             .or_else(|| {
                 state
+                    .project_list
                     .projects
                     .first()
                     .map(|p| (p.name.clone(), p.id.clone(), false, None))
@@ -396,17 +399,24 @@ fn handle_goto_project<R: Runtime>(
             super::ensure_project_context(project_contexts, state, app, &id, project_tx);
         }
     // If in a project PM view, cycle to next project
-    } else if state.active_project_id.is_some() && !state.task_list.show_detail {
+    } else if state.project_list.active_project_id.is_some() && !state.task_list.show_detail {
         if let Ok(projects) = app.list_projects() {
-            state.projects = projects;
+            state.project_list.projects = projects;
         }
         let cur_idx = state
+            .project_list
             .active_project_id
             .as_ref()
-            .and_then(|pid| state.projects.iter().position(|p| p.id == *pid));
+            .and_then(|pid| {
+                state
+                    .project_list
+                    .projects
+                    .iter()
+                    .position(|p| p.id == *pid)
+            });
         if let Some(ci) = cur_idx {
-            let next_idx = (ci + 1) % state.projects.len();
-            let next = &state.projects[next_idx];
+            let next_idx = (ci + 1) % state.project_list.projects.len();
+            let next = &state.project_list.projects[next_idx];
             let next_id = next.id.clone();
             let next_name = next.name.clone();
             if let Ok(tasks) = app.list_visible(Some(&next_id)) {
@@ -517,7 +527,7 @@ fn handle_task_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app:
             if let Ok(projects) = app.list_projects() {
                 state.show_project_list(projects);
             } else {
-                state.show_projects = true;
+                state.project_list.show_projects = true;
                 state.focus = Focus::ProjectList;
             }
         }
@@ -527,9 +537,9 @@ fn handle_task_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app:
 
 fn handle_task_search_key(state: &mut ScreenState, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let searching_projects = state.show_projects;
+    let searching_projects = state.project_list.show_projects;
     let do_filter = |state: &mut ScreenState| {
-        if state.show_projects {
+        if state.project_list.show_projects {
             state.update_project_search_filter();
         } else {
             state.update_search_filter();
@@ -704,7 +714,7 @@ fn handle_chat_input_key<R: Runtime>(
             if state.exo_chat.streaming {
                 state.exo_chat.finish_streaming();
             }
-            if let Some(ref pid) = state.active_project_id
+            if let Some(ref pid) = state.project_list.active_project_id
                 && let Some(chat) = state.project_chats.get_mut(pid)
                 && chat.streaming
             {
@@ -733,7 +743,7 @@ fn handle_chat_input_key<R: Runtime>(
         KeyCode::Char('k') if ctrl => {
             state.focus = Focus::ChatHistory;
         }
-        KeyCode::Char('x') if ctrl && state.active_project.is_some() => {
+        KeyCode::Char('x') if ctrl && state.project_list.active_project.is_some() => {
             state.focus = Focus::ConfirmCloseProject;
         }
         KeyCode::Char('l') if ctrl => {
@@ -764,7 +774,7 @@ fn handle_chat_enter<R: Runtime>(
     if state.input.is_empty() {
         return;
     }
-    if let Some(pid) = state.active_project_id.clone() {
+    if let Some(pid) = state.project_list.active_project_id.clone() {
         if !project_contexts.contains_key(&pid) {
             project_contexts.insert(pid.clone(), ProjectContext::new(&pid, project_tx));
         }
@@ -791,6 +801,7 @@ fn handle_chat_enter<R: Runtime>(
                 .read_project_session_id(&pid)
                 .or_else(|| chat.session_id.clone());
             let proj_name = state
+                .project_list
                 .active_project
                 .as_ref()
                 .map(|p| p.as_str())
@@ -855,7 +866,7 @@ fn handle_confirm_delete_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent,
     match key.code {
         KeyCode::Char('y') => {
             let _ = app.delete(task_id.as_str());
-            if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()) {
+            if let Ok(tasks) = app.list_visible(state.project_list.active_project_id.as_ref()) {
                 state.refresh_tasks(tasks);
             }
             state.focus = Focus::TaskList;
@@ -879,7 +890,7 @@ fn handle_confirm_close_task_key<R: Runtime>(
     match key.code {
         KeyCode::Char('y') => {
             let _ = app.close(task_id.as_str());
-            if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()) {
+            if let Ok(tasks) = app.list_visible(state.project_list.active_project_id.as_ref()) {
                 state.refresh_tasks(tasks);
             }
             state.close_task_detail();
@@ -927,7 +938,7 @@ fn handle_confirm_close_project_key<R: Runtime>(
 ) {
     match key.code {
         KeyCode::Char('y') => {
-            let closed_pid = state.active_project_id.clone();
+            let closed_pid = state.project_list.active_project_id.clone();
             if let Ok(tasks) = app.list_visible(None) {
                 state.switch_to_project(None, tasks, None);
                 state.focus = Focus::TaskList;
@@ -954,7 +965,9 @@ fn goto_task_window<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
             let id = task.id.as_str().to_string();
             match app.reopen(&id) {
                 Ok(window_id) => {
-                    if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()) {
+                    if let Ok(tasks) =
+                        app.list_visible(state.project_list.active_project_id.as_ref())
+                    {
                         state.refresh_tasks(tasks);
                     }
                     app.goto_window(&window_id);
@@ -975,7 +988,7 @@ fn reopen_task<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
         let id = task.id.as_str().to_string();
         match app.reopen(&id) {
             Ok(_) => {
-                if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()) {
+                if let Ok(tasks) = app.list_visible(state.project_list.active_project_id.as_ref()) {
                     state.refresh_tasks(tasks);
                 }
             }
@@ -1059,7 +1072,7 @@ pub(super) fn drain_project_events<R: Runtime>(
 ) {
     while let Ok(ev) = project_rx.try_recv() {
         let project_id = ev.project_id;
-        let is_active_project = state.active_project_id.as_ref() == Some(&project_id);
+        let is_active_project = state.project_list.active_project_id.as_ref() == Some(&project_id);
         let Some(chat) = state.project_chats.get_mut(&project_id) else {
             continue;
         };
@@ -1329,7 +1342,7 @@ pub(super) fn tick_refresh<R: Runtime>(
     app: &ClatApp<R>,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
 ) {
-    if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()) {
+    if let Ok(tasks) = app.list_visible(state.project_list.active_project_id.as_ref()) {
         state.refresh_tasks(tasks);
     }
     // Update global task→project mapping and drain stale permissions.

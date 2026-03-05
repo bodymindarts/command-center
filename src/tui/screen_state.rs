@@ -167,10 +167,127 @@ impl TaskListState {
     }
 }
 
+// ── Project list component ──────────────────────────────────────────
+
+pub struct ProjectListState {
+    /// Cached list of projects for rendering.
+    pub projects: Vec<Project>,
+    /// Selection state for the project list.
+    pub list_state: ListState,
+    /// Whether the right panel shows the project list instead of the task list.
+    pub show_projects: bool,
+    /// Currently active project name (for display). None = default (ExO).
+    pub active_project: Option<ProjectName>,
+    /// Currently active project ID (for queries). None = default (ExO).
+    pub active_project_id: Option<ProjectId>,
+    /// Last active project state — remembered when Ctrl+O leaves a project.
+    pub last_project: Option<SavedProjectState>,
+    /// Indices into `projects` that match the current search query.
+    pub filtered_project_indices: Vec<usize>,
+}
+
+impl ProjectListState {
+    fn new() -> Self {
+        Self {
+            projects: Vec::new(),
+            list_state: ListState::default(),
+            show_projects: false,
+            active_project: None,
+            active_project_id: None,
+            last_project: None,
+            filtered_project_indices: Vec::new(),
+        }
+    }
+
+    pub fn next_project(&mut self) {
+        if self.projects.is_empty() {
+            return;
+        }
+        let i = match self.list_state.selected() {
+            Some(i) => (i + 1) % self.projects.len(),
+            None => 0,
+        };
+        self.list_state.select(Some(i));
+    }
+
+    pub fn previous_project(&mut self) {
+        if self.projects.is_empty() {
+            return;
+        }
+        let i = match self.list_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.projects.len() - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.list_state.select(Some(i));
+    }
+
+    pub fn selected_project(&self) -> Option<&Project> {
+        self.list_state
+            .selected()
+            .and_then(|i| self.projects.get(i))
+    }
+
+    /// Refresh the project list and clamp the selection after changes (e.g. delete).
+    pub fn refresh_projects(&mut self, projects: Vec<Project>) {
+        self.projects = projects;
+        if self.projects.is_empty() {
+            self.list_state.select(None);
+        } else {
+            let sel = self
+                .list_state
+                .selected()
+                .unwrap_or(0)
+                .min(self.projects.len().saturating_sub(1));
+            self.list_state.select(Some(sel));
+        }
+    }
+
+    pub fn selected_filtered_project_index(&self) -> Option<usize> {
+        self.list_state
+            .selected()
+            .and_then(|i| self.filtered_project_indices.get(i).copied())
+    }
+
+    pub fn search_next_project(&mut self) {
+        if self.filtered_project_indices.is_empty() {
+            return;
+        }
+        let i = match self.list_state.selected() {
+            Some(i) => (i + 1) % self.filtered_project_indices.len(),
+            None => 0,
+        };
+        self.list_state.select(Some(i));
+    }
+
+    pub fn search_prev_project(&mut self) {
+        if self.filtered_project_indices.is_empty() {
+            return;
+        }
+        let i = match self.list_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.filtered_project_indices.len() - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.list_state.select(Some(i));
+    }
+}
+
 // ── Top-level screen state ──────────────────────────────────────────
 
 pub struct ScreenState {
     pub task_list: TaskListState,
+    pub project_list: ProjectListState,
     pub should_quit: bool,
     pub focus: Focus,
     pub input: InputState,
@@ -180,26 +297,12 @@ pub struct ScreenState {
     pub chat_viewport_height: u16,
     /// Transient error message shown in the prompt bar. Cleared on next keypress.
     pub status_error: Option<String>,
-    /// Currently active project name (for display). None = default (ExO).
-    pub active_project: Option<ProjectName>,
-    /// Currently active project ID (for queries). None = default (ExO).
-    pub active_project_id: Option<ProjectId>,
-    /// Last active project state — remembered when Ctrl+O leaves a project.
-    pub last_project: Option<SavedProjectState>,
     /// ExO assistant chat state (messages, streaming flag).
     pub exo_chat: AssistantChat,
     /// Per-project PM assistant chat states.
     pub project_chats: HashMap<ProjectId, AssistantChat>,
-    /// Whether the right panel shows the project list instead of the task list.
-    pub show_projects: bool,
-    /// Cached list of projects for rendering.
-    pub projects: Vec<Project>,
-    /// Selection state for the project list.
-    pub project_list_state: ListState,
     /// Input state for the task search filter.
     pub search_input: InputState,
-    /// Indices into `projects` that match the current search query.
-    pub filtered_project_indices: Vec<usize>,
     /// Global map of task_name → project_id for all running tasks.
     /// Updated every tick from the full (unscoped) active task list.
     pub global_task_projects: HashMap<TaskName, Option<ProjectId>>,
@@ -213,6 +316,7 @@ impl ScreenState {
     pub fn new(tasks: Vec<Task>) -> Self {
         Self {
             task_list: TaskListState::new(tasks),
+            project_list: ProjectListState::new(),
             should_quit: false,
             focus: Focus::ChatInput,
             input: InputState::new(),
@@ -221,16 +325,9 @@ impl ScreenState {
             chat_scroll: 0,
             chat_viewport_height: 0,
             status_error: None,
-            active_project: None,
-            active_project_id: None,
-            last_project: None,
             exo_chat: AssistantChat::new(),
             project_chats: HashMap::new(),
-            show_projects: false,
-            projects: Vec::new(),
-            project_list_state: ListState::default(),
             search_input: InputState::new(),
-            filtered_project_indices: Vec::new(),
             global_task_projects: HashMap::new(),
             global_task_work_dirs: Vec::new(),
         }
@@ -264,6 +361,20 @@ impl ScreenState {
 
     pub fn selected_filtered_task_index(&self) -> Option<usize> {
         self.task_list.selected_filtered_task_index()
+    }
+
+    // ── Delegates to ProjectListState ───────────────────────────────
+
+    pub fn selected_project(&self) -> Option<&Project> {
+        self.project_list.selected_project()
+    }
+
+    pub fn refresh_projects(&mut self, projects: Vec<Project>) {
+        self.project_list.refresh_projects(projects);
+    }
+
+    pub fn selected_filtered_project_index(&self) -> Option<usize> {
+        self.project_list.selected_filtered_project_index()
     }
 
     // ── Focus ───────────────────────────────────────────────────────
@@ -300,23 +411,27 @@ impl ScreenState {
 
     /// Count pending permissions only for tasks in the current project.
     pub fn current_project_perm_count(&self) -> usize {
-        self.permissions
-            .count_for_project(self.active_project_id.as_ref(), &self.global_task_projects)
+        self.permissions.count_for_project(
+            self.project_list.active_project_id.as_ref(),
+            &self.global_task_projects,
+        )
     }
 
     /// Count pending permissions for tasks NOT in the current project.
     pub fn other_project_perm_counts(&self) -> Vec<(String, usize)> {
         self.permissions.other_project_counts(
-            self.active_project_id.as_ref(),
+            self.project_list.active_project_id.as_ref(),
             &self.global_task_projects,
-            &self.projects,
+            &self.project_list.projects,
         )
     }
 
     /// Count pending AskUser permissions in the current project.
     pub fn current_project_askuser_count(&self) -> usize {
-        self.permissions
-            .askuser_count_for_project(self.active_project_id.as_ref(), &self.global_task_projects)
+        self.permissions.askuser_count_for_project(
+            self.project_list.active_project_id.as_ref(),
+            &self.global_task_projects,
+        )
     }
 
     /// Returns the permission key for the currently visible pane.
@@ -352,7 +467,7 @@ impl ScreenState {
             self.selected_task()
                 .map(|t| ChatId::Task(t.id.clone()))
                 .unwrap_or(ChatId::Exo)
-        } else if let Some(ref pid) = self.active_project_id {
+        } else if let Some(ref pid) = self.project_list.active_project_id {
             ChatId::Project(pid.clone())
         } else {
             ChatId::Exo
@@ -443,9 +558,11 @@ impl ScreenState {
     ) {
         // Save current project state for Ctrl+R restore
         let selected_task_name = self.selected_task().map(|t| t.name.clone());
-        if let (Some(name), Some(id)) = (self.active_project.take(), self.active_project_id.take())
-        {
-            self.last_project = Some(SavedProjectState {
+        if let (Some(name), Some(id)) = (
+            self.project_list.active_project.take(),
+            self.project_list.active_project_id.take(),
+        ) {
+            self.project_list.last_project = Some(SavedProjectState {
                 name,
                 id,
                 show_detail: self.task_list.show_detail,
@@ -455,9 +572,9 @@ impl ScreenState {
 
         // Switch context
         self.save_current_input();
-        self.active_project = project.as_ref().map(|(n, _)| n.clone());
-        self.active_project_id = project.map(|(_, id)| id);
-        self.show_projects = false;
+        self.project_list.active_project = project.as_ref().map(|(n, _)| n.clone());
+        self.project_list.active_project_id = project.map(|(_, id)| id);
+        self.project_list.show_projects = false;
         self.task_list.show_detail = false;
         self.focus = Focus::ChatInput;
         self.chat_scroll = 0;
@@ -480,61 +597,20 @@ impl ScreenState {
 
     /// Show the project list overlay, replacing the task list.
     pub fn show_project_list(&mut self, projects: Vec<Project>) {
-        self.projects = projects;
-        if !self.projects.is_empty() {
-            self.project_list_state.select(Some(0));
+        self.project_list.projects = projects;
+        if !self.project_list.projects.is_empty() {
+            self.project_list.list_state.select(Some(0));
         }
-        self.show_projects = true;
+        self.project_list.show_projects = true;
         self.focus = Focus::ProjectList;
     }
 
-    /// Refresh the project list and clamp the selection after changes (e.g. delete).
-    pub fn refresh_projects(&mut self, projects: Vec<Project>) {
-        self.projects = projects;
-        if self.projects.is_empty() {
-            self.project_list_state.select(None);
-        } else {
-            let sel = self
-                .project_list_state
-                .selected()
-                .unwrap_or(0)
-                .min(self.projects.len().saturating_sub(1));
-            self.project_list_state.select(Some(sel));
-        }
-    }
-
     pub fn next_project(&mut self) {
-        if self.projects.is_empty() {
-            return;
-        }
-        let i = match self.project_list_state.selected() {
-            Some(i) => (i + 1) % self.projects.len(),
-            None => 0,
-        };
-        self.project_list_state.select(Some(i));
+        self.project_list.next_project();
     }
 
     pub fn previous_project(&mut self) {
-        if self.projects.is_empty() {
-            return;
-        }
-        let i = match self.project_list_state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.projects.len() - 1
-                } else {
-                    i - 1
-                }
-            }
-            None => 0,
-        };
-        self.project_list_state.select(Some(i));
-    }
-
-    pub fn selected_project(&self) -> Option<&Project> {
-        self.project_list_state
-            .selected()
-            .and_then(|i| self.projects.get(i))
+        self.project_list.previous_project();
     }
 
     // ── Search ──────────────────────────────────────────────────────
@@ -549,15 +625,16 @@ impl ScreenState {
     /// Exit search mode: clear filters, clamp selection, restore focus.
     pub fn exit_search(&mut self) {
         self.search_input.take();
-        if self.show_projects {
-            self.filtered_project_indices.clear();
-            if !self.projects.is_empty() {
+        if self.project_list.show_projects {
+            self.project_list.filtered_project_indices.clear();
+            if !self.project_list.projects.is_empty() {
                 let sel = self
-                    .project_list_state
+                    .project_list
+                    .list_state
                     .selected()
                     .unwrap_or(0)
-                    .min(self.projects.len() - 1);
-                self.project_list_state.select(Some(sel));
+                    .min(self.project_list.projects.len() - 1);
+                self.project_list.list_state.select(Some(sel));
             }
             self.focus = Focus::ProjectList;
         } else {
@@ -578,12 +655,12 @@ impl ScreenState {
     /// Confirm the current search selection. For tasks, opens the detail view.
     /// For projects, selects the project. Returns `true` if a selection was made.
     pub fn confirm_search_selection(&mut self) -> bool {
-        if self.show_projects {
+        if self.project_list.show_projects {
             if let Some(real_idx) = self.selected_filtered_project_index() {
-                self.project_list_state.select(Some(real_idx));
+                self.project_list.list_state.select(Some(real_idx));
             }
             self.search_input.take();
-            self.filtered_project_indices.clear();
+            self.project_list.filtered_project_indices.clear();
             self.focus = Focus::ProjectList;
             true
         } else {
@@ -647,7 +724,8 @@ impl ScreenState {
 
     pub fn update_project_search_filter(&mut self) {
         let query: Vec<char> = self.search_input.buffer().to_lowercase().chars().collect();
-        self.filtered_project_indices = self
+        self.project_list.filtered_project_indices = self
+            .project_list
             .projects
             .iter()
             .enumerate()
@@ -669,50 +747,29 @@ impl ScreenState {
             })
             .map(|(i, _)| i)
             .collect();
-        if self.filtered_project_indices.is_empty() {
-            self.project_list_state.select(None);
+        if self.project_list.filtered_project_indices.is_empty() {
+            self.project_list.list_state.select(None);
         } else {
-            let sel = self.project_list_state.selected().unwrap_or(0);
-            if let Some(pos) = self.filtered_project_indices.iter().position(|&i| i == sel) {
-                self.project_list_state.select(Some(pos));
+            let sel = self.project_list.list_state.selected().unwrap_or(0);
+            if let Some(pos) = self
+                .project_list
+                .filtered_project_indices
+                .iter()
+                .position(|&i| i == sel)
+            {
+                self.project_list.list_state.select(Some(pos));
             } else {
-                self.project_list_state.select(Some(0));
+                self.project_list.list_state.select(Some(0));
             }
         }
     }
 
     pub fn search_next_project(&mut self) {
-        if self.filtered_project_indices.is_empty() {
-            return;
-        }
-        let i = match self.project_list_state.selected() {
-            Some(i) => (i + 1) % self.filtered_project_indices.len(),
-            None => 0,
-        };
-        self.project_list_state.select(Some(i));
+        self.project_list.search_next_project();
     }
 
     pub fn search_prev_project(&mut self) {
-        if self.filtered_project_indices.is_empty() {
-            return;
-        }
-        let i = match self.project_list_state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.filtered_project_indices.len() - 1
-                } else {
-                    i - 1
-                }
-            }
-            None => 0,
-        };
-        self.project_list_state.select(Some(i));
-    }
-
-    pub fn selected_filtered_project_index(&self) -> Option<usize> {
-        self.project_list_state
-            .selected()
-            .and_then(|i| self.filtered_project_indices.get(i).copied())
+        self.project_list.search_prev_project();
     }
 }
 
@@ -874,10 +931,10 @@ mod tests {
 
         s.show_project_list(projects);
 
-        assert!(s.show_projects);
+        assert!(s.project_list.show_projects);
         assert!(matches!(s.focus, Focus::ProjectList));
-        assert_eq!(s.project_list_state.selected(), Some(0));
-        assert_eq!(s.projects.len(), 2);
+        assert_eq!(s.project_list.list_state.selected(), Some(0));
+        assert_eq!(s.project_list.projects.len(), 2);
     }
 
     #[test]
@@ -886,9 +943,9 @@ mod tests {
 
         s.show_project_list(vec![]);
 
-        assert!(s.show_projects);
+        assert!(s.project_list.show_projects);
         assert!(matches!(s.focus, Focus::ProjectList));
-        assert_eq!(s.project_list_state.selected(), None);
+        assert_eq!(s.project_list.list_state.selected(), None);
     }
 
     // ── refresh_projects ────────────────────────────────────────────
@@ -896,22 +953,22 @@ mod tests {
     #[test]
     fn refresh_projects_clamps_selection() {
         let mut s = state_with_tasks(0);
-        s.projects = vec![make_project("a"), make_project("b"), make_project("c")];
-        s.project_list_state.select(Some(2));
+        s.project_list.projects = vec![make_project("a"), make_project("b"), make_project("c")];
+        s.project_list.list_state.select(Some(2));
 
         s.refresh_projects(vec![make_project("a"), make_project("b")]);
 
-        assert_eq!(s.project_list_state.selected(), Some(1));
+        assert_eq!(s.project_list.list_state.selected(), Some(1));
     }
 
     #[test]
     fn refresh_projects_empty_clears_selection() {
         let mut s = state_with_tasks(0);
-        s.project_list_state.select(Some(1));
+        s.project_list.list_state.select(Some(1));
 
         s.refresh_projects(vec![]);
 
-        assert_eq!(s.project_list_state.selected(), None);
+        assert_eq!(s.project_list.list_state.selected(), None);
     }
 
     // ── enter_search_mode ───────────────────────────────────────────
@@ -933,7 +990,7 @@ mod tests {
     #[test]
     fn exit_search_tasks_restores_task_list() {
         let mut s = state_with_tasks(3);
-        s.show_projects = false;
+        s.project_list.show_projects = false;
         s.focus = Focus::TaskSearch;
         s.task_list.filtered_indices = vec![0, 2];
         s.task_list.list_state.select(Some(0));
@@ -947,17 +1004,17 @@ mod tests {
     #[test]
     fn exit_search_projects_restores_project_list() {
         let mut s = state_with_tasks(0);
-        s.show_projects = true;
-        s.projects = vec![make_project("a"), make_project("b")];
+        s.project_list.show_projects = true;
+        s.project_list.projects = vec![make_project("a"), make_project("b")];
         s.focus = Focus::TaskSearch;
-        s.filtered_project_indices = vec![0, 1];
-        s.project_list_state.select(Some(1));
+        s.project_list.filtered_project_indices = vec![0, 1];
+        s.project_list.list_state.select(Some(1));
 
         s.exit_search();
 
         assert!(matches!(s.focus, Focus::ProjectList));
-        assert!(s.filtered_project_indices.is_empty());
-        assert_eq!(s.project_list_state.selected(), Some(1));
+        assert!(s.project_list.filtered_project_indices.is_empty());
+        assert_eq!(s.project_list.list_state.selected(), Some(1));
     }
 
     // ── confirm_search_selection ────────────────────────────────────
@@ -965,7 +1022,7 @@ mod tests {
     #[test]
     fn confirm_search_selection_opens_task_detail() {
         let mut s = state_with_tasks(3);
-        s.show_projects = false;
+        s.project_list.show_projects = false;
         s.task_list.filtered_indices = vec![0, 2];
         s.task_list.list_state.select(Some(1)); // points to filtered_indices[1] = 2
 
@@ -981,7 +1038,7 @@ mod tests {
     #[test]
     fn confirm_search_selection_no_match_goes_to_task_list() {
         let mut s = state_with_tasks(3);
-        s.show_projects = false;
+        s.project_list.show_projects = false;
         s.task_list.filtered_indices = vec![];
         s.task_list.list_state.select(None);
 
@@ -994,16 +1051,16 @@ mod tests {
     #[test]
     fn confirm_search_selection_project() {
         let mut s = state_with_tasks(0);
-        s.show_projects = true;
-        s.projects = vec![make_project("a"), make_project("b"), make_project("c")];
-        s.filtered_project_indices = vec![0, 2];
-        s.project_list_state.select(Some(1)); // points to filtered[1] = 2
+        s.project_list.show_projects = true;
+        s.project_list.projects = vec![make_project("a"), make_project("b"), make_project("c")];
+        s.project_list.filtered_project_indices = vec![0, 2];
+        s.project_list.list_state.select(Some(1)); // points to filtered[1] = 2
 
         let result = s.confirm_search_selection();
 
         assert!(result);
-        assert_eq!(s.project_list_state.selected(), Some(2)); // real index
+        assert_eq!(s.project_list.list_state.selected(), Some(2)); // real index
         assert!(matches!(s.focus, Focus::ProjectList));
-        assert!(s.filtered_project_indices.is_empty());
+        assert!(s.project_list.filtered_project_indices.is_empty());
     }
 }

@@ -32,7 +32,7 @@ pub(in crate::tui) fn render_input(
             .map(|t| t.name.as_str())
             .unwrap_or("?");
         format!("[{name}] > ")
-    } else if let Some(ref name) = state.active_project {
+    } else if let Some(ref name) = state.project_list.active_project {
         format!("[{}] > ", name.as_str())
     } else {
         "[ExO] > ".to_string()
