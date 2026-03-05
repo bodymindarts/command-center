@@ -437,6 +437,10 @@ impl<R: Runtime> ClatApp<R> {
         self.runtime.capture_pane_output(pane_id).ok()
     }
 
+    pub fn window_numbers(&self) -> HashMap<WindowId, String> {
+        crate::runtime::tmux_window_numbers()
+    }
+
     pub fn insert_exo_message(&self, role: MessageRole, content: &str) -> anyhow::Result<()> {
         self.store.insert_message(&EXO_CHAT, role, content)
     }

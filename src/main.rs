@@ -163,7 +163,7 @@ fn cmd_list(app: &ClatApp<impl Runtime>, all: bool, project: Option<String>) -> 
         exit_code: String,
     }
 
-    let win_numbers = crate::runtime::tmux_window_numbers();
+    let win_numbers = app.window_numbers();
     let running_pane_ids: Vec<crate::primitives::PaneId> = tasks
         .iter()
         .filter(|t| t.status.is_running())

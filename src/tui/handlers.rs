@@ -1501,7 +1501,7 @@ pub(super) fn tick_refresh<R: Runtime>(
         notify_tg_resolved(tg_tx, perm.perm_id, "⚪ Expired (task ended)");
         let _ = write_response_to_stream(perm.stream, false, None);
     }
-    app.window_numbers = crate::runtime::tmux_window_numbers();
+    app.window_numbers = service.window_numbers();
     // Update selected messages and live output for detail view
     if let Some(task) = app.selected_task() {
         let chat = ChatId::Task(task.id.clone());
