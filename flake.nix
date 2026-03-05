@@ -103,6 +103,9 @@
             pkgs.whisper-cpp
             pkgs.ffmpeg-headless
 
+            # Scripting
+            pkgs.python3
+
             # Search & filtering
             pkgs.fzf
             pkgs.ripgrep
