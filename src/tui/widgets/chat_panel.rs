@@ -6,25 +6,32 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use crate::primitives::MessageRole;
 
 use super::super::chat::{ChatMessage, ContentBlock};
-use super::super::screen_state::{Focus, ScreenState};
+use super::super::screen_state::{ChatViewState, Focus, ProjectListState, TaskListState};
 
-pub(in crate::tui) fn render_chat(frame: &mut ratatui::Frame, state: &ScreenState, area: Rect) {
-    let searching = matches!(state.current_focus(), Focus::TaskSearch);
-    let in_task_chat = !searching && state.task_list.show_detail && state.selected_task().is_some();
+pub(in crate::tui) fn render_chat(
+    frame: &mut ratatui::Frame,
+    focus: &Focus,
+    task_list: &TaskListState,
+    project_list: &ProjectListState,
+    chat_view: &ChatViewState,
+    area: Rect,
+) {
+    let searching = matches!(focus, Focus::TaskSearch);
+    let in_task_chat = !searching && task_list.show_detail && task_list.selected_task().is_some();
 
     let title = if in_task_chat {
-        let name = state
+        let name = task_list
             .selected_task()
             .map(|t| t.name.as_str())
             .unwrap_or("?");
         format!(" Chat: {name} ")
-    } else if let Some(ref name) = state.project_list.active_project {
+    } else if let Some(ref name) = project_list.active_project {
         format!(" PM: {} ", name.as_str())
     } else {
         " ExO Chat ".to_string()
     };
 
-    let chat_border_color = if matches!(state.current_focus(), Focus::ChatHistory) {
+    let chat_border_color = if matches!(focus, Focus::ChatHistory) {
         Color::Blue
     } else {
         Color::DarkGray
@@ -43,13 +50,13 @@ pub(in crate::tui) fn render_chat(frame: &mut ratatui::Frame, state: &ScreenStat
 
     if in_task_chat {
         // Render task messages
-        if state.task_list.selected_messages.is_empty() {
+        if task_list.selected_messages.is_empty() {
             lines.push(Line::from(Span::styled(
                 "No messages yet.",
                 Style::default().fg(Color::DarkGray),
             )));
         } else {
-            for msg in &state.task_list.selected_messages {
+            for msg in &task_list.selected_messages {
                 let (label, label_color) = match msg.role {
                     MessageRole::System => ("PROMPT", Color::Cyan),
                     MessageRole::User => ("YOU", Color::Green),
@@ -69,7 +76,7 @@ pub(in crate::tui) fn render_chat(frame: &mut ratatui::Frame, state: &ScreenStat
             }
         }
 
-        if let Some(output) = &state.task_list.detail_live_output {
+        if let Some(output) = &task_list.detail_live_output {
             let tail: Vec<&str> = output.lines().collect();
             let start = tail.len().saturating_sub(500);
             lines.push(Line::from(Span::styled(
@@ -82,9 +89,9 @@ pub(in crate::tui) fn render_chat(frame: &mut ratatui::Frame, state: &ScreenStat
                 lines.push(Line::from(l.to_string()));
             }
         }
-    } else if let Some(ref pid) = state.project_list.active_project_id {
+    } else if let Some(ref pid) = project_list.active_project_id {
         // Render PM chat
-        if let Some(pm) = state.chat_view.project_chats.get(pid) {
+        if let Some(pm) = chat_view.project_chats.get(pid) {
             render_chat_messages(&mut lines, &pm.messages, "PM", pm.streaming);
         }
         if lines.is_empty() {
@@ -97,9 +104,9 @@ pub(in crate::tui) fn render_chat(frame: &mut ratatui::Frame, state: &ScreenStat
         // Render ExO chat
         render_chat_messages(
             &mut lines,
-            &state.chat_view.exo_chat.messages,
+            &chat_view.exo_chat.messages,
             "ExO",
-            state.chat_view.exo_chat.streaming,
+            chat_view.exo_chat.streaming,
         );
         if lines.is_empty() {
             lines.push(Line::from(Span::styled(
@@ -126,7 +133,7 @@ pub(in crate::tui) fn render_chat(frame: &mut ratatui::Frame, state: &ScreenStat
         .sum();
 
     let max_scroll = rendered_lines.saturating_sub(inner_height) as u16;
-    let effective_scroll = state.chat_view.chat_scroll.min(max_scroll);
+    let effective_scroll = chat_view.chat_scroll.min(max_scroll);
     let scroll = max_scroll.saturating_sub(effective_scroll);
 
     let chat = Paragraph::new(lines)

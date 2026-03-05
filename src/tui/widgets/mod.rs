@@ -61,7 +61,14 @@ pub(in crate::tui) fn ui(frame: &mut ratatui::Frame, state: &mut ScreenState) {
 
     state.update_chat_viewport_height(left[0].height);
 
-    chat_panel::render_chat(frame, state, left[0]);
+    chat_panel::render_chat(
+        frame,
+        state.current_focus(),
+        &state.task_list,
+        &state.project_list,
+        &state.chat_view,
+        left[0],
+    );
     if show_close_task {
         confirm::render_close_task_panel(
             frame,
