@@ -2,7 +2,7 @@ mod chat;
 mod handlers;
 mod input;
 mod permissions;
-mod screen;
+mod state;
 mod telegram;
 mod widgets;
 
@@ -25,7 +25,7 @@ use crate::assistant::{AssistantEvent, AssistantSession, EXO_SYSTEM_PROMPT, Proj
 use crate::permission::PermissionRequest;
 use crate::primitives::ProjectId;
 use crate::runtime::Runtime;
-use screen::ScreenState;
+use state::ScreenState;
 
 /// Holds the project session and bridge for a single project.
 /// Chat state (messages, streaming) lives in `ScreenState::project_chats`.

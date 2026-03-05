@@ -5,7 +5,7 @@ mod task_panel;
 
 use ratatui::layout::{Constraint, Direction, Layout};
 
-use super::screen::{Focus, ScreenState};
+use super::state::{Focus, ScreenState};
 
 pub(in crate::tui) fn ui(frame: &mut ratatui::Frame, state: &mut ScreenState) {
     let outer = Layout::default()

@@ -7,7 +7,7 @@ use crate::primitives::TaskName;
 use crate::task::Task;
 
 use super::super::permissions::PermissionStore;
-use super::super::screen::Focus;
+use super::super::state::Focus;
 
 pub(in crate::tui) fn render_permission_panel(
     frame: &mut ratatui::Frame,

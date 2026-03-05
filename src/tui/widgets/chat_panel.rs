@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use crate::primitives::MessageRole;
 
 use super::super::chat::{ChatMessage, ContentBlock};
-use super::super::screen::{ChatViewState, Focus, ProjectListState, TaskListState};
+use super::super::state::{ChatViewState, Focus, ProjectListState, TaskListState};
 
 pub(in crate::tui) fn render_chat(
     frame: &mut ratatui::Frame,
