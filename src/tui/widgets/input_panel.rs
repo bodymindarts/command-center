@@ -23,7 +23,7 @@ pub(in crate::tui) fn render_input(
     } else {
         Color::DarkGray
     };
-    let searching = matches!(state.focus, Focus::TaskSearch);
+    let searching = matches!(state.current_focus(), Focus::TaskSearch);
     let prefix = if !searching && state.show_detail {
         let name = state
             .selected_task()
@@ -112,7 +112,7 @@ pub(in crate::tui) fn render_prompt_bar(
 
     let front_p = state.permissions.peek(&state.focused_perm_key());
     let has_perms = state.show_detail && front_p.is_some_and(|p| !p.is_askuser());
-    let mut spans = match &state.focus {
+    let mut spans = match state.current_focus() {
         Focus::ChatInput if state.show_detail => {
             vec![
                 Span::styled(" ^G", Style::default().fg(Color::Yellow)),

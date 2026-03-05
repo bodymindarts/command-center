@@ -137,7 +137,7 @@ pub(in crate::tui) fn render_delete_confirm_panel(
     state: &ScreenState,
     area: Rect,
 ) {
-    let Focus::ConfirmDelete(ref id) = state.focus else {
+    let Focus::ConfirmDelete(ref id) = *state.current_focus() else {
         return;
     };
     let name = state
@@ -186,7 +186,7 @@ pub(in crate::tui) fn render_close_task_panel(
     state: &ScreenState,
     area: Rect,
 ) {
-    let Focus::ConfirmCloseTask(ref id) = state.focus else {
+    let Focus::ConfirmCloseTask(ref id) = *state.current_focus() else {
         return;
     };
     let name = state
@@ -280,7 +280,7 @@ pub(in crate::tui) fn render_delete_project_panel(
     state: &ScreenState,
     area: Rect,
 ) {
-    let Focus::ConfirmDeleteProject(ref name) = state.focus else {
+    let Focus::ConfirmDeleteProject(ref name) = *state.current_focus() else {
         return;
     };
     let lines = vec![

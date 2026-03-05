@@ -14,16 +14,16 @@ pub(in crate::tui) fn ui(frame: &mut ratatui::Frame, state: &mut ScreenState) {
         .split(frame.area());
 
     // Left side: chat + (optional mid-panel) + input + prompt bar
-    let searching = matches!(state.focus, Focus::TaskSearch);
+    let searching = matches!(state.current_focus(), Focus::TaskSearch);
     let in_task_chat = !searching && state.show_detail && state.selected_task().is_some();
     let focused_perm_key = state.focused_perm_key();
     let front_perm = state.permissions.peek(&focused_perm_key);
     let show_perm = in_task_chat && front_perm.is_some_and(|p| !p.is_askuser());
     let show_askuser = in_task_chat && front_perm.is_some_and(|p| p.is_askuser());
-    let show_delete = matches!(state.focus, Focus::ConfirmDelete(_));
-    let show_delete_project = matches!(state.focus, Focus::ConfirmDeleteProject(_));
-    let show_close_task = matches!(state.focus, Focus::ConfirmCloseTask(_));
-    let show_close_project = matches!(state.focus, Focus::ConfirmCloseProject);
+    let show_delete = matches!(state.current_focus(), Focus::ConfirmDelete(_));
+    let show_delete_project = matches!(state.current_focus(), Focus::ConfirmDeleteProject(_));
+    let show_close_task = matches!(state.current_focus(), Focus::ConfirmCloseTask(_));
+    let show_close_project = matches!(state.current_focus(), Focus::ConfirmCloseProject);
     let show_mid_panel = show_perm
         || show_askuser
         || show_delete
@@ -76,13 +76,13 @@ pub(in crate::tui) fn ui(frame: &mut ratatui::Frame, state: &mut ScreenState) {
         confirm::render_askuser_panel(frame, state, left[1]);
     }
 
-    let focused_input = matches!(state.focus, Focus::ChatInput);
+    let focused_input = matches!(state.current_focus(), Focus::ChatInput);
     input_panel::render_input(frame, state, left[2], focused_input);
     input_panel::render_prompt_bar(frame, state, left[3]);
 
     // Right side: task list or project list
     let focused_task_list = matches!(
-        state.focus,
+        state.current_focus(),
         Focus::TaskList | Focus::TaskSearch | Focus::ProjectList
     );
     task_panel::render_task_list(frame, state, outer[1], focused_task_list);

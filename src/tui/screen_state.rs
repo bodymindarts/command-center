@@ -119,6 +119,10 @@ impl ScreenState {
         }
     }
 
+    pub fn current_focus(&self) -> &Focus {
+        &self.focus
+    }
+
     pub fn update_chat_viewport_height(&mut self, area_height: u16) {
         self.chat_viewport_height = area_height.saturating_sub(2);
     }
@@ -131,6 +135,14 @@ impl ScreenState {
     pub fn scroll_chat_down(&mut self) {
         let half = (self.chat_viewport_height / 2).max(1);
         self.chat_scroll = self.chat_scroll.saturating_sub(half);
+    }
+
+    pub fn navigate_focus_down(&mut self) {
+        self.focus = Focus::ChatInput;
+    }
+
+    pub fn navigate_focus_right(&mut self) {
+        self.focus = Focus::TaskList;
     }
 
     pub fn selected_task(&self) -> Option<&Task> {
@@ -240,9 +252,16 @@ impl ScreenState {
         self.input.set(&text);
     }
 
-    /// Save the current project's UI state so it can be restored later (e.g. Ctrl+R).
-    /// Takes ownership of `active_project` and `active_project_id`, leaving them `None`.
-    pub fn save_project_state(&mut self) {
+    /// Switch to a project (or ExO when `project` is `None`).
+    /// Saves current project state, swaps project context, loads tasks,
+    /// and optionally focuses a specific task by name.
+    pub fn switch_to_project(
+        &mut self,
+        project: Option<(ProjectName, ProjectId)>,
+        tasks: Vec<Task>,
+        focus_task: Option<&TaskName>,
+    ) {
+        // Save current project state for Ctrl+R restore
         let selected_task_name = self.selected_task().map(|t| t.name.clone());
         if let (Some(name), Some(id)) = (self.active_project.take(), self.active_project_id.take())
         {
@@ -253,11 +272,8 @@ impl ScreenState {
                 selected_task_name,
             });
         }
-    }
 
-    /// Prepare a project switch: save current input, set project fields, clear PM
-    /// messages, and reset view to the PM/ExO chat. Pass `None` to switch to ExO.
-    pub fn switch_to_project(&mut self, project: Option<(ProjectName, ProjectId)>) {
+        // Switch context
         self.save_current_input();
         self.active_project = project.as_ref().map(|(n, _)| n.clone());
         self.active_project_id = project.map(|(_, id)| id);
@@ -265,13 +281,19 @@ impl ScreenState {
         self.show_detail = false;
         self.focus = Focus::ChatInput;
         self.chat_scroll = 0;
-    }
 
-    /// Complete a project switch by loading the new task list and restoring
-    /// the chat input buffer for the new context.
-    pub fn finish_project_switch(&mut self, tasks: Vec<Task>) {
+        // Load tasks and restore input
         self.refresh_tasks(tasks);
         self.restore_input();
+
+        // Focus a specific task if requested
+        if let Some(name) = focus_task
+            && let Some(pos) = self.tasks.iter().position(|t| &t.name == name)
+        {
+            self.list_state.select(Some(pos));
+            self.show_detail = true;
+            self.detail_scroll = 0;
+        }
     }
 
     /// Returns the permission key for the currently visible pane.

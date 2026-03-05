@@ -9,7 +9,7 @@ use super::super::chat::{ChatMessage, ContentBlock};
 use super::super::screen_state::{Focus, ScreenState};
 
 pub(in crate::tui) fn render_chat(frame: &mut ratatui::Frame, state: &ScreenState, area: Rect) {
-    let searching = matches!(state.focus, Focus::TaskSearch);
+    let searching = matches!(state.current_focus(), Focus::TaskSearch);
     let in_task_chat = !searching && state.show_detail && state.selected_task().is_some();
 
     let title = if in_task_chat {
@@ -24,7 +24,7 @@ pub(in crate::tui) fn render_chat(frame: &mut ratatui::Frame, state: &ScreenStat
         " ExO Chat ".to_string()
     };
 
-    let chat_border_color = if matches!(state.focus, Focus::ChatHistory) {
+    let chat_border_color = if matches!(state.current_focus(), Focus::ChatHistory) {
         Color::Blue
     } else {
         Color::DarkGray

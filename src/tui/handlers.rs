@@ -171,7 +171,7 @@ fn handle_input_editing(input: &mut super::input::InputState, key: &KeyEvent) ->
 // ── Paste handling ──────────────────────────────────────────────────
 
 pub(super) fn handle_paste(state: &mut ScreenState, text: String) {
-    if matches!(state.focus, Focus::ChatInput) {
+    if matches!(state.current_focus(), Focus::ChatInput) {
         if text.contains('\n') || text.contains('\r') {
             state.input.set_paste(text);
         } else {
@@ -207,6 +207,8 @@ pub(super) fn handle_global_keys<R: Runtime>(
         return handle_cycle_permissions(state, app, pm_contexts, pm_tx);
     }
 
+    // Permission keys — global so they work regardless of focus (ChatInput, ChatHistory, TaskList)
+    // while a task detail is showing. Guarded by show_detail + permissions.peek().
     // Ctrl+Y one-time allow
     if ctrl
         && key.code == KeyCode::Char('y')
@@ -261,10 +263,8 @@ pub(super) fn handle_global_keys<R: Runtime>(
 
     // Ctrl+O returns to ExO chat
     if ctrl && key.code == KeyCode::Char('o') {
-        state.save_project_state();
-        state.switch_to_project(None);
         if let Ok(tasks) = app.list_visible(None) {
-            state.finish_project_switch(tasks);
+            state.switch_to_project(None, tasks, None);
         }
         return true;
     }
@@ -296,10 +296,8 @@ fn handle_cycle_permissions<R: Runtime>(
         if name == EXO_PERM_KEY {
             // Navigate to ExO view
             if state.active_project_id.is_some() {
-                state.save_project_state();
-                state.switch_to_project(None);
                 if let Ok(tasks) = app.list_visible(None) {
-                    state.finish_project_switch(tasks);
+                    state.switch_to_project(None, tasks, None);
                 }
             } else {
                 state.show_detail = false;
@@ -316,7 +314,6 @@ fn handle_cycle_permissions<R: Runtime>(
         } else {
             // Task is in a different project — switch to it
             let target_pid = state.global_task_projects.get(&name).cloned().flatten();
-            state.save_project_state();
             if let Some(pid) = target_pid {
                 if let Ok(projects) = app.list_projects() {
                     state.projects = projects;
@@ -329,26 +326,12 @@ fn handle_cycle_permissions<R: Runtime>(
                     .unwrap_or_else(|| {
                         crate::primitives::ProjectName::from(pid.as_str().to_string())
                     });
-                state.switch_to_project(Some((proj_name, pid.clone())));
                 if let Ok(tasks) = app.list_visible(Some(&pid)) {
-                    state.finish_project_switch(tasks);
-                }
-                if let Some(pos) = state.tasks.iter().position(|t| t.name == name) {
-                    state.list_state.select(Some(pos));
-                    state.show_detail = true;
-                    state.detail_scroll = 0;
+                    state.switch_to_project(Some((proj_name, pid.clone())), tasks, Some(&name));
                 }
                 super::ensure_pm_context(pm_contexts, state, app, &pid, pm_tx);
-            } else {
-                state.switch_to_project(None);
-                if let Ok(tasks) = app.list_visible(None) {
-                    state.finish_project_switch(tasks);
-                }
-                if let Some(pos) = state.tasks.iter().position(|t| t.name == name) {
-                    state.list_state.select(Some(pos));
-                    state.show_detail = true;
-                    state.detail_scroll = 0;
-                }
+            } else if let Ok(tasks) = app.list_visible(None) {
+                state.switch_to_project(None, tasks, Some(&name));
             }
         }
     } else if state.list_state.selected().is_some() {
@@ -414,17 +397,13 @@ fn handle_goto_pm<R: Runtime>(
                     .map(|p| (p.name.clone(), p.id.clone(), false, None))
             });
         if let Some((name, id, saved_show_detail, saved_task_name)) = target {
-            state.switch_to_project(Some((name, id.clone())));
+            let focus = if saved_show_detail {
+                saved_task_name.as_ref()
+            } else {
+                None
+            };
             if let Ok(tasks) = app.list_visible(Some(&id)) {
-                state.finish_project_switch(tasks);
-            }
-            if saved_show_detail
-                && let Some(ref task_name) = saved_task_name
-                && let Some(idx) = state.tasks.iter().position(|t| &t.name == task_name)
-            {
-                state.list_state.select(Some(idx));
-                state.show_detail = true;
-                state.detail_scroll = 0;
+                state.switch_to_project(Some((name, id.clone())), tasks, focus);
             }
             super::ensure_pm_context(pm_contexts, state, app, &id, pm_tx);
         }
@@ -442,9 +421,8 @@ fn handle_goto_pm<R: Runtime>(
             let next = &state.projects[next_idx];
             let next_id = next.id.clone();
             let next_name = next.name.clone();
-            state.switch_to_project(Some((next_name, next_id.clone())));
             if let Ok(tasks) = app.list_visible(Some(&next_id)) {
-                state.finish_project_switch(tasks);
+                state.switch_to_project(Some((next_name, next_id.clone())), tasks, None);
             }
             super::ensure_pm_context(pm_contexts, state, app, &next_id, pm_tx);
         }
@@ -461,7 +439,7 @@ pub(super) fn handle_focus_key<R: Runtime>(
     pm_contexts: &mut HashMap<ProjectId, PmContext>,
     pm_tx: &mpsc::Sender<PmEvent>,
 ) {
-    match &state.focus {
+    match state.current_focus() {
         Focus::TaskList => handle_task_list_key(state, key, app),
         Focus::TaskSearch => handle_task_search_key(state, key),
         Focus::ProjectList => handle_project_list_key(state, key, app, pm_contexts, pm_tx),
@@ -683,9 +661,8 @@ fn handle_project_list_key<R: Runtime>(
             if let Some(project) = state.selected_project() {
                 let project_id = project.id.clone();
                 let project_name = project.name.clone();
-                state.switch_to_project(Some((project_name, project_id.clone())));
                 if let Ok(tasks) = app.list_visible(Some(&project_id)) {
-                    state.finish_project_switch(tasks);
+                    state.switch_to_project(Some((project_name, project_id.clone())), tasks, None);
                 }
                 super::ensure_pm_context(pm_contexts, state, app, &project_id, pm_tx);
             }
@@ -697,10 +674,9 @@ fn handle_project_list_key<R: Runtime>(
             }
         }
         KeyCode::Char('p') | KeyCode::Esc => {
-            state.switch_to_project(None);
-            state.focus = Focus::TaskList;
             if let Ok(tasks) = app.list_visible(None) {
-                state.finish_project_switch(tasks);
+                state.switch_to_project(None, tasks, None);
+                state.focus = Focus::TaskList;
             }
         }
         _ => {}
@@ -930,7 +906,7 @@ fn handle_chat_history_key(state: &mut ScreenState, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Char('j') if ctrl => {
-            state.focus = Focus::ChatInput;
+            state.navigate_focus_down();
         }
         KeyCode::Char('u') if ctrl => {
             state.scroll_chat_up();
@@ -939,18 +915,14 @@ fn handle_chat_history_key(state: &mut ScreenState, key: KeyEvent) {
             state.scroll_chat_down();
         }
         KeyCode::Char('l') if ctrl => {
-            state.focus = Focus::TaskList;
-        }
-        KeyCode::Esc => {
-            state.focus = Focus::ChatInput;
-            state.chat_scroll = 0;
+            state.navigate_focus_right();
         }
         _ => {}
     }
 }
 
 fn handle_confirm_delete_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app: &ClatApp<R>) {
-    let task_id = match &state.focus {
+    let task_id = match state.current_focus() {
         Focus::ConfirmDelete(id) => id.clone(),
         _ => return,
     };
@@ -974,7 +946,7 @@ fn handle_confirm_close_task_key<R: Runtime>(
     key: KeyEvent,
     app: &ClatApp<R>,
 ) {
-    let task_id = match &state.focus {
+    let task_id = match state.current_focus() {
         Focus::ConfirmCloseTask(id) => id.clone(),
         _ => return,
     };
@@ -1004,7 +976,7 @@ fn handle_confirm_delete_project_key<R: Runtime>(
     key: KeyEvent,
     app: &ClatApp<R>,
 ) {
-    let project_name = match &state.focus {
+    let project_name = match state.current_focus() {
         Focus::ConfirmDeleteProject(name) => name.clone(),
         _ => return,
     };
@@ -1042,13 +1014,12 @@ fn handle_confirm_close_project_key<R: Runtime>(
     match key.code {
         KeyCode::Char('y') => {
             let closed_pid = state.active_project_id.clone();
-            state.switch_to_project(None);
-            state.focus = Focus::TaskList;
+            if let Ok(tasks) = app.list_visible(None) {
+                state.switch_to_project(None, tasks, None);
+                state.focus = Focus::TaskList;
+            }
             if let Some(pid) = closed_pid {
                 super::cancel_pm_context(pm_contexts, state, &pid);
-            }
-            if let Ok(tasks) = app.list_visible(None) {
-                state.finish_project_switch(tasks);
             }
         }
         KeyCode::Char('n') | KeyCode::Esc => {

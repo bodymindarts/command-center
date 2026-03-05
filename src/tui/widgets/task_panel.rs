@@ -102,7 +102,7 @@ pub(in crate::tui) fn render_task_list(
         return;
     }
 
-    let searching = matches!(state.focus, Focus::TaskSearch);
+    let searching = matches!(state.current_focus(), Focus::TaskSearch);
 
     let (list_area, search_area) = if searching {
         let chunks = Layout::default()
@@ -223,7 +223,7 @@ fn render_project_list(
     area: Rect,
     focused: bool,
 ) {
-    let searching = matches!(state.focus, Focus::TaskSearch) && state.show_projects;
+    let searching = matches!(state.current_focus(), Focus::TaskSearch) && state.show_projects;
 
     let (list_area, search_area) = if searching {
         let chunks = Layout::default()
