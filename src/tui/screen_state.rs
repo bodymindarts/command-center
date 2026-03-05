@@ -58,7 +58,7 @@ pub struct ScreenState {
     /// ExO assistant chat state (messages, streaming flag).
     pub exo_chat: AssistantChat,
     /// Per-project PM assistant chat states.
-    pub pm_chats: HashMap<ProjectId, AssistantChat>,
+    pub project_chats: HashMap<ProjectId, AssistantChat>,
     /// Whether the right panel shows the project list instead of the task list.
     pub show_projects: bool,
     /// Cached list of projects for rendering.
@@ -107,7 +107,7 @@ impl ScreenState {
             active_project_id: None,
             last_project: None,
             exo_chat: AssistantChat::new(),
-            pm_chats: HashMap::new(),
+            project_chats: HashMap::new(),
             show_projects: false,
             projects: Vec::new(),
             project_list_state: ListState::default(),
@@ -229,7 +229,7 @@ impl ScreenState {
                 .map(|t| ChatId::Task(t.id.clone()))
                 .unwrap_or(ChatId::Exo)
         } else if let Some(ref pid) = self.active_project_id {
-            ChatId::Pm(pid.clone())
+            ChatId::Project(pid.clone())
         } else {
             ChatId::Exo
         }

@@ -84,7 +84,7 @@ pub(in crate::tui) fn render_chat(frame: &mut ratatui::Frame, state: &ScreenStat
         }
     } else if let Some(ref pid) = state.active_project_id {
         // Render PM chat
-        if let Some(pm) = state.pm_chats.get(pid) {
+        if let Some(pm) = state.project_chats.get(pid) {
             render_chat_messages(&mut lines, &pm.messages, "PM", pm.streaming);
         }
         if lines.is_empty() {

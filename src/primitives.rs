@@ -145,7 +145,7 @@ pub enum ChatId {
     /// ExO-level orchestration chat.
     Exo,
     /// Project-management chat scoped to a project.
-    Pm(ProjectId),
+    Project(ProjectId),
     /// Per-task agent chat.
     Task(TaskId),
 }
@@ -154,7 +154,7 @@ impl ChatId {
     pub fn as_db_key(&self) -> String {
         match self {
             Self::Exo => "exo".to_string(),
-            Self::Pm(pid) => format!("pm:{}", pid.as_str()),
+            Self::Project(pid) => format!("pm:{}", pid.as_str()),
             Self::Task(tid) => tid.as_str().to_string(),
         }
     }

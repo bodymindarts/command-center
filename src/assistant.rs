@@ -34,7 +34,7 @@ If the agent needs to find or understand code, say so in the description rather 
 - Discussing architecture, trade-offs, and priorities
 - Anything the user explicitly asks you to do directly";
 
-pub fn pm_system_prompt(project_name: &str) -> String {
+pub fn project_system_prompt(project_name: &str) -> String {
     format!(
         "You are PM, the project manager for the '{project_name}' project. \
 You help the user organize, plan, and coordinate work within the project scope.
@@ -82,7 +82,7 @@ and help the user make decisions about priorities and approach.
     )
 }
 
-pub enum ExoEvent {
+pub enum AssistantEvent {
     TextDelta(String),
     ToolStart(String),
     SessionId(String),
@@ -91,38 +91,38 @@ pub enum ExoEvent {
     Error(String),
 }
 
-/// PM event tagged with its project ID so the shared pm_rx channel
-/// can route events to the correct PmContext.
-pub struct PmEvent {
+/// Project event tagged with its project ID so the shared project_rx channel
+/// can route events to the correct ProjectContext.
+pub struct ProjectEvent {
     pub project_id: crate::primitives::ProjectId,
-    pub inner: ExoEvent,
+    pub inner: AssistantEvent,
 }
 
 /// Persistent claude session. The claude process stays alive across turns
 /// — messages are sent on stdin and responses streamed back on stdout without
 /// any respawn between turns. Used for both ExO and PM sessions.
-pub struct ExoSession {
+pub struct AssistantSession {
     stdin: Option<ChildStdin>,
     cancel: Arc<AtomicBool>,
     /// When true, the reader thread forwards content events. Set to false
     /// during --resume startup so replayed history is ignored.
     active: Arc<AtomicBool>,
-    tx: mpsc::Sender<ExoEvent>,
+    tx: mpsc::Sender<AssistantEvent>,
     session_id: Option<String>,
     system_prompt: String,
 }
 
-impl ExoSession {
+impl AssistantSession {
     /// Create a new session and eagerly spawn the claude process so it
     /// warms up in the background. `Command::spawn` returns immediately
     /// (fork+exec) so this does not block the caller.
     pub fn new(
         session_id: Option<&str>,
         cancel: Arc<AtomicBool>,
-        tx: mpsc::Sender<ExoEvent>,
+        tx: mpsc::Sender<AssistantEvent>,
         system_prompt: &str,
     ) -> Self {
-        let mut session = ExoSession {
+        let mut session = AssistantSession {
             stdin: None,
             cancel,
             active: Arc::new(AtomicBool::new(false)),
@@ -164,9 +164,9 @@ impl ExoSession {
         {
             Ok(c) => c,
             Err(e) => {
-                let _ = self
-                    .tx
-                    .send(ExoEvent::Error(format!("Failed to spawn claude: {e}")));
+                let _ = self.tx.send(AssistantEvent::Error(format!(
+                    "Failed to spawn claude: {e}"
+                )));
                 return;
             }
         };
@@ -175,7 +175,7 @@ impl ExoSession {
         if self.stdin.is_none() {
             let _ = self
                 .tx
-                .send(ExoEvent::Error("Failed to open stdin pipe".into()));
+                .send(AssistantEvent::Error("Failed to open stdin pipe".into()));
             let _ = child.kill();
             return;
         }
@@ -185,7 +185,7 @@ impl ExoSession {
             None => {
                 let _ = self
                     .tx
-                    .send(ExoEvent::Error("Failed to open stdout pipe".into()));
+                    .send(AssistantEvent::Error("Failed to open stdout pipe".into()));
                 let _ = child.kill();
                 self.stdin = None;
                 return;
@@ -236,14 +236,14 @@ impl ExoSession {
         });
 
         if let Err(e) = writeln!(stdin, "{}", msg_json) {
-            let _ = self.tx.send(ExoEvent::Error(format!(
+            let _ = self.tx.send(AssistantEvent::Error(format!(
                 "Failed to write to claude stdin: {e}"
             )));
             self.stdin = None;
             return;
         }
         if let Err(e) = stdin.flush() {
-            let _ = self.tx.send(ExoEvent::Error(format!(
+            let _ = self.tx.send(AssistantEvent::Error(format!(
                 "Failed to flush claude stdin: {e}"
             )));
             self.stdin = None;
@@ -261,7 +261,7 @@ impl ExoSession {
     }
 }
 
-/// Background reader: parses stream-json stdout and sends ExoEvents.
+/// Background reader: parses stream-json stdout and sends AssistantEvents.
 ///
 /// With `--include-partial-messages`, streaming events arrive as:
 ///   `{"type": "stream_event", "event": {"type": "content_block_delta", ...}}`
@@ -275,7 +275,7 @@ impl ExoSession {
 fn read_stdout(
     mut child: Child,
     stdout: std::process::ChildStdout,
-    tx: mpsc::Sender<ExoEvent>,
+    tx: mpsc::Sender<AssistantEvent>,
     cancel: Arc<AtomicBool>,
     active: Arc<AtomicBool>,
 ) {
@@ -290,7 +290,9 @@ fn read_stdout(
         let line = match line {
             Ok(l) => l,
             Err(e) => {
-                let _ = tx.send(ExoEvent::Error(format!("Error reading claude output: {e}")));
+                let _ = tx.send(AssistantEvent::Error(format!(
+                    "Error reading claude output: {e}"
+                )));
                 break;
             }
         };
@@ -312,7 +314,7 @@ fn read_stdout(
             // Session metadata — always forwarded (even during startup replay)
             "system" => {
                 if let Some(sid) = parsed.get("session_id").and_then(|s| s.as_str()) {
-                    let _ = tx.send(ExoEvent::SessionId(sid.to_string()));
+                    let _ = tx.send(AssistantEvent::SessionId(sid.to_string()));
                 }
             }
 
@@ -327,9 +329,9 @@ fn read_stdout(
             // Result event — signals turn completion
             "result" if is_active => {
                 if let Some(sid) = parsed.get("session_id").and_then(|s| s.as_str()) {
-                    let _ = tx.send(ExoEvent::SessionId(sid.to_string()));
+                    let _ = tx.send(AssistantEvent::SessionId(sid.to_string()));
                 }
-                let _ = tx.send(ExoEvent::TurnDone);
+                let _ = tx.send(AssistantEvent::TurnDone);
             }
 
             // During --resume replay: silently ignore content events
@@ -345,23 +347,23 @@ fn read_stdout(
 
     match child.wait() {
         Ok(status) if !status.success() => {
-            let _ = tx.send(ExoEvent::Error(format!(
+            let _ = tx.send(AssistantEvent::Error(format!(
                 "Claude process exited with {status}"
             )));
         }
         Err(e) => {
-            let _ = tx.send(ExoEvent::Error(format!(
+            let _ = tx.send(AssistantEvent::Error(format!(
                 "Failed to wait on claude process: {e}"
             )));
         }
         _ => {}
     }
-    let _ = tx.send(ExoEvent::ProcessExited);
+    let _ = tx.send(AssistantEvent::ProcessExited);
 }
 
 /// Handle an inner streaming event (unwrapped from the stream_event wrapper).
 /// Matches content_block_delta for text and content_block_start for tool_use.
-fn handle_stream_event(event: &serde_json::Value, tx: &mpsc::Sender<ExoEvent>) {
+fn handle_stream_event(event: &serde_json::Value, tx: &mpsc::Sender<AssistantEvent>) {
     let inner_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
     match inner_type {
         "content_block_delta" => {
@@ -369,7 +371,7 @@ fn handle_stream_event(event: &serde_json::Value, tx: &mpsc::Sender<ExoEvent>) {
                 && delta.get("type").and_then(|t| t.as_str()) == Some("text_delta")
                 && let Some(text) = delta.get("text").and_then(|t| t.as_str())
             {
-                let _ = tx.send(ExoEvent::TextDelta(text.to_string()));
+                let _ = tx.send(AssistantEvent::TextDelta(text.to_string()));
             }
         }
         "content_block_start" => {
@@ -381,7 +383,7 @@ fn handle_stream_event(event: &serde_json::Value, tx: &mpsc::Sender<ExoEvent>) {
                     .and_then(|n| n.as_str())
                     .unwrap_or("tool")
                     .to_string();
-                let _ = tx.send(ExoEvent::ToolStart(name));
+                let _ = tx.send(AssistantEvent::ToolStart(name));
             }
         }
         _ => {}

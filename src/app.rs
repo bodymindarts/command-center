@@ -134,15 +134,18 @@ impl<R: Runtime> ClatApp<R> {
         let _ = std::fs::write(self.paths.exo_session_file(), session_id);
     }
 
-    pub fn read_pm_session_id(&self, project_id: &ProjectId) -> Option<String> {
-        std::fs::read_to_string(self.paths.pm_session_file(project_id.as_str()))
+    pub fn read_project_session_id(&self, project_id: &ProjectId) -> Option<String> {
+        std::fs::read_to_string(self.paths.project_session_file(project_id.as_str()))
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
     }
 
-    pub fn write_pm_session_id(&self, project_id: &ProjectId, session_id: &str) {
-        let _ = std::fs::write(self.paths.pm_session_file(project_id.as_str()), session_id);
+    pub fn write_project_session_id(&self, project_id: &ProjectId, session_id: &str) {
+        let _ = std::fs::write(
+            self.paths.project_session_file(project_id.as_str()),
+            session_id,
+        );
     }
 
     pub fn spawn(&self, req: SpawnRequest) -> anyhow::Result<SpawnOutput> {
@@ -479,18 +482,18 @@ impl<R: Runtime> ClatApp<R> {
         Ok(project.id)
     }
 
-    pub fn pm_messages(&self, project_id: &ProjectId) -> anyhow::Result<Vec<TaskMessage>> {
-        let chat = ChatId::Pm(project_id.clone());
+    pub fn project_messages(&self, project_id: &ProjectId) -> anyhow::Result<Vec<TaskMessage>> {
+        let chat = ChatId::Project(project_id.clone());
         self.store.list_messages(&chat)
     }
 
-    pub fn insert_pm_message(
+    pub fn insert_project_message(
         &self,
         project_id: &ProjectId,
         role: MessageRole,
         content: &str,
     ) -> anyhow::Result<()> {
-        let chat = ChatId::Pm(project_id.clone());
+        let chat = ChatId::Project(project_id.clone());
         self.store.insert_message(&chat, role, content)
     }
 

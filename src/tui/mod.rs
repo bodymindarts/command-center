@@ -1,5 +1,4 @@
 mod chat;
-mod claude;
 mod handlers;
 mod input;
 mod permissions;
@@ -22,31 +21,31 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use crate::app::ClatApp;
+use crate::assistant::{AssistantEvent, AssistantSession, EXO_SYSTEM_PROMPT, ProjectEvent};
 use crate::permission::PermissionRequest;
 use crate::primitives::ProjectId;
 use crate::runtime::Runtime;
-use claude::{EXO_SYSTEM_PROMPT, ExoEvent, ExoSession, PmEvent};
 use screen_state::ScreenState;
 
-/// Holds the PM session and bridge for a single project.
-/// Chat state (messages, streaming) lives in `ScreenState::pm_chats`.
-struct PmContext {
-    session: Option<ExoSession>,
+/// Holds the project session and bridge for a single project.
+/// Chat state (messages, streaming) lives in `ScreenState::project_chats`.
+struct ProjectContext {
+    session: Option<AssistantSession>,
     cancel: Arc<AtomicBool>,
-    /// Sender that wraps ExoEvent → PmEvent with this project's ID.
-    bridge_tx: mpsc::Sender<ExoEvent>,
+    /// Sender that wraps AssistantEvent → ProjectEvent with this project's ID.
+    bridge_tx: mpsc::Sender<AssistantEvent>,
 }
 
-impl PmContext {
-    fn new(project_id: &ProjectId, pm_tx: &mpsc::Sender<PmEvent>) -> Self {
+impl ProjectContext {
+    fn new(project_id: &ProjectId, project_tx: &mpsc::Sender<ProjectEvent>) -> Self {
         let cancel = Arc::new(AtomicBool::new(false));
-        let (bridge_tx, bridge_rx) = mpsc::channel::<ExoEvent>();
+        let (bridge_tx, bridge_rx) = mpsc::channel::<AssistantEvent>();
         let pid = project_id.clone();
-        let pm_tx = pm_tx.clone();
+        let project_tx = project_tx.clone();
         std::thread::spawn(move || {
             for event in bridge_rx {
-                if pm_tx
-                    .send(PmEvent {
+                if project_tx
+                    .send(ProjectEvent {
                         project_id: pid.clone(),
                         inner: event,
                     })
@@ -56,7 +55,7 @@ impl PmContext {
                 }
             }
         });
-        PmContext {
+        ProjectContext {
             session: None,
             cancel,
             bridge_tx,
@@ -64,38 +63,38 @@ impl PmContext {
     }
 }
 
-/// Cancel and remove a specific project's PM context and chat state.
-fn cancel_pm_context(
-    pm_contexts: &mut HashMap<ProjectId, PmContext>,
+/// Cancel and remove a specific project's context and chat state.
+fn cancel_project_context(
+    project_contexts: &mut HashMap<ProjectId, ProjectContext>,
     state: &mut ScreenState,
     project_id: &ProjectId,
 ) {
-    if let Some(ctx) = pm_contexts.remove(project_id) {
+    if let Some(ctx) = project_contexts.remove(project_id) {
         ctx.cancel.store(true, Ordering::Relaxed);
     }
-    state.pm_chats.remove(project_id);
+    state.project_chats.remove(project_id);
 }
 
-/// Ensure a PmContext exists for the project, creating and loading history if needed.
-fn ensure_pm_context<R: Runtime>(
-    pm_contexts: &mut HashMap<ProjectId, PmContext>,
+/// Ensure a ProjectContext exists for the project, creating and loading history if needed.
+fn ensure_project_context<R: Runtime>(
+    project_contexts: &mut HashMap<ProjectId, ProjectContext>,
     state: &mut ScreenState,
     app: &ClatApp<R>,
     project_id: &ProjectId,
-    pm_tx: &mpsc::Sender<PmEvent>,
+    project_tx: &mpsc::Sender<ProjectEvent>,
 ) {
-    if !pm_contexts.contains_key(project_id) {
-        let ctx = PmContext::new(project_id, pm_tx);
+    if !project_contexts.contains_key(project_id) {
+        let ctx = ProjectContext::new(project_id, project_tx);
         let chat = state
-            .pm_chats
+            .project_chats
             .entry(project_id.clone())
             .or_insert_with(chat::AssistantChat::new);
-        chat.session_id = app.read_pm_session_id(project_id);
-        if let Ok(messages) = app.pm_messages(project_id) {
+        chat.session_id = app.read_project_session_id(project_id);
+        if let Ok(messages) = app.project_messages(project_id) {
             let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
             chat.load_history(recent.into_iter().rev().collect());
         }
-        pm_contexts.insert(project_id.clone(), ctx);
+        project_contexts.insert(project_id.clone(), ctx);
     }
 }
 
@@ -142,18 +141,18 @@ pub fn run<R: Runtime>(
             .exo_chat
             .load_history(recent.into_iter().rev().collect());
     }
-    let (tx, rx) = mpsc::channel::<ExoEvent>();
+    let (tx, rx) = mpsc::channel::<AssistantEvent>();
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut exo_session = ExoSession::new(
+    let mut exo_session = AssistantSession::new(
         state.exo_chat.session_id.as_deref(),
         Arc::clone(&cancel),
         tx.clone(),
         EXO_SYSTEM_PROMPT,
     );
 
-    // PM (project manager) contexts: one per project, keyed by project ID
-    let mut pm_contexts: HashMap<ProjectId, PmContext> = HashMap::new();
-    let (pm_tx, pm_rx) = mpsc::channel::<PmEvent>();
+    // Project contexts: one per project, keyed by project ID
+    let mut project_contexts: HashMap<ProjectId, ProjectContext> = HashMap::new();
+    let (project_tx, project_rx) = mpsc::channel::<ProjectEvent>();
 
     // Permission socket listener
     let (perm_tx, perm_rx) = mpsc::channel::<(UnixStream, PermissionRequest)>();
@@ -229,11 +228,11 @@ pub fn run<R: Runtime>(
         &mut terminal,
         &mut state,
         &mut exo_session,
-        &mut pm_contexts,
-        &pm_tx,
+        &mut project_contexts,
+        &project_tx,
         &app,
         &rx,
-        &pm_rx,
+        &project_rx,
         &perm_rx,
         &resolved_rx,
         &idle_rx,
@@ -243,7 +242,7 @@ pub fn run<R: Runtime>(
     );
 
     cancel.store(true, Ordering::Relaxed);
-    for ctx in pm_contexts.values() {
+    for ctx in project_contexts.values() {
         ctx.cancel.store(true, Ordering::Relaxed);
     }
 
@@ -282,12 +281,12 @@ pub fn run<R: Runtime>(
 fn run_loop<R: Runtime>(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     state: &mut ScreenState,
-    exo_session: &mut ExoSession,
-    pm_contexts: &mut HashMap<ProjectId, PmContext>,
-    pm_tx: &mpsc::Sender<PmEvent>,
+    exo_session: &mut AssistantSession,
+    project_contexts: &mut HashMap<ProjectId, ProjectContext>,
+    project_tx: &mpsc::Sender<ProjectEvent>,
     app: &ClatApp<R>, // borrowed from run() which owns it
-    rx: &mpsc::Receiver<ExoEvent>,
-    pm_rx: &mpsc::Receiver<PmEvent>,
+    rx: &mpsc::Receiver<AssistantEvent>,
+    project_rx: &mpsc::Receiver<ProjectEvent>,
     perm_rx: &mpsc::Receiver<(UnixStream, PermissionRequest)>,
     resolved_rx: &mpsc::Receiver<String>,
     idle_rx: &mpsc::Receiver<String>,
@@ -310,8 +309,8 @@ fn run_loop<R: Runtime>(
         .collect();
 
     loop {
-        let any_pm_streaming = state.pm_chats.values().any(|c| c.streaming);
-        let tick_rate = if state.exo_chat.streaming || any_pm_streaming {
+        let any_project_streaming = state.project_chats.values().any(|c| c.streaming);
+        let tick_rate = if state.exo_chat.streaming || any_project_streaming {
             Duration::from_millis(50)
         } else {
             Duration::from_millis(500)
@@ -321,7 +320,7 @@ fn run_loop<R: Runtime>(
 
         // Drain channel events
         handlers::drain_exo_events(exo_session, app, rx, state, tg_tx);
-        handlers::drain_pm_events(pm_contexts, app, pm_rx, state);
+        handlers::drain_project_events(project_contexts, app, project_rx, state);
 
         // Poll terminal input
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
@@ -356,8 +355,8 @@ fn run_loop<R: Runtime>(
                         state,
                         key,
                         app,
-                        pm_contexts,
-                        pm_tx,
+                        project_contexts,
+                        project_tx,
                         tg_tx,
                     ) {
                         handlers::handle_focus_key(
@@ -365,8 +364,8 @@ fn run_loop<R: Runtime>(
                             key,
                             app,
                             exo_session,
-                            pm_contexts,
-                            pm_tx,
+                            project_contexts,
+                            project_tx,
                         );
                     }
                 }

@@ -33,7 +33,7 @@ impl Paths {
         self.data_dir.join("exo-session-id")
     }
 
-    pub fn pm_session_file(&self, project_id: &str) -> PathBuf {
+    pub fn project_session_file(&self, project_id: &str) -> PathBuf {
         self.data_dir.join(format!("pm-session-{project_id}"))
     }
 }
