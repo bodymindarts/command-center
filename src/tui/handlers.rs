@@ -811,11 +811,19 @@ fn handle_task_chat_input_key<R: Runtime>(
         KeyCode::Enter => {
             if !app.input.is_empty() {
                 let msg = app.input.take();
-                let pane_id = app.selected_task().and_then(|t| t.tmux_pane.clone());
-                if let Some(ref pane) = pane_id {
-                    service.forward_literal(pane.as_str(), &msg);
-                    service.forward_key(pane.as_str(), "Enter");
-                    app.idle_panes.remove(pane);
+                if let Some(task) = app.selected_task() {
+                    let task_id = task.id.as_str().to_string();
+                    let pane = task.tmux_pane.clone();
+                    match service.send(&task_id, &msg) {
+                        Ok(_) => {
+                            if let Some(pane) = pane {
+                                app.idle_panes.remove(&pane);
+                            }
+                        }
+                        Err(e) => {
+                            app.status_error = Some(format!("send: {e}"));
+                        }
+                    }
                 }
             }
         }

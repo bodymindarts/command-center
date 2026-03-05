@@ -346,14 +346,6 @@ impl<R: Runtime> ClatApp<R> {
         })
     }
 
-    pub fn forward_key(&self, pane_id: &str, key: &str) {
-        let _ = self.runtime.forward_key(pane_id, key);
-    }
-
-    pub fn forward_literal(&self, pane_id: &str, text: &str) {
-        let _ = self.runtime.forward_literal(pane_id, text);
-    }
-
     pub fn goto(&self, id_prefix: &str) -> anyhow::Result<()> {
         let task = self.resolve_task(id_prefix)?;
 
@@ -680,22 +672,6 @@ mod tests {
             self.calls.borrow_mut().push(Call::SendKeys {
                 pane_id: pane_id.to_string(),
                 message: message.to_string(),
-            });
-            Ok(())
-        }
-
-        fn forward_key(&self, pane_id: &str, key: &str) -> anyhow::Result<()> {
-            self.calls.borrow_mut().push(Call::SendKeys {
-                pane_id: pane_id.to_string(),
-                message: key.to_string(),
-            });
-            Ok(())
-        }
-
-        fn forward_literal(&self, pane_id: &str, text: &str) -> anyhow::Result<()> {
-            self.calls.borrow_mut().push(Call::SendKeys {
-                pane_id: pane_id.to_string(),
-                message: text.to_string(),
             });
             Ok(())
         }

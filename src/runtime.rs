@@ -46,8 +46,6 @@ pub trait Runtime {
     ) -> anyhow::Result<SpawnResult>;
     fn relaunch_agent(&self, task_name: &str, work_dir: &Path) -> anyhow::Result<SpawnResult>;
     fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> anyhow::Result<()>;
-    fn forward_key(&self, pane_id: &str, key: &str) -> anyhow::Result<()>;
-    fn forward_literal(&self, pane_id: &str, text: &str) -> anyhow::Result<()>;
     fn capture_pane_output(&self, pane_id: &str) -> anyhow::Result<String>;
     fn kill_tmux_window(&self, window_id: &str) -> anyhow::Result<()>;
     fn select_window(&self, window_id: &str) -> anyhow::Result<()>;
@@ -331,16 +329,6 @@ impl Runtime for TmuxRuntime {
         // before the Enter key arrives to submit it.
         std::thread::sleep(std::time::Duration::from_millis(100));
         self.tmux_cmd(&["send-keys", "-t", pane_id, "Enter"])?;
-        Ok(())
-    }
-
-    fn forward_key(&self, pane_id: &str, key: &str) -> anyhow::Result<()> {
-        self.tmux_cmd(&["send-keys", "-t", pane_id, key])?;
-        Ok(())
-    }
-
-    fn forward_literal(&self, pane_id: &str, text: &str) -> anyhow::Result<()> {
-        self.tmux_cmd(&["send-keys", "-t", pane_id, "-l", text])?;
         Ok(())
     }
 
