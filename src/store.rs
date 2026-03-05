@@ -267,7 +267,7 @@ impl Store {
                 let created_at: String = row.get(4)?;
                 Ok(TaskMessage {
                     id: row.get(0)?,
-                    task_id: TaskId::from(row.get::<_, String>(1)?),
+                    chat_id: row.get(1)?,
                     role: MessageRole::from(row.get::<_, String>(2)?),
                     content: row.get(3)?,
                     created_at: DateTime::parse_from_rfc3339(&created_at)

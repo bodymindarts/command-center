@@ -106,7 +106,7 @@ impl Task {
 #[allow(dead_code)]
 pub struct TaskMessage {
     pub id: String,
-    pub task_id: TaskId,
+    pub chat_id: String,
     pub role: MessageRole,
     pub content: String,
     pub created_at: DateTime<Utc>,
