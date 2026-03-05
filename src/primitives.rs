@@ -140,7 +140,7 @@ string_newtype!(PaneId);
 string_newtype!(WindowId);
 
 /// Identifies the chat channel a message belongs to.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ChatId {
     /// ExO-level orchestration chat.
     Exo,

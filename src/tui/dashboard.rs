@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use ratatui::widgets::ListState;
 
-use crate::primitives::{PaneId, ProjectId, ProjectName, TaskId, TaskName, WindowId};
+use crate::primitives::{ChatId, PaneId, ProjectId, ProjectName, TaskId, TaskName, WindowId};
 use crate::task::{Project, Task, TaskMessage};
 
 pub use super::input::InputState;
@@ -41,7 +41,7 @@ pub struct Dashboard {
     pub detail_scroll: u16,
     pub detail_live_output: Option<String>,
     pub window_numbers: HashMap<WindowId, String>,
-    pub chat_buffers: HashMap<String, String>,
+    pub chat_buffers: HashMap<ChatId, String>,
     pub chat_scroll: u16,
     pub chat_viewport_height: u16,
     /// Pane IDs that appear idle (shell prompt visible), refreshed periodically.
@@ -193,31 +193,31 @@ impl Dashboard {
             .askuser_count_for_project(self.active_project_id.as_ref(), &self.global_task_projects)
     }
 
-    fn current_chat_key(&self) -> String {
+    fn current_chat_id(&self) -> ChatId {
         if self.show_detail {
             self.selected_task()
-                .map(|t| t.id.as_str().to_string())
-                .unwrap_or_else(|| "exo".to_string())
+                .map(|t| ChatId::Task(t.id.clone()))
+                .unwrap_or(ChatId::Exo)
         } else if let Some(ref pid) = self.active_project_id {
-            format!("pm:{pid}")
+            ChatId::Pm(pid.clone())
         } else {
-            "exo".to_string()
+            ChatId::Exo
         }
     }
 
     pub fn save_current_input(&mut self) {
-        let key = self.current_chat_key();
+        let chat_id = self.current_chat_id();
         let text = self.input.buffer();
         if text.is_empty() {
-            self.chat_buffers.remove(&key);
+            self.chat_buffers.remove(&chat_id);
         } else {
-            self.chat_buffers.insert(key, text);
+            self.chat_buffers.insert(chat_id, text);
         }
     }
 
     pub fn restore_input(&mut self) {
-        let key = self.current_chat_key();
-        let text = self.chat_buffers.get(&key).cloned().unwrap_or_default();
+        let chat_id = self.current_chat_id();
+        let text = self.chat_buffers.get(&chat_id).cloned().unwrap_or_default();
         self.input.take();
         self.input.set(&text);
     }
