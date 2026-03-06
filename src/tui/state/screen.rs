@@ -15,7 +15,7 @@ pub(in crate::tui) fn log_hook(event: &str, detail: &str) {
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open("data/hook.log")
+        .open("data/hook-received.log")
     {
         let now = chrono::Local::now().format("%H:%M:%S%.3f");
         let _ = writeln!(f, "[{now}] {event}: {detail}");

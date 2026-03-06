@@ -176,7 +176,7 @@ pub fn run<R: Runtime>(
                         if let Ok(mut log) = std::fs::OpenOptions::new()
                             .create(true)
                             .append(true)
-                            .open("data/hooks.log")
+                            .open("data/hook-sent.log")
                         {
                             use std::io::Write;
                             let ts = chrono::Local::now().format("%H:%M:%S%.3f");
@@ -328,7 +328,6 @@ fn run_loop<R: Runtime>(
         }
 
         // Drain hook events from the socket listener
-        state::log_hook("run_loop", "before drain_hooks");
         handlers::drain_hooks(
             state,
             hook_rx,

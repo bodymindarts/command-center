@@ -961,7 +961,6 @@ pub(super) fn drain_hooks(
     tg_perm_ids: &mut HashSet<u64>,
     perm_id_counter: &mut u64,
 ) {
-    super::state::log_hook("drain_hooks", "called");
     while let Ok((event, stream)) = hook_rx.try_recv() {
         super::state::log_hook(
             "drain_hooks",
