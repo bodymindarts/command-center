@@ -16,7 +16,7 @@ pub(in crate::tui) fn ui(frame: &mut ratatui::Frame, state: &mut ScreenState) {
     // Left side: chat + (optional mid-panel) + input + prompt bar
     let searching = matches!(state.current_focus(), Focus::TaskSearch);
     let active = state.active_state();
-    let show_detail = active.task_list.show_detail;
+    let show_detail = active.task_list.is_detail_visible();
     let in_task_chat = !searching && show_detail && active.task_list.selected_task().is_some();
     let focused_perm_key = state.focused_perm_key();
     let front_perm = state.permissions.peek(&focused_perm_key);

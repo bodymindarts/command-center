@@ -13,7 +13,7 @@ fn task_list_item(
     permissions: &PermissionStore,
     task: &crate::task::Task,
 ) -> ListItem<'static> {
-    let ds = task.display_status(&task_list.idle_panes);
+    let ds = task.display_status(task_list.idle_panes());
     let status_char = ds.indicator();
     let color = display_status_color(&ds);
     let dim = if ds.is_dim() {
@@ -30,8 +30,7 @@ fn task_list_item(
     let win_num = task
         .tmux_window
         .as_ref()
-        .and_then(|w| task_list.window_numbers.get(w))
-        .map(|s| s.as_str())
+        .and_then(|w| task_list.window_number(w))
         .unwrap_or("-");
     let main_line = Line::from(vec![
         Span::styled(
@@ -124,7 +123,7 @@ pub(in crate::tui) fn render_task_list(
 
     let items: Vec<ListItem> = if searching {
         task_list
-            .filtered_indices
+            .filtered_indices()
             .iter()
             .filter_map(|&i| task_list.tasks.get(i))
             .map(|task| task_list_item(task_list, permissions, task))
@@ -147,7 +146,7 @@ pub(in crate::tui) fn render_task_list(
     if searching {
         title_spans.push(Span::raw(format!(
             " Tasks ({}/{}) ",
-            task_list.filtered_indices.len(),
+            task_list.filtered_indices().len(),
             task_list.tasks.len()
         )));
     } else if let Some(name) = active_project_name {
@@ -190,7 +189,7 @@ pub(in crate::tui) fn render_task_list(
     }
     let title = Line::from(title_spans);
 
-    let show_highlight = task_list.show_detail || focused;
+    let show_highlight = task_list.is_detail_visible() || focused;
 
     let list = List::new(items)
         .block(

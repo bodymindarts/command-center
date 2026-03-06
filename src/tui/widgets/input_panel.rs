@@ -22,9 +22,9 @@ pub(in crate::tui) fn render_input(
 ) {
     let front_input_perm = permissions.peek(perm_key);
     let focused_has_perms =
-        task_list.show_detail && front_input_perm.is_some_and(|p| !p.is_askuser());
+        task_list.is_detail_visible() && front_input_perm.is_some_and(|p| !p.is_askuser());
     let focused_has_askuser =
-        task_list.show_detail && front_input_perm.is_some_and(|p| p.is_askuser());
+        task_list.is_detail_visible() && front_input_perm.is_some_and(|p| p.is_askuser());
     let border_color = if focused && focused_has_perms {
         Color::Yellow
     } else if focused && focused_has_askuser {
@@ -35,7 +35,7 @@ pub(in crate::tui) fn render_input(
         Color::DarkGray
     };
     let searching = matches!(focus, Focus::TaskSearch);
-    let prefix = if !searching && task_list.show_detail {
+    let prefix = if !searching && task_list.is_detail_visible() {
         let name = task_list
             .selected_task()
             .map(|t| t.name.as_str())

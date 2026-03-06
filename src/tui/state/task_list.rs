@@ -8,15 +8,15 @@ use crate::task::{Task, TaskMessage};
 pub struct TaskListState {
     pub tasks: Vec<Task>,
     pub list_state: ListState,
-    pub show_detail: bool,
-    pub selected_messages: Vec<TaskMessage>,
-    pub detail_scroll: u16,
-    pub detail_live_output: Option<String>,
-    pub window_numbers: HashMap<WindowId, String>,
+    show_detail: bool,
+    selected_messages: Vec<TaskMessage>,
+    detail_scroll: u16,
+    detail_live_output: Option<String>,
+    window_numbers: HashMap<WindowId, String>,
     /// Pane IDs that appear idle (shell prompt visible), refreshed periodically.
-    pub idle_panes: HashSet<PaneId>,
+    idle_panes: HashSet<PaneId>,
     /// Indices into `tasks` that match the current search query.
-    pub filtered_indices: Vec<usize>,
+    filtered_indices: Vec<usize>,
 }
 
 impl TaskListState {
@@ -38,6 +38,72 @@ impl TaskListState {
         }
     }
 
+    // ── Detail view ──────────────────────────────────────────────────
+
+    pub fn show_detail(&mut self) {
+        self.show_detail = true;
+        self.detail_scroll = 0;
+    }
+
+    pub fn hide_detail(&mut self) {
+        self.show_detail = false;
+    }
+
+    pub fn is_detail_visible(&self) -> bool {
+        self.show_detail
+    }
+
+    #[cfg(test)]
+    pub fn detail_scroll(&self) -> u16 {
+        self.detail_scroll
+    }
+
+    // ── Messages & live output ───────────────────────────────────────
+
+    pub fn set_selected_messages(&mut self, messages: Vec<TaskMessage>) {
+        self.selected_messages = messages;
+    }
+
+    pub fn clear_selected_messages(&mut self) {
+        self.selected_messages.clear();
+    }
+
+    pub fn selected_messages(&self) -> &[TaskMessage] {
+        &self.selected_messages
+    }
+
+    pub fn set_live_output(&mut self, output: Option<String>) {
+        self.detail_live_output = output;
+    }
+
+    pub fn live_output(&self) -> Option<&str> {
+        self.detail_live_output.as_deref()
+    }
+
+    // ── Window numbers ───────────────────────────────────────────────
+
+    pub fn update_window_numbers(&mut self, numbers: HashMap<WindowId, String>) {
+        self.window_numbers = numbers;
+    }
+
+    pub fn window_number(&self, id: &WindowId) -> Option<&str> {
+        self.window_numbers.get(id).map(|s| s.as_str())
+    }
+
+    // ── Idle panes ───────────────────────────────────────────────────
+
+    pub fn mark_pane_idle(&mut self, pane: PaneId) {
+        self.idle_panes.insert(pane);
+    }
+
+    pub fn mark_pane_active(&mut self, pane: &PaneId) {
+        self.idle_panes.remove(pane);
+    }
+
+    pub fn idle_panes(&self) -> &HashSet<PaneId> {
+        &self.idle_panes
+    }
+
     /// Mark all running task panes as idle.
     pub fn reset_tasks_to_idle(&mut self) {
         self.idle_panes = self
@@ -47,6 +113,22 @@ impl TaskListState {
             .filter_map(|t| t.tmux_pane.clone())
             .collect();
     }
+
+    // ── Filtered indices ─────────────────────────────────────────────
+
+    pub fn clear_filter(&mut self) {
+        self.filtered_indices.clear();
+    }
+
+    pub fn set_filtered_indices(&mut self, indices: Vec<usize>) {
+        self.filtered_indices = indices;
+    }
+
+    pub fn filtered_indices(&self) -> &[usize] {
+        &self.filtered_indices
+    }
+
+    // ── Selection & navigation ───────────────────────────────────────
 
     pub fn selected_task(&self) -> Option<&Task> {
         self.list_state.selected().and_then(|i| self.tasks.get(i))

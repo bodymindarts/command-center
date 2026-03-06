@@ -207,7 +207,7 @@ pub(super) fn handle_global_keys<R: Runtime>(
 
     // Permission keys — global so they work regardless of focus (ChatInput, ChatHistory, TaskList)
     // while a task detail is showing. Guarded by show_detail + permissions.peek().
-    let show_detail = state.active_state().task_list.show_detail;
+    let show_detail = state.active_state().task_list.is_detail_visible();
     // Ctrl+Y one-time allow
     if ctrl
         && key.code == KeyCode::Char('y')
@@ -294,7 +294,7 @@ fn handle_cycle_permissions<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R
                     state.switch_to_project(None, tasks, None);
                 }
             } else {
-                state.active_state_mut().task_list.show_detail = false;
+                state.active_state_mut().task_list.hide_detail();
             }
         } else if let Some(pos) = state
             .active_state()
@@ -359,7 +359,7 @@ fn handle_askuser_select(
 
 fn handle_goto_project<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
     // If in a project's task detail, go back to PM chat
-    if state.active_state().task_list.show_detail && state.active_project_id.is_some() {
+    if state.active_state().task_list.is_detail_visible() && state.active_project_id.is_some() {
         state.close_task_detail();
     // If in ExO view, restore last active project (or first project)
     } else if state.active_project_id.is_none() {
@@ -391,7 +391,9 @@ fn handle_goto_project<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
             state.switch_to_project(Some((name, id.clone())), tasks, None);
         }
     // If in a project PM view, cycle to next project
-    } else if state.active_project_id.is_some() && !state.active_state().task_list.show_detail {
+    } else if state.active_project_id.is_some()
+        && !state.active_state().task_list.is_detail_visible()
+    {
         if let Ok(projects) = app.list_projects() {
             state.project_list.projects = projects;
         }
@@ -427,7 +429,7 @@ pub(super) fn handle_focus_key<R: Runtime>(
         Focus::TaskList => handle_task_list_key(state, key, app),
         Focus::TaskSearch => handle_task_search_key(state, key),
         Focus::ProjectList => handle_project_list_key(state, key, app),
-        Focus::ChatInput if state.active_state().task_list.show_detail => {
+        Focus::ChatInput if state.active_state().task_list.is_detail_visible() => {
             handle_task_chat_input_key(state, key, app)
         }
         Focus::ChatInput => handle_chat_input_key(state, key, app, exo_session, project_contexts),
@@ -449,15 +451,11 @@ fn handle_task_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app:
         }
         KeyCode::Char('j') | KeyCode::Down => {
             state.next();
-            let active = state.active_state_mut();
-            active.task_list.show_detail = true;
-            active.task_list.detail_scroll = 0;
+            state.active_state_mut().task_list.show_detail();
         }
         KeyCode::Char('k') | KeyCode::Up => {
             state.previous();
-            let active = state.active_state_mut();
-            active.task_list.show_detail = true;
-            active.task_list.detail_scroll = 0;
+            state.active_state_mut().task_list.show_detail();
         }
         KeyCode::PageDown => {
             state.scroll_detail_down();
@@ -652,7 +650,7 @@ fn handle_task_chat_input_key<R: Runtime>(
                     match app.send(&task_id, &msg) {
                         Ok(_) => {
                             if let Some(pane) = pane {
-                                active.task_list.idle_panes.remove(&pane);
+                                active.task_list.mark_pane_active(&pane);
                             }
                         }
                         Err(e) => {
@@ -710,8 +708,7 @@ fn handle_chat_input_key<R: Runtime>(
             state.focus = Focus::TaskList;
             let active = state.active_state_mut();
             if active.task_list.list_state.selected().is_some() {
-                active.task_list.show_detail = true;
-                active.task_list.detail_scroll = 0;
+                active.task_list.show_detail();
             }
         }
         KeyCode::Enter => {
@@ -833,7 +830,7 @@ fn handle_confirm_close_task_key<R: Runtime>(
             state.close_task_detail();
         }
         KeyCode::Char('n') | KeyCode::Esc => {
-            state.focus = if state.active_state().task_list.show_detail {
+            state.focus = if state.active_state().task_list.is_detail_visible() {
                 Focus::ChatInput
             } else {
                 Focus::TaskList
@@ -1109,14 +1106,15 @@ pub(super) fn drain_resolved(
             std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
         let task_name = find_task_name_by_cwd(&state.global_task_work_dirs, &resolved_cwd);
         if let Some(ref name) = task_name {
-            if let Some(task_list) = find_project_state_for_task(state, name)
-                && let Some(pane_id) = task_list
+            if let Some(task_list) = find_project_state_for_task(state, name) {
+                let pane_id = task_list
                     .tasks
                     .iter()
                     .find(|t| t.name == *name)
-                    .and_then(|t| t.tmux_pane.as_ref())
-            {
-                task_list.idle_panes.remove(pane_id);
+                    .and_then(|t| t.tmux_pane.clone());
+                if let Some(pane_id) = &pane_id {
+                    task_list.mark_pane_active(pane_id);
+                }
             }
             if let Some(perm) = state.permissions.take(name) {
                 let _ = write_response_to_stream(perm.stream, false, None);
@@ -1134,13 +1132,15 @@ pub(super) fn drain_idle(state: &mut ScreenState, idle_rx: &mpsc::Receiver<Strin
             std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
         if let Some(task_name) = find_task_name_by_cwd(&state.global_task_work_dirs, &cwd_path)
             && let Some(task_list) = find_project_state_for_task(state, &task_name)
-            && let Some(pane_id) = task_list
+        {
+            let pane_id = task_list
                 .tasks
                 .iter()
                 .find(|t| t.name == task_name)
-                .and_then(|t| t.tmux_pane.as_ref())
-        {
-            task_list.idle_panes.insert(pane_id.clone());
+                .and_then(|t| t.tmux_pane.clone());
+            if let Some(pane_id) = pane_id {
+                task_list.mark_pane_idle(pane_id);
+            }
         }
     }
 }
@@ -1152,13 +1152,15 @@ pub(super) fn drain_active(state: &mut ScreenState, active_rx: &mpsc::Receiver<S
             std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
         if let Some(task_name) = find_task_name_by_cwd(&state.global_task_work_dirs, &cwd_path)
             && let Some(task_list) = find_project_state_for_task(state, &task_name)
-            && let Some(pane_id) = task_list
+        {
+            let pane_id = task_list
                 .tasks
                 .iter()
                 .find(|t| t.name == task_name)
-                .and_then(|t| t.tmux_pane.as_ref())
-        {
-            task_list.idle_panes.remove(pane_id);
+                .and_then(|t| t.tmux_pane.clone());
+            if let Some(pane_id) = &pane_id {
+                task_list.mark_pane_active(pane_id);
+            }
         }
     }
 }
@@ -1175,14 +1177,15 @@ pub(super) fn drain_permissions(
             std::fs::canonicalize(&req.cwd).unwrap_or_else(|_| std::path::PathBuf::from(&req.cwd));
         let task_name = find_task_name_by_cwd(&state.global_task_work_dirs, &req_cwd)
             .unwrap_or_else(|| TaskName::from(EXO_PERM_KEY.to_string()));
-        if let Some(task_list) = find_project_state_for_task(state, &task_name)
-            && let Some(pane_id) = task_list
+        if let Some(task_list) = find_project_state_for_task(state, &task_name) {
+            let pane_id = task_list
                 .tasks
                 .iter()
                 .find(|t| t.name == task_name)
-                .and_then(|t| t.tmux_pane.as_ref())
-        {
-            task_list.idle_panes.remove(pane_id);
+                .and_then(|t| t.tmux_pane.clone());
+            if let Some(pane_id) = &pane_id {
+                task_list.mark_pane_active(pane_id);
+            }
         }
         *perm_id_counter += 1;
         let perm_id = *perm_id_counter;
@@ -1319,26 +1322,27 @@ pub(super) fn tick_refresh<R: Runtime>(
         let _ = write_response_to_stream(perm.stream, false, None);
     }
     let active = state.active_state_mut();
-    active.task_list.window_numbers = app.window_numbers();
+    active.task_list.update_window_numbers(app.window_numbers());
     // Update selected messages and live output for detail view
     if let Some(task) = active.task_list.selected_task() {
         let chat = ChatId::Task(task.id.clone());
         let is_running = task.status.is_running();
         let pane = task.tmux_pane.clone();
         if let Ok(messages) = app.messages(&chat) {
-            active.task_list.selected_messages = messages;
+            active.task_list.set_selected_messages(messages);
         }
         if is_running {
-            active.task_list.detail_live_output = pane
-                .as_ref()
-                .map(|p| p.as_str())
-                .and_then(|p| app.capture_pane(p));
+            active.task_list.set_live_output(
+                pane.as_ref()
+                    .map(|p| p.as_str())
+                    .and_then(|p| app.capture_pane(p)),
+            );
         } else {
-            active.task_list.detail_live_output = None;
+            active.task_list.set_live_output(None);
         }
     } else {
-        active.task_list.selected_messages.clear();
-        active.task_list.detail_live_output = None;
+        active.task_list.clear_selected_messages();
+        active.task_list.set_live_output(None);
     }
 }
 

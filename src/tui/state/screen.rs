@@ -189,7 +189,7 @@ impl ScreenState {
     /// Task name if viewing a task's detail, "exo" otherwise.
     pub fn focused_perm_key(&self) -> TaskName {
         let active = self.active_state();
-        if active.task_list.show_detail {
+        if active.task_list.is_detail_visible() {
             active
                 .task_list
                 .selected_task()
@@ -225,8 +225,7 @@ impl ScreenState {
         // Get the task ID for the target index
         let task_id = active.task_list.tasks.get(index).map(|t| t.id.clone());
         active.task_list.list_state.select(Some(index));
-        active.task_list.show_detail = true;
-        active.task_list.detail_scroll = 0;
+        active.task_list.show_detail();
         active.chat_view.reset_scroll();
         if let Some(tid) = task_id {
             active.enter_task_detail(&tid);
@@ -239,7 +238,7 @@ impl ScreenState {
     pub fn close_task_detail(&mut self) {
         let active = self.active_state_mut();
         let task_id = active.task_list.selected_task().map(|t| t.id.clone());
-        active.task_list.show_detail = false;
+        active.task_list.hide_detail();
         active.chat_view.reset_scroll();
         if let Some(tid) = task_id {
             active.leave_task_detail(&tid);
@@ -258,23 +257,23 @@ impl ScreenState {
         let in_bounds = if forward {
             if current + 1 < active.task_list.tasks.len() {
                 active.task_list.list_state.select(Some(current + 1));
-                active.task_list.detail_scroll = 0;
+                active.task_list.show_detail();
                 true
             } else {
-                active.task_list.show_detail = false;
+                active.task_list.hide_detail();
                 false
             }
         } else if current > 0 {
             active.task_list.list_state.select(Some(current - 1));
-            active.task_list.detail_scroll = 0;
+            active.task_list.show_detail();
             true
         } else {
-            active.task_list.show_detail = false;
+            active.task_list.hide_detail();
             false
         };
         let new_task_id = active.task_list.selected_task().map(|t| t.id.clone());
         // Switch input buffers between old and new tasks
-        if active.task_list.show_detail {
+        if active.task_list.is_detail_visible() {
             if let (Some(old), Some(new)) = (&old_task_id, &new_task_id)
                 && old != new
             {
@@ -307,7 +306,7 @@ impl ScreenState {
 
         // Load tasks into target workspace
         let active = self.active_state_mut();
-        active.task_list.show_detail = false;
+        active.task_list.hide_detail();
         active.chat_view.reset_scroll();
         active.task_list.refresh_tasks(tasks);
 
@@ -316,8 +315,7 @@ impl ScreenState {
             let active = self.active_state_mut();
             if let Some(pos) = active.task_list.tasks.iter().position(|t| &t.name == name) {
                 active.task_list.list_state.select(Some(pos));
-                active.task_list.show_detail = true;
-                active.task_list.detail_scroll = 0;
+                active.task_list.show_detail();
             }
         }
     }
@@ -368,7 +366,7 @@ impl ScreenState {
             self.focus = Focus::ProjectList;
         } else {
             let active = self.active_state_mut();
-            active.task_list.filtered_indices.clear();
+            active.task_list.clear_filter();
             if !active.task_list.tasks.is_empty() {
                 let sel = active
                     .task_list
@@ -402,7 +400,7 @@ impl ScreenState {
                 false
             };
             self.search_input.take();
-            self.active_state_mut().task_list.filtered_indices.clear();
+            self.active_state_mut().task_list.clear_filter();
             selected
         }
     }
@@ -412,7 +410,7 @@ impl ScreenState {
     pub fn update_search_filter(&mut self) {
         let query: Vec<char> = self.search_input.buffer().to_lowercase().chars().collect();
         let active = self.active_state_mut();
-        active.task_list.filtered_indices = active
+        let indices: Vec<usize> = active
             .task_list
             .tasks
             .iter()
@@ -435,14 +433,15 @@ impl ScreenState {
             })
             .map(|(i, _)| i)
             .collect();
+        active.task_list.set_filtered_indices(indices);
         // Clamp selection to filtered range
-        if active.task_list.filtered_indices.is_empty() {
+        if active.task_list.filtered_indices().is_empty() {
             active.task_list.list_state.select(None);
         } else {
             let sel = active.task_list.list_state.selected().unwrap_or(0);
             if let Some(filtered_pos) = active
                 .task_list
-                .filtered_indices
+                .filtered_indices()
                 .iter()
                 .position(|&i| i == sel)
             {
@@ -545,25 +544,29 @@ mod tests {
     fn scroll_detail_down_increments() {
         let mut s = state_with_tasks(0);
         s.scroll_detail_down();
-        assert_eq!(s.active_state().task_list.detail_scroll, 10);
+        assert_eq!(s.active_state().task_list.detail_scroll(), 10);
         s.scroll_detail_down();
-        assert_eq!(s.active_state().task_list.detail_scroll, 20);
+        assert_eq!(s.active_state().task_list.detail_scroll(), 20);
     }
 
     #[test]
     fn scroll_detail_up_decrements() {
         let mut s = state_with_tasks(0);
-        s.active_state_mut().task_list.detail_scroll = 25;
+        // Scroll down first to set a value we can decrement
+        s.scroll_detail_down(); // 10
+        s.scroll_detail_down(); // 20
+        s.scroll_detail_down(); // 30 (close enough to 25)
         s.scroll_detail_up();
-        assert_eq!(s.active_state().task_list.detail_scroll, 15);
+        assert_eq!(s.active_state().task_list.detail_scroll(), 20);
     }
 
     #[test]
     fn scroll_detail_up_saturates_at_zero() {
         let mut s = state_with_tasks(0);
-        s.active_state_mut().task_list.detail_scroll = 5;
-        s.scroll_detail_up();
-        assert_eq!(s.active_state().task_list.detail_scroll, 0);
+        s.scroll_detail_down(); // 10
+        s.scroll_detail_up(); // 0
+        s.scroll_detail_up(); // still 0
+        assert_eq!(s.active_state().task_list.detail_scroll(), 0);
     }
 
     // ── open_task_detail ────────────────────────────────────────────
@@ -571,17 +574,16 @@ mod tests {
     #[test]
     fn open_task_detail_sets_expected_fields() {
         let mut s = state_with_tasks(3);
-        s.active_state_mut().task_list.show_detail = false;
-        s.active_state_mut().task_list.detail_scroll = 99;
+        s.active_state_mut().task_list.hide_detail();
         s.active_state_mut().chat_view.scroll_chat_up(); // set non-zero scroll
         s.focus = Focus::TaskList;
 
         s.open_task_detail(2);
 
         let active = s.active_state();
-        assert!(active.task_list.show_detail);
+        assert!(active.task_list.is_detail_visible());
         assert_eq!(active.task_list.list_state.selected(), Some(2));
-        assert_eq!(active.task_list.detail_scroll, 0);
+        assert_eq!(active.task_list.detail_scroll(), 0);
         assert_eq!(active.chat_view.chat_scroll(), 0);
         assert!(matches!(s.focus, Focus::ChatInput));
     }
@@ -591,14 +593,14 @@ mod tests {
     #[test]
     fn close_task_detail_hides_and_resets() {
         let mut s = state_with_tasks(2);
-        s.active_state_mut().task_list.show_detail = true;
+        s.active_state_mut().task_list.show_detail();
         s.active_state_mut().chat_view.scroll_chat_up(); // set non-zero scroll
         s.focus = Focus::TaskList;
 
         s.close_task_detail();
 
         let active = s.active_state();
-        assert!(!active.task_list.show_detail);
+        assert!(!active.task_list.is_detail_visible());
         assert_eq!(active.chat_view.chat_scroll(), 0);
         assert!(matches!(s.focus, Focus::ChatInput));
     }
@@ -608,7 +610,7 @@ mod tests {
     #[test]
     fn navigate_forward_within_bounds() {
         let mut s = state_with_tasks(3);
-        s.active_state_mut().task_list.show_detail = true;
+        s.active_state_mut().task_list.show_detail();
         s.active_state_mut().task_list.list_state.select(Some(0));
 
         let result = s.navigate_to_adjacent_task(true);
@@ -616,26 +618,26 @@ mod tests {
         assert!(result);
         let active = s.active_state();
         assert_eq!(active.task_list.list_state.selected(), Some(1));
-        assert!(active.task_list.show_detail);
-        assert_eq!(active.task_list.detail_scroll, 0);
+        assert!(active.task_list.is_detail_visible());
+        assert_eq!(active.task_list.detail_scroll(), 0);
     }
 
     #[test]
     fn navigate_forward_past_end_hides_detail() {
         let mut s = state_with_tasks(2);
-        s.active_state_mut().task_list.show_detail = true;
+        s.active_state_mut().task_list.show_detail();
         s.active_state_mut().task_list.list_state.select(Some(1));
 
         let result = s.navigate_to_adjacent_task(true);
 
         assert!(!result);
-        assert!(!s.active_state().task_list.show_detail);
+        assert!(!s.active_state().task_list.is_detail_visible());
     }
 
     #[test]
     fn navigate_backward_within_bounds() {
         let mut s = state_with_tasks(3);
-        s.active_state_mut().task_list.show_detail = true;
+        s.active_state_mut().task_list.show_detail();
         s.active_state_mut().task_list.list_state.select(Some(2));
 
         let result = s.navigate_to_adjacent_task(false);
@@ -643,19 +645,19 @@ mod tests {
         assert!(result);
         let active = s.active_state();
         assert_eq!(active.task_list.list_state.selected(), Some(1));
-        assert!(active.task_list.show_detail);
+        assert!(active.task_list.is_detail_visible());
     }
 
     #[test]
     fn navigate_backward_past_start_hides_detail() {
         let mut s = state_with_tasks(2);
-        s.active_state_mut().task_list.show_detail = true;
+        s.active_state_mut().task_list.show_detail();
         s.active_state_mut().task_list.list_state.select(Some(0));
 
         let result = s.navigate_to_adjacent_task(false);
 
         assert!(!result);
-        assert!(!s.active_state().task_list.show_detail);
+        assert!(!s.active_state().task_list.is_detail_visible());
     }
 
     // ── show_project_list ───────────────────────────────────────────
@@ -728,13 +730,15 @@ mod tests {
         let mut s = state_with_tasks(3);
         s.project_list.show_projects = false;
         s.focus = Focus::TaskSearch;
-        s.active_state_mut().task_list.filtered_indices = vec![0, 2];
+        s.active_state_mut()
+            .task_list
+            .set_filtered_indices(vec![0, 2]);
         s.active_state_mut().task_list.list_state.select(Some(0));
 
         s.exit_search();
 
         assert!(matches!(s.focus, Focus::TaskList));
-        assert!(s.active_state().task_list.filtered_indices.is_empty());
+        assert!(s.active_state().task_list.filtered_indices().is_empty());
     }
 
     #[test]
@@ -759,24 +763,26 @@ mod tests {
     fn confirm_search_selection_opens_task_detail() {
         let mut s = state_with_tasks(3);
         s.project_list.show_projects = false;
-        s.active_state_mut().task_list.filtered_indices = vec![0, 2];
+        s.active_state_mut()
+            .task_list
+            .set_filtered_indices(vec![0, 2]);
         s.active_state_mut().task_list.list_state.select(Some(1)); // points to filtered_indices[1] = 2
 
         let result = s.confirm_search_selection();
 
         assert!(result);
         let active = s.active_state();
-        assert!(active.task_list.show_detail);
+        assert!(active.task_list.is_detail_visible());
         assert_eq!(active.task_list.list_state.selected(), Some(2)); // real index
         assert!(matches!(s.focus, Focus::ChatInput));
-        assert!(s.active_state().task_list.filtered_indices.is_empty());
+        assert!(s.active_state().task_list.filtered_indices().is_empty());
     }
 
     #[test]
     fn confirm_search_selection_no_match_goes_to_task_list() {
         let mut s = state_with_tasks(3);
         s.project_list.show_projects = false;
-        s.active_state_mut().task_list.filtered_indices = vec![];
+        s.active_state_mut().task_list.set_filtered_indices(vec![]);
         s.active_state_mut().task_list.list_state.select(None);
 
         let result = s.confirm_search_selection();

@@ -17,7 +17,8 @@ pub(in crate::tui) fn render_chat(
     area: Rect,
 ) {
     let searching = matches!(focus, Focus::TaskSearch);
-    let in_task_chat = !searching && task_list.show_detail && task_list.selected_task().is_some();
+    let in_task_chat =
+        !searching && task_list.is_detail_visible() && task_list.selected_task().is_some();
 
     let title = if in_task_chat {
         let name = task_list
@@ -50,13 +51,13 @@ pub(in crate::tui) fn render_chat(
 
     if in_task_chat {
         // Render task messages
-        if task_list.selected_messages.is_empty() {
+        if task_list.selected_messages().is_empty() {
             lines.push(Line::from(Span::styled(
                 "No messages yet.",
                 Style::default().fg(Color::DarkGray),
             )));
         } else {
-            for msg in &task_list.selected_messages {
+            for msg in task_list.selected_messages() {
                 let (label, label_color) = match msg.role {
                     MessageRole::System => ("PROMPT", Color::Cyan),
                     MessageRole::User => ("YOU", Color::Green),
@@ -76,7 +77,7 @@ pub(in crate::tui) fn render_chat(
             }
         }
 
-        if let Some(output) = &task_list.detail_live_output {
+        if let Some(output) = task_list.live_output() {
             let tail: Vec<&str> = output.lines().collect();
             let start = tail.len().saturating_sub(500);
             lines.push(Line::from(Span::styled(
