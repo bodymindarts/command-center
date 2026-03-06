@@ -93,6 +93,21 @@ impl Task {
 
     /// Derive the visual display status from persisted status + idle set.
     pub fn display_status(&self, idle_panes: &HashSet<PaneId>) -> DisplayStatus {
+        {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("data/hook-received.log")
+            {
+                let now = chrono::Local::now().format("%H:%M:%S%.3f");
+                let _ = writeln!(
+                    f,
+                    "[{now}] display_status: {} status={:?} pane={:?} idle_panes={:?}",
+                    self.name, self.status, self.tmux_pane, idle_panes
+                );
+            }
+        }
         match self.status {
             TaskStatus::Running if self.is_idle(idle_panes) => DisplayStatus::Idle,
             TaskStatus::Running => DisplayStatus::Active,
