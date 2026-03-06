@@ -131,7 +131,7 @@ pub(in crate::tui) fn ui(frame: &mut ratatui::Frame, state: &mut ScreenState) {
         Focus::TaskList | Focus::TaskSearch | Focus::ProjectList
     );
     let search_query = state.search_input.buffer();
-    if state.project_list.show_projects {
+    if state.project_list.is_visible() {
         task_panel::render_project_list(
             frame,
             &state.focus,

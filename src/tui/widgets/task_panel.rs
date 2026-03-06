@@ -226,7 +226,7 @@ pub(in crate::tui) fn render_project_list(
     area: Rect,
     focused: bool,
 ) {
-    let searching = matches!(focus, Focus::TaskSearch) && project_list.show_projects;
+    let searching = matches!(focus, Focus::TaskSearch) && project_list.is_visible();
 
     let (list_area, search_area) = if searching {
         let chunks = Layout::default()
@@ -260,20 +260,20 @@ pub(in crate::tui) fn render_project_list(
 
     let items: Vec<ListItem> = if searching {
         project_list
-            .filtered_project_indices
+            .filtered_indices()
             .iter()
-            .filter_map(|&i| project_list.projects.get(i))
+            .filter_map(|&i| project_list.projects().get(i))
             .map(project_item)
             .collect()
     } else {
-        project_list.projects.iter().map(project_item).collect()
+        project_list.projects().iter().map(project_item).collect()
     };
 
     let title = if searching {
         format!(
             " Projects ({}/{}) ",
-            project_list.filtered_project_indices.len(),
-            project_list.projects.len()
+            project_list.filtered_indices().len(),
+            project_list.projects().len()
         )
     } else {
         " Projects ".to_string()

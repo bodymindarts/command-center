@@ -310,11 +310,11 @@ fn handle_cycle_permissions<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R
             let target_pid = state.global_task_projects.get(&name).cloned().flatten();
             if let Some(pid) = target_pid {
                 if let Ok(projects) = app.list_projects() {
-                    state.project_list.projects = projects;
+                    state.project_list.set_projects(projects);
                 }
                 let proj_name = state
                     .project_list
-                    .projects
+                    .projects()
                     .iter()
                     .find(|p| p.id == pid)
                     .map(|p| p.name.clone())
@@ -364,7 +364,7 @@ fn handle_goto_project<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
     // If in ExO view, restore last active project (or first project)
     } else if state.active_project_id.is_none() {
         if let Ok(projects) = app.list_projects() {
-            state.project_list.projects = projects;
+            state.project_list.set_projects(projects);
         }
         // Try last_project_id first, then fall back to first project
         let target = state
@@ -373,7 +373,7 @@ fn handle_goto_project<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
             .and_then(|pid| {
                 state
                     .project_list
-                    .projects
+                    .projects()
                     .iter()
                     .find(|p| p.id == *pid)
                     .map(|p| (p.name.clone(), p.id.clone()))
@@ -381,7 +381,7 @@ fn handle_goto_project<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
             .or_else(|| {
                 state
                     .project_list
-                    .projects
+                    .projects()
                     .first()
                     .map(|p| (p.name.clone(), p.id.clone()))
             });
@@ -395,18 +395,18 @@ fn handle_goto_project<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
         && !state.active_state().task_list.is_detail_visible()
     {
         if let Ok(projects) = app.list_projects() {
-            state.project_list.projects = projects;
+            state.project_list.set_projects(projects);
         }
         let cur_idx = state.active_project_id.as_ref().and_then(|pid| {
             state
                 .project_list
-                .projects
+                .projects()
                 .iter()
                 .position(|p| p.id == *pid)
         });
         if let Some(ci) = cur_idx {
-            let next_idx = (ci + 1) % state.project_list.projects.len();
-            let next = &state.project_list.projects[next_idx];
+            let next_idx = (ci + 1) % state.project_list.projects().len();
+            let next = &state.project_list.projects()[next_idx];
             let next_id = next.id.clone();
             let next_name = next.name.clone();
             if let Ok(tasks) = app.list_visible(Some(&next_id)) {
@@ -507,7 +507,7 @@ fn handle_task_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app:
             if let Ok(projects) = app.list_projects() {
                 state.show_project_list(projects);
             } else {
-                state.project_list.show_projects = true;
+                state.project_list.show();
                 state.focus = Focus::ProjectList;
             }
         }
@@ -517,9 +517,9 @@ fn handle_task_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app:
 
 fn handle_task_search_key(state: &mut ScreenState, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let searching_projects = state.project_list.show_projects;
+    let searching_projects = state.project_list.is_visible();
     let do_filter = |state: &mut ScreenState| {
-        if state.project_list.show_projects {
+        if state.project_list.is_visible() {
             state.update_project_search_filter();
         } else {
             state.update_search_filter();

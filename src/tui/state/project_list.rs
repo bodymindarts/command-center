@@ -4,13 +4,13 @@ use crate::task::Project;
 
 pub struct ProjectListState {
     /// Cached list of projects for rendering.
-    pub projects: Vec<Project>,
+    projects: Vec<Project>,
     /// Selection state for the project list.
     pub list_state: ListState,
     /// Whether the right panel shows the project list instead of the task list.
-    pub show_projects: bool,
+    show_projects: bool,
     /// Indices into `projects` that match the current search query.
-    pub filtered_project_indices: Vec<usize>,
+    filtered_project_indices: Vec<usize>,
 }
 
 impl ProjectListState {
@@ -22,6 +22,46 @@ impl ProjectListState {
             filtered_project_indices: Vec::new(),
         }
     }
+
+    // ── Visibility ───────────────────────────────────────────────────
+
+    pub fn show(&mut self) {
+        self.show_projects = true;
+    }
+
+    pub fn hide(&mut self) {
+        self.show_projects = false;
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.show_projects
+    }
+
+    // ── Projects ─────────────────────────────────────────────────────
+
+    pub fn set_projects(&mut self, projects: Vec<Project>) {
+        self.projects = projects;
+    }
+
+    pub fn projects(&self) -> &[Project] {
+        &self.projects
+    }
+
+    // ── Filtered indices ─────────────────────────────────────────────
+
+    pub fn clear_filter(&mut self) {
+        self.filtered_project_indices.clear();
+    }
+
+    pub fn set_filtered_indices(&mut self, indices: Vec<usize>) {
+        self.filtered_project_indices = indices;
+    }
+
+    pub fn filtered_indices(&self) -> &[usize] {
+        &self.filtered_project_indices
+    }
+
+    // ── Navigation ───────────────────────────────────────────────────
 
     pub fn next_project(&mut self) {
         if self.projects.is_empty() {
