@@ -73,6 +73,11 @@ impl InputState {
         pos + self.cursor_off
     }
 
+    /// Returns the buffer content as a lowercase char vector, suitable for fuzzy matching.
+    pub fn char_vec(&self) -> Vec<char> {
+        self.buffer().to_lowercase().chars().collect()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.segments.iter().all(|seg| match seg {
             Segment::Typed(chars) => chars.is_empty(),

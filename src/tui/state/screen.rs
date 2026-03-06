@@ -174,12 +174,20 @@ impl ScreenState {
         self.active_state_mut().task_list.hide_detail();
     }
 
-    pub fn search_next_task(&mut self) {
-        self.active_state_mut().task_list.search_next();
+    pub fn search_next(&mut self) {
+        if self.project_list.is_visible() {
+            self.project_list.search_next_project();
+        } else {
+            self.active_state_mut().task_list.search_next();
+        }
     }
 
-    pub fn search_prev_task(&mut self) {
-        self.active_state_mut().task_list.search_prev();
+    pub fn search_prev(&mut self) {
+        if self.project_list.is_visible() {
+            self.project_list.search_prev_project();
+        } else {
+            self.active_state_mut().task_list.search_prev();
+        }
     }
 
     pub fn refresh_tasks(&mut self, tasks: Vec<Task>) {
@@ -555,101 +563,23 @@ impl ScreenState {
     }
 
     /// Recompute `filtered_indices` based on `search_query`.
-    /// Fuzzy match: each query char must appear in order (e.g. "res" matches "r.*e.*s.*").
+    /// Dispatches to project or task filter depending on which list is visible.
     pub fn update_search_filter(&mut self) {
-        let query: Vec<char> = self.search_input.buffer().to_lowercase().chars().collect();
-        let active = self.active_state_mut();
-        let indices: Vec<usize> = active
-            .task_list
-            .tasks
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| {
-                if query.is_empty() {
-                    return true;
-                }
-                let name = t.name.as_str().to_lowercase();
-                let mut qi = 0;
-                for c in name.chars() {
-                    if c == query[qi] {
-                        qi += 1;
-                        if qi == query.len() {
-                            return true;
-                        }
-                    }
-                }
-                false
-            })
-            .map(|(i, _)| i)
-            .collect();
-        active.task_list.set_filtered_indices(indices);
-        // Clamp selection to filtered range
-        if active.task_list.filtered_indices().is_empty() {
-            active.task_list.list_state.select(None);
+        if self.project_list.is_visible() {
+            self.update_project_search_filter();
         } else {
-            let sel = active.task_list.list_state.selected().unwrap_or(0);
-            if let Some(filtered_pos) = active
-                .task_list
-                .filtered_indices()
-                .iter()
-                .position(|&i| i == sel)
-            {
-                active.task_list.list_state.select(Some(filtered_pos));
-            } else {
-                active.task_list.list_state.select(Some(0));
-            }
+            self.update_task_search_filter();
         }
     }
 
-    pub fn update_project_search_filter(&mut self) {
-        let query: Vec<char> = self.search_input.buffer().to_lowercase().chars().collect();
-        let indices: Vec<usize> = self
-            .project_list
-            .projects()
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| {
-                if query.is_empty() {
-                    return true;
-                }
-                let name = p.name.as_str().to_lowercase();
-                let mut qi = 0;
-                for c in name.chars() {
-                    if c == query[qi] {
-                        qi += 1;
-                        if qi == query.len() {
-                            return true;
-                        }
-                    }
-                }
-                false
-            })
-            .map(|(i, _)| i)
-            .collect();
-        self.project_list.set_filtered_indices(indices);
-        if self.project_list.filtered_indices().is_empty() {
-            self.project_list.list_state.select(None);
-        } else {
-            let sel = self.project_list.list_state.selected().unwrap_or(0);
-            if let Some(pos) = self
-                .project_list
-                .filtered_indices()
-                .iter()
-                .position(|&i| i == sel)
-            {
-                self.project_list.list_state.select(Some(pos));
-            } else {
-                self.project_list.list_state.select(Some(0));
-            }
-        }
+    fn update_task_search_filter(&mut self) {
+        let query = self.search_input.char_vec();
+        self.active_state_mut().task_list.filter(&query);
     }
 
-    pub fn search_next_project(&mut self) {
-        self.project_list.search_next_project();
-    }
-
-    pub fn search_prev_project(&mut self) {
-        self.project_list.search_prev_project();
+    fn update_project_search_filter(&mut self) {
+        let query = self.search_input.char_vec();
+        self.project_list.filter(&query);
     }
 }
 

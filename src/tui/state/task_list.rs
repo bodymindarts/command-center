@@ -120,6 +120,7 @@ impl TaskListState {
         self.filtered_indices.clear();
     }
 
+    #[cfg(test)]
     pub fn set_filtered_indices(&mut self, indices: Vec<usize>) {
         self.filtered_indices = indices;
     }
@@ -199,6 +200,43 @@ impl TaskListState {
         self.list_state
             .selected()
             .and_then(|i| self.filtered_indices.get(i).copied())
+    }
+
+    /// Fuzzy-filter tasks by name and clamp the selection.
+    pub fn filter(&mut self, query: &[char]) {
+        let indices: Vec<usize> = self
+            .tasks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                if query.is_empty() {
+                    return true;
+                }
+                let name = t.name.as_str().to_lowercase();
+                let mut qi = 0;
+                for c in name.chars() {
+                    if c == query[qi] {
+                        qi += 1;
+                        if qi == query.len() {
+                            return true;
+                        }
+                    }
+                }
+                false
+            })
+            .map(|(i, _)| i)
+            .collect();
+        self.filtered_indices = indices;
+        if self.filtered_indices.is_empty() {
+            self.list_state.select(None);
+        } else {
+            let sel = self.list_state.selected().unwrap_or(0);
+            if let Some(pos) = self.filtered_indices.iter().position(|&i| i == sel) {
+                self.list_state.select(Some(pos));
+            } else {
+                self.list_state.select(Some(0));
+            }
+        }
     }
 
     /// Move to the next item in filtered search results.

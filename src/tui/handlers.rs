@@ -490,56 +490,22 @@ fn handle_task_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app:
 
 fn handle_task_search_key(state: &mut ScreenState, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let searching_projects = state.project_list.is_visible();
-    let do_filter = |state: &mut ScreenState| {
-        if state.project_list.is_visible() {
-            state.update_project_search_filter();
-        } else {
-            state.update_search_filter();
-        }
-    };
     match key.code {
-        KeyCode::Esc => {
-            state.exit_search();
-        }
+        KeyCode::Esc => state.exit_search(),
         KeyCode::Enter => {
             state.confirm_search_selection();
         }
-        KeyCode::Down | KeyCode::Tab => {
-            if searching_projects {
-                state.search_next_project();
-            } else {
-                state.search_next_task();
-            }
-        }
-        KeyCode::Up | KeyCode::BackTab => {
-            if searching_projects {
-                state.search_prev_project();
-            } else {
-                state.search_prev_task();
-            }
-        }
-        KeyCode::Char('n') if ctrl => {
-            if searching_projects {
-                state.search_next_project();
-            } else {
-                state.search_next_task();
-            }
-        }
-        KeyCode::Char('p') if ctrl => {
-            if searching_projects {
-                state.search_prev_project();
-            } else {
-                state.search_prev_task();
-            }
-        }
+        KeyCode::Down | KeyCode::Tab => state.search_next(),
+        KeyCode::Up | KeyCode::BackTab => state.search_prev(),
+        KeyCode::Char('n') if ctrl => state.search_next(),
+        KeyCode::Char('p') if ctrl => state.search_prev(),
         KeyCode::Char('k') if ctrl => {
             state.search_input.kill_line();
-            do_filter(state);
+            state.update_search_filter();
         }
         _ => {
             if handle_input_editing(&mut state.search_input, &key) {
-                do_filter(state);
+                state.update_search_filter();
             }
         }
     }
@@ -551,9 +517,7 @@ fn handle_project_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, a
         KeyCode::Char('j') | KeyCode::Down => state.next_project(),
         KeyCode::Char('k') | KeyCode::Up => state.previous_project(),
         KeyCode::Char('/') => {
-            state.search_input.take();
-            state.update_project_search_filter();
-            state.set_focus(Focus::TaskSearch);
+            state.enter_search_mode();
         }
         KeyCode::Enter => {
             if let Some(project) = state.selected_project() {
