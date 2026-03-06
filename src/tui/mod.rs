@@ -323,11 +323,7 @@ fn run_loop<R: Runtime>(
     state.render_loop_starting();
 
     loop {
-        let any_project_streaming = state
-            .projects
-            .values()
-            .any(|ps| ps.chat_view.assistant.streaming);
-        let tick_rate = if state.exo.chat_view.assistant.streaming || any_project_streaming {
+        let tick_rate = if state.any_streaming() {
             Duration::from_millis(50)
         } else {
             Duration::from_millis(500)

@@ -122,6 +122,15 @@ impl ScreenState {
         }
     }
 
+    /// Whether any project (including ExO) is currently streaming.
+    pub fn any_streaming(&self) -> bool {
+        self.exo.chat_view.assistant.streaming
+            || self
+                .projects
+                .values()
+                .any(|ps| ps.chat_view.assistant.streaming)
+    }
+
     // ── Active state accessors ───────────────────────────────────────
 
     /// Get a reference to the active project state (ExO or current project).
