@@ -1,11 +1,14 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::primitives::{ProjectId, ProjectName, TaskName};
 use crate::task::{Project, Task};
 
+use super::TaskListState;
 use super::project_list::ProjectListState;
 use super::project_state::ProjectState;
 use super::{Focus, InputState, PermissionStore};
+use crate::tui::permissions::ActivePermission;
 
 pub struct ScreenState {
     /// ExO workspace — always present.
@@ -107,10 +110,6 @@ impl ScreenState {
         self.global_task_work_dirs = work_dirs;
     }
 
-    pub fn global_task_work_dirs(&self) -> &[(TaskName, String)] {
-        &self.global_task_work_dirs
-    }
-
     pub fn global_task_project(&self, name: &TaskName) -> Option<&Option<ProjectId>> {
         self.global_task_projects.get(name)
     }
@@ -119,6 +118,102 @@ impl ScreenState {
         self.exo.reset_tasks_to_idle();
         for project in self.projects.values_mut() {
             project.reset_tasks_to_idle();
+        }
+    }
+
+    // ── Hook event helpers ─────────────────────────────────────────────
+
+    /// Resolve a CWD to a task name using the global work-dir map.
+    fn task_name_for_cwd(&self, cwd: &str) -> Option<TaskName> {
+        let resolved = std::fs::canonicalize(cwd).unwrap_or_else(|_| PathBuf::from(cwd));
+        self.global_task_work_dirs
+            .iter()
+            .find(|(_, wd)| {
+                let canon = std::fs::canonicalize(wd).unwrap_or_else(|_| PathBuf::from(wd));
+                resolved.starts_with(&canon)
+            })
+            .map(|(name, _)| name.clone())
+    }
+
+    /// Find the TaskListState that contains a task with the given name.
+    fn task_list_for_task_mut(&mut self, name: &TaskName) -> Option<&mut TaskListState> {
+        if self.exo.task_list.tasks.iter().any(|t| t.name == *name) {
+            return Some(&mut self.exo.task_list);
+        }
+        for ps in self.projects.values_mut() {
+            if ps.task_list.tasks.iter().any(|t| t.name == *name) {
+                return Some(&mut ps.task_list);
+            }
+        }
+        None
+    }
+
+    /// Mark the pane for a task (identified by CWD) as active, take its
+    /// pending permission, and return it. Returns `None` if CWD doesn't
+    /// match any task or there is no pending permission.
+    pub fn resolve_permission(&mut self, cwd: &str) -> Option<ActivePermission> {
+        let name = self.task_name_for_cwd(cwd)?;
+        if let Some(task_list) = self.task_list_for_task_mut(&name) {
+            let pane_id = task_list
+                .tasks
+                .iter()
+                .find(|t| t.name == name)
+                .and_then(|t| t.tmux_pane.clone());
+            if let Some(pane_id) = &pane_id {
+                task_list.mark_pane_active(pane_id);
+            }
+        }
+        self.permissions.take(&name)
+    }
+
+    /// Mark the pane for a task (identified by CWD) as idle.
+    pub fn mark_task_idle(&mut self, cwd: &str) {
+        if let Some(name) = self.task_name_for_cwd(cwd)
+            && let Some(task_list) = self.task_list_for_task_mut(&name)
+        {
+            let pane_id = task_list
+                .tasks
+                .iter()
+                .find(|t| t.name == name)
+                .and_then(|t| t.tmux_pane.clone());
+            if let Some(pane_id) = pane_id {
+                task_list.mark_pane_idle(pane_id);
+            }
+        }
+    }
+
+    /// Mark the pane for a task (identified by CWD) as active.
+    pub fn mark_task_active(&mut self, cwd: &str) {
+        if let Some(name) = self.task_name_for_cwd(cwd)
+            && let Some(task_list) = self.task_list_for_task_mut(&name)
+        {
+            let pane_id = task_list
+                .tasks
+                .iter()
+                .find(|t| t.name == name)
+                .and_then(|t| t.tmux_pane.clone());
+            if let Some(pane_id) = &pane_id {
+                task_list.mark_pane_active(pane_id);
+            }
+        }
+    }
+
+    /// Resolve a CWD to its task name, falling back to the given default.
+    pub fn task_name_for_cwd_or(&self, cwd: &str, default: TaskName) -> TaskName {
+        self.task_name_for_cwd(cwd).unwrap_or(default)
+    }
+
+    /// Mark a task's pane as active by task name.
+    pub fn mark_task_active_by_name(&mut self, name: &TaskName) {
+        if let Some(task_list) = self.task_list_for_task_mut(name) {
+            let pane_id = task_list
+                .tasks
+                .iter()
+                .find(|t| t.name == *name)
+                .and_then(|t| t.tmux_pane.clone());
+            if let Some(pane_id) = &pane_id {
+                task_list.mark_pane_active(pane_id);
+            }
         }
     }
 

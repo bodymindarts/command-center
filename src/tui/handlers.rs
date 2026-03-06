@@ -20,20 +20,6 @@ const EXO_PERM_KEY: &str = "exo";
 
 // ── Helper functions ────────────────────────────────────────────────
 
-/// Find the task name whose work_dir is a prefix of the given CWD.
-pub(super) fn find_task_name_by_cwd(
-    work_dirs: &[(TaskName, String)],
-    cwd: &std::path::Path,
-) -> Option<TaskName> {
-    work_dirs
-        .iter()
-        .find(|(_, wd)| {
-            let canon = std::fs::canonicalize(wd).unwrap_or_else(|_| std::path::PathBuf::from(wd));
-            cwd.starts_with(&canon)
-        })
-        .map(|(name, _)| name.clone())
-}
-
 pub(super) fn write_response_to_stream(
     mut stream: UnixStream,
     allow: bool,
@@ -967,30 +953,6 @@ fn handle_session_event<R: Runtime>(
     }
 }
 
-/// Find the project state that contains a task with the given name.
-fn find_project_state_for_task<'a>(
-    state: &'a mut ScreenState,
-    task_name: &TaskName,
-) -> Option<&'a mut super::state::TaskListState> {
-    // Check ExO tasks
-    if state
-        .exo
-        .task_list
-        .tasks
-        .iter()
-        .any(|t| t.name == *task_name)
-    {
-        return Some(&mut state.exo.task_list);
-    }
-    // Check project tasks
-    for ps in state.projects.values_mut() {
-        if ps.task_list.tasks.iter().any(|t| t.name == *task_name) {
-            return Some(&mut ps.task_list);
-        }
-    }
-    None
-}
-
 /// Drain all hook events from the unified socket channel.
 pub(super) fn drain_hooks(
     state: &mut ScreenState,
@@ -1032,58 +994,20 @@ fn handle_hook_resolved(
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
     tg_perm_ids: &mut HashSet<u64>,
 ) {
-    let resolved_cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| std::path::PathBuf::from(cwd));
-    let task_name = find_task_name_by_cwd(state.global_task_work_dirs(), &resolved_cwd);
-    if let Some(ref name) = task_name {
-        if let Some(task_list) = find_project_state_for_task(state, name) {
-            let pane_id = task_list
-                .tasks
-                .iter()
-                .find(|t| t.name == *name)
-                .and_then(|t| t.tmux_pane.clone());
-            if let Some(pane_id) = &pane_id {
-                task_list.mark_pane_active(pane_id);
-            }
-        }
-        if let Some(perm) = state.permissions.take(name) {
-            let _ = write_response_to_stream(perm.stream, false, None);
-            if tg_perm_ids.remove(&perm.perm_id) {
-                notify_tg_resolved(tg_tx, perm.perm_id, "✅ Resolved in pane");
-            }
+    if let Some(perm) = state.resolve_permission(cwd) {
+        let _ = write_response_to_stream(perm.stream, false, None);
+        if tg_perm_ids.remove(&perm.perm_id) {
+            notify_tg_resolved(tg_tx, perm.perm_id, "✅ Resolved in pane");
         }
     }
 }
 
 fn handle_hook_idle(state: &mut ScreenState, cwd: &str) {
-    let cwd_path = std::fs::canonicalize(cwd).unwrap_or_else(|_| std::path::PathBuf::from(cwd));
-    if let Some(task_name) = find_task_name_by_cwd(state.global_task_work_dirs(), &cwd_path)
-        && let Some(task_list) = find_project_state_for_task(state, &task_name)
-    {
-        let pane_id = task_list
-            .tasks
-            .iter()
-            .find(|t| t.name == task_name)
-            .and_then(|t| t.tmux_pane.clone());
-        if let Some(pane_id) = pane_id {
-            task_list.mark_pane_idle(pane_id);
-        }
-    }
+    state.mark_task_idle(cwd);
 }
 
 fn handle_hook_active(state: &mut ScreenState, cwd: &str) {
-    let cwd_path = std::fs::canonicalize(cwd).unwrap_or_else(|_| std::path::PathBuf::from(cwd));
-    if let Some(task_name) = find_task_name_by_cwd(state.global_task_work_dirs(), &cwd_path)
-        && let Some(task_list) = find_project_state_for_task(state, &task_name)
-    {
-        let pane_id = task_list
-            .tasks
-            .iter()
-            .find(|t| t.name == task_name)
-            .and_then(|t| t.tmux_pane.clone());
-        if let Some(pane_id) = &pane_id {
-            task_list.mark_pane_active(pane_id);
-        }
-    }
+    state.mark_task_active(cwd);
 }
 
 fn handle_hook_permission(
@@ -1094,20 +1018,8 @@ fn handle_hook_permission(
     tg_perm_ids: &mut HashSet<u64>,
     perm_id_counter: &mut u64,
 ) {
-    let req_cwd =
-        std::fs::canonicalize(&req.cwd).unwrap_or_else(|_| std::path::PathBuf::from(&req.cwd));
-    let task_name = find_task_name_by_cwd(state.global_task_work_dirs(), &req_cwd)
-        .unwrap_or_else(|| TaskName::from(EXO_PERM_KEY.to_string()));
-    if let Some(task_list) = find_project_state_for_task(state, &task_name) {
-        let pane_id = task_list
-            .tasks
-            .iter()
-            .find(|t| t.name == task_name)
-            .and_then(|t| t.tmux_pane.clone());
-        if let Some(pane_id) = &pane_id {
-            task_list.mark_pane_active(pane_id);
-        }
-    }
+    let task_name = state.task_name_for_cwd_or(&req.cwd, TaskName::from(EXO_PERM_KEY.to_string()));
+    state.mark_task_active_by_name(&task_name);
     *perm_id_counter += 1;
     let perm_id = *perm_id_counter;
     if let Some(tx) = tg_tx {
