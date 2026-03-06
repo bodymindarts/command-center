@@ -2,8 +2,8 @@ use crate::tui::chat::AssistantChat;
 
 pub struct ChatViewState {
     pub assistant: AssistantChat,
-    pub chat_scroll: u16,
-    pub chat_viewport_height: u16,
+    chat_scroll: u16,
+    chat_viewport_height: u16,
 }
 
 impl ChatViewState {
@@ -13,6 +13,14 @@ impl ChatViewState {
             chat_scroll: 0,
             chat_viewport_height: 0,
         }
+    }
+
+    pub fn chat_scroll(&self) -> u16 {
+        self.chat_scroll
+    }
+
+    pub fn reset_scroll(&mut self) {
+        self.chat_scroll = 0;
     }
 
     pub fn update_chat_viewport_height(&mut self, area_height: u16) {

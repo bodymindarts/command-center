@@ -682,14 +682,14 @@ fn handle_chat_input_key<R: Runtime>(
             if active.chat_view.assistant.streaming {
                 active.chat_view.assistant.finish_streaming();
             }
-            active.chat_view.chat_scroll = 0;
+            active.chat_view.reset_scroll();
         }
         KeyCode::Tab => {
             let has_tasks = !state.active_state().task_list.tasks.is_empty();
             if has_tasks {
                 state.open_task_detail(0);
             } else {
-                state.active_state_mut().chat_view.chat_scroll = 0;
+                state.active_state_mut().chat_view.reset_scroll();
             }
         }
         KeyCode::BackTab => {
@@ -697,7 +697,7 @@ fn handle_chat_input_key<R: Runtime>(
             if let Some(last) = last {
                 state.open_task_detail(last);
             } else {
-                state.active_state_mut().chat_view.chat_scroll = 0;
+                state.active_state_mut().chat_view.reset_scroll();
             }
         }
         KeyCode::Char('k') if ctrl => {
@@ -730,7 +730,7 @@ fn handle_chat_enter<R: Runtime>(
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
 ) {
     let active = state.active_state_mut();
-    active.chat_view.chat_scroll = 0;
+    active.chat_view.reset_scroll();
     if active.input.is_empty() {
         return;
     }
@@ -755,7 +755,7 @@ fn handle_chat_enter<R: Runtime>(
         let _ = app.insert_project_message(&pid, MessageRole::User, &msg);
         chat.add_user_message(msg.clone());
         ctx.session.send_message(&msg, chat.session_id.as_deref());
-        active.chat_view.chat_scroll = 0;
+        active.chat_view.reset_scroll();
     } else {
         let active = state.active_state_mut();
         let chat = &mut active.chat_view.assistant;
@@ -772,7 +772,7 @@ fn handle_chat_enter<R: Runtime>(
         let _ = app.insert_exo_message(MessageRole::User, &msg);
         chat.add_user_message(msg.clone());
         exo_session.send_message(&msg, chat.session_id.as_deref());
-        active.chat_view.chat_scroll = 0;
+        active.chat_view.reset_scroll();
     }
 }
 
@@ -950,7 +950,7 @@ pub(super) fn drain_exo_events<R: Runtime>(
                 if chat.streaming {
                     chat.append_text(&text);
                     if state.active_project_id.is_none() {
-                        state.exo.chat_view.chat_scroll = 0;
+                        state.exo.chat_view.reset_scroll();
                     }
                     if let Some(tx) = tg_tx {
                         let _ = tx.send(telegram::TgOutbound::ExoTextDelta { text: text.clone() });
@@ -1018,7 +1018,7 @@ pub(super) fn drain_project_events<R: Runtime>(
                 if chat.streaming {
                     chat.append_text(&text);
                     if is_active_project {
-                        project_state.chat_view.chat_scroll = 0;
+                        project_state.chat_view.reset_scroll();
                     }
                 }
             }
@@ -1276,8 +1276,8 @@ pub(super) fn drain_telegram<R: Runtime>(
                 }
             }
             telegram::TgInbound::ExoMessage { text } => {
+                state.exo.chat_view.reset_scroll();
                 let chat = &mut state.exo.chat_view.assistant;
-                state.exo.chat_view.chat_scroll = 0;
                 if chat.streaming {
                     chat.finish_streaming();
                     if let Some(msg) = chat.messages.last()

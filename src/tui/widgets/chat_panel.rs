@@ -132,7 +132,7 @@ pub(in crate::tui) fn render_chat(
         .sum();
 
     let max_scroll = rendered_lines.saturating_sub(inner_height) as u16;
-    let effective_scroll = chat_view.chat_scroll.min(max_scroll);
+    let effective_scroll = chat_view.chat_scroll().min(max_scroll);
     let scroll = max_scroll.saturating_sub(effective_scroll);
 
     let chat = Paragraph::new(lines)

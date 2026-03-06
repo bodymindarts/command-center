@@ -227,7 +227,7 @@ impl ScreenState {
         active.task_list.list_state.select(Some(index));
         active.task_list.show_detail = true;
         active.task_list.detail_scroll = 0;
-        active.chat_view.chat_scroll = 0;
+        active.chat_view.reset_scroll();
         if let Some(tid) = task_id {
             active.enter_task_detail(&tid);
         }
@@ -240,7 +240,7 @@ impl ScreenState {
         let active = self.active_state_mut();
         let task_id = active.task_list.selected_task().map(|t| t.id.clone());
         active.task_list.show_detail = false;
-        active.chat_view.chat_scroll = 0;
+        active.chat_view.reset_scroll();
         if let Some(tid) = task_id {
             active.leave_task_detail(&tid);
         }
@@ -253,7 +253,7 @@ impl ScreenState {
     pub fn navigate_to_adjacent_task(&mut self, forward: bool) -> bool {
         let active = self.active_state_mut();
         let old_task_id = active.task_list.selected_task().map(|t| t.id.clone());
-        active.chat_view.chat_scroll = 0;
+        active.chat_view.reset_scroll();
         let current = active.task_list.list_state.selected().unwrap_or(0);
         let in_bounds = if forward {
             if current + 1 < active.task_list.tasks.len() {
@@ -308,7 +308,7 @@ impl ScreenState {
         // Load tasks into target workspace
         let active = self.active_state_mut();
         active.task_list.show_detail = false;
-        active.chat_view.chat_scroll = 0;
+        active.chat_view.reset_scroll();
         active.task_list.refresh_tasks(tasks);
 
         // Focus a specific task if requested
@@ -573,7 +573,7 @@ mod tests {
         let mut s = state_with_tasks(3);
         s.active_state_mut().task_list.show_detail = false;
         s.active_state_mut().task_list.detail_scroll = 99;
-        s.active_state_mut().chat_view.chat_scroll = 42;
+        s.active_state_mut().chat_view.scroll_chat_up(); // set non-zero scroll
         s.focus = Focus::TaskList;
 
         s.open_task_detail(2);
@@ -582,7 +582,7 @@ mod tests {
         assert!(active.task_list.show_detail);
         assert_eq!(active.task_list.list_state.selected(), Some(2));
         assert_eq!(active.task_list.detail_scroll, 0);
-        assert_eq!(active.chat_view.chat_scroll, 0);
+        assert_eq!(active.chat_view.chat_scroll(), 0);
         assert!(matches!(s.focus, Focus::ChatInput));
     }
 
@@ -592,14 +592,14 @@ mod tests {
     fn close_task_detail_hides_and_resets() {
         let mut s = state_with_tasks(2);
         s.active_state_mut().task_list.show_detail = true;
-        s.active_state_mut().chat_view.chat_scroll = 10;
+        s.active_state_mut().chat_view.scroll_chat_up(); // set non-zero scroll
         s.focus = Focus::TaskList;
 
         s.close_task_detail();
 
         let active = s.active_state();
         assert!(!active.task_list.show_detail);
-        assert_eq!(active.chat_view.chat_scroll, 0);
+        assert_eq!(active.chat_view.chat_scroll(), 0);
         assert!(matches!(s.focus, Focus::ChatInput));
     }
 
