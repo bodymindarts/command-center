@@ -328,6 +328,7 @@ fn run_loop<R: Runtime>(
         }
 
         // Drain hook events from the socket listener
+        state::log_hook("run_loop", "before drain_hooks");
         handlers::drain_hooks(
             state,
             hook_rx,

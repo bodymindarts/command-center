@@ -84,6 +84,22 @@ pub enum HookEvent {
     Unknown(Value),
 }
 
+impl HookEvent {
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            HookEvent::Permission(_) => "Permission",
+            HookEvent::Resolved { .. } => "Resolved",
+            HookEvent::Idle { .. } => "Idle",
+            HookEvent::Active { .. } => "Active",
+            HookEvent::PreToolUse { .. } => "PreToolUse",
+            HookEvent::Stop { .. } => "Stop",
+            HookEvent::UserPromptSubmit { .. } => "UserPromptSubmit",
+            HookEvent::SubagentStop { .. } => "SubagentStop",
+            HookEvent::Unknown(_) => "Unknown",
+        }
+    }
+}
+
 impl<'de> serde::Deserialize<'de> for HookEvent {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

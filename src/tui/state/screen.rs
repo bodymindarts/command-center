@@ -10,7 +10,7 @@ use super::project_state::ProjectState;
 use super::{Focus, InputState, PermissionStore};
 use crate::tui::permissions::ActivePermission;
 
-fn log_hook(event: &str, detail: &str) {
+pub(in crate::tui) fn log_hook(event: &str, detail: &str) {
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
