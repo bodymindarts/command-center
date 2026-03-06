@@ -1068,6 +1068,14 @@ pub(super) fn drain_hooks(
             HookEvent::Permission(request) => {
                 handle_hook_permission(state, stream, request, tg_tx, tg_perm_ids, perm_id_counter);
             }
+            // New hook events — received and dropped for now.
+            // No response needed; stream is dropped which closes the connection.
+            HookEvent::PreToolUse { .. }
+            | HookEvent::Stop { .. }
+            | HookEvent::UserPromptSubmit { .. }
+            | HookEvent::SubagentStop { .. } => {
+                drop(stream);
+            }
             HookEvent::Unknown(_) => {}
         }
     }

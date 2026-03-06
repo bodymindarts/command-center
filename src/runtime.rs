@@ -442,6 +442,10 @@ fn merge_repo_settings(repo_root: &Path, worktree_path: &Path) -> anyhow::Result
 /// - `Notification` with matchers for idle/active detection
 /// - `PostToolUse` for in-pane permission clearing
 /// - `PermissionRequest` for routing permissions to the dashboard
+/// - `PreToolUse` for pre-execution observation
+/// - `Stop` for agent stop signals
+/// - `UserPromptSubmit` for user prompt tracking
+/// - `SubagentStop` for sub-agent lifecycle tracking
 fn hooks_json() -> serde_json::Value {
     let hook = |script: &str, timeout: u64| -> serde_json::Value {
         serde_json::json!({
@@ -471,6 +475,18 @@ fn hooks_json() -> serde_json::Value {
         ],
         "PermissionRequest": [
             { "hooks": [hook("permission-gate.sh", 620)] }
+        ],
+        "PreToolUse": [
+            { "hooks": [hook("pre-tool-use.sh", 10)] }
+        ],
+        "Stop": [
+            { "hooks": [hook("stop.sh", 10)] }
+        ],
+        "UserPromptSubmit": [
+            { "hooks": [hook("user-prompt-submit.sh", 10)] }
+        ],
+        "SubagentStop": [
+            { "hooks": [hook("subagent-stop.sh", 10)] }
         ]
     })
 }

@@ -55,6 +55,30 @@ pub enum HookEvent {
     Active {
         cwd: String,
     },
+    PreToolUse {
+        #[allow(dead_code)]
+        cwd: String,
+        #[allow(dead_code)]
+        payload: Value,
+    },
+    Stop {
+        #[allow(dead_code)]
+        cwd: String,
+        #[allow(dead_code)]
+        payload: Value,
+    },
+    UserPromptSubmit {
+        #[allow(dead_code)]
+        cwd: String,
+        #[allow(dead_code)]
+        payload: Value,
+    },
+    SubagentStop {
+        #[allow(dead_code)]
+        cwd: String,
+        #[allow(dead_code)]
+        payload: Value,
+    },
     /// Catch-all for hook messages we don't recognise.
     #[allow(dead_code)]
     Unknown(Value),
@@ -67,6 +91,31 @@ impl<'de> serde::Deserialize<'de> for HookEvent {
     {
         let value = Value::deserialize(deserializer)?;
 
+        // New-style events use a `_hook` discriminator field injected by the hook script.
+        if let Some(hook_type) = value.get("_hook").and_then(|v| v.as_str()) {
+            let cwd = value["cwd"].as_str().unwrap_or("").to_string();
+            return match hook_type {
+                "PreToolUse" => Ok(HookEvent::PreToolUse {
+                    cwd,
+                    payload: value,
+                }),
+                "Stop" => Ok(HookEvent::Stop {
+                    cwd,
+                    payload: value,
+                }),
+                "UserPromptSubmit" => Ok(HookEvent::UserPromptSubmit {
+                    cwd,
+                    payload: value,
+                }),
+                "SubagentStop" => Ok(HookEvent::SubagentStop {
+                    cwd,
+                    payload: value,
+                }),
+                _ => Ok(HookEvent::Unknown(value)),
+            };
+        }
+
+        // Legacy events: boolean flag discriminators
         if value.get("_resolved").and_then(|v| v.as_bool()) == Some(true) {
             let cwd = value["cwd"].as_str().unwrap_or("").to_string();
             return Ok(HookEvent::Resolved { cwd });
@@ -613,6 +662,45 @@ mod tests {
     #[test]
     fn hook_event_invalid_json_is_err() {
         assert!(serde_json::from_str::<HookEvent>("not json").is_err());
+    }
+
+    #[test]
+    fn hook_event_pre_tool_use() {
+        let json = r#"{"_hook":"PreToolUse","cwd":"/workspace","tool_name":"Bash"}"#;
+        let event = deser(json);
+        assert!(matches!(&event, HookEvent::PreToolUse { cwd, .. } if cwd == "/workspace"));
+    }
+
+    #[test]
+    fn hook_event_stop() {
+        let json = r#"{"_hook":"Stop","cwd":"/workspace"}"#;
+        assert!(matches!(deser(json), HookEvent::Stop { cwd, .. } if cwd == "/workspace"));
+    }
+
+    #[test]
+    fn hook_event_user_prompt_submit() {
+        let json = r#"{"_hook":"UserPromptSubmit","cwd":"/workspace"}"#;
+        assert!(
+            matches!(deser(json), HookEvent::UserPromptSubmit { cwd, .. } if cwd == "/workspace")
+        );
+    }
+
+    #[test]
+    fn hook_event_subagent_stop() {
+        let json = r#"{"_hook":"SubagentStop","cwd":"/workspace"}"#;
+        assert!(matches!(deser(json), HookEvent::SubagentStop { cwd, .. } if cwd == "/workspace"));
+    }
+
+    #[test]
+    fn hook_event_unknown_hook_type() {
+        let json = r#"{"_hook":"FutureEvent","cwd":"/workspace"}"#;
+        assert!(matches!(deser(json), HookEvent::Unknown(_)));
+    }
+
+    #[test]
+    fn hook_event_new_style_missing_cwd() {
+        let json = r#"{"_hook":"Stop"}"#;
+        assert!(matches!(deser(json), HookEvent::Stop { cwd, .. } if cwd.is_empty()));
     }
 
     #[test]
