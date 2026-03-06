@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::primitives::TaskId;
+use crate::primitives::{TaskId, TaskName};
 use crate::task::Task;
 use crate::tui::chat::AssistantChat;
 
@@ -28,6 +28,15 @@ impl ProjectState {
             input: InputState::new(),
             saved_chat_input: None,
             task_inputs: HashMap::new(),
+        }
+    }
+
+    /// Returns a mutable reference to the task list if it contains a task with the given name.
+    pub fn task_list_for_name(&mut self, name: &TaskName) -> Option<&mut TaskListState> {
+        if self.task_list.tasks.iter().any(|t| t.name == *name) {
+            Some(&mut self.task_list)
+        } else {
+            None
         }
     }
 

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use ratatui::widgets::ListState;
 
-use crate::primitives::{PaneId, WindowId};
+use crate::primitives::{PaneId, TaskName, WindowId};
 use crate::task::{Task, TaskMessage};
 
 pub struct TaskListState {
@@ -102,6 +102,30 @@ impl TaskListState {
 
     pub fn idle_panes(&self) -> &HashSet<PaneId> {
         &self.idle_panes
+    }
+
+    /// Mark the pane of the named task as active (not idle).
+    pub fn activate_task_pane(&mut self, name: &TaskName) {
+        if let Some(pane_id) = self
+            .tasks
+            .iter()
+            .find(|t| t.name == *name)
+            .and_then(|t| t.tmux_pane.clone())
+        {
+            self.mark_pane_active(&pane_id);
+        }
+    }
+
+    /// Mark the pane of the named task as idle.
+    pub fn idle_task_pane(&mut self, name: &TaskName) {
+        if let Some(pane_id) = self
+            .tasks
+            .iter()
+            .find(|t| t.name == *name)
+            .and_then(|t| t.tmux_pane.clone())
+        {
+            self.mark_pane_idle(pane_id);
+        }
     }
 
     /// Mark all running task panes as idle.

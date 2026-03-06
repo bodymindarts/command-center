@@ -137,12 +137,12 @@ impl ScreenState {
 
     /// Find the TaskListState that contains a task with the given name.
     fn task_list_for_task_mut(&mut self, name: &TaskName) -> Option<&mut TaskListState> {
-        if self.exo.task_list.tasks.iter().any(|t| t.name == *name) {
-            return Some(&mut self.exo.task_list);
+        if let Some(tl) = self.exo.task_list_for_name(name) {
+            return Some(tl);
         }
         for ps in self.projects.values_mut() {
-            if ps.task_list.tasks.iter().any(|t| t.name == *name) {
-                return Some(&mut ps.task_list);
+            if let Some(tl) = ps.task_list_for_name(name) {
+                return Some(tl);
             }
         }
         None
@@ -154,14 +154,7 @@ impl ScreenState {
     pub fn resolve_permission(&mut self, cwd: &str) -> Option<ActivePermission> {
         let name = self.task_name_for_cwd(cwd)?;
         if let Some(task_list) = self.task_list_for_task_mut(&name) {
-            let pane_id = task_list
-                .tasks
-                .iter()
-                .find(|t| t.name == name)
-                .and_then(|t| t.tmux_pane.clone());
-            if let Some(pane_id) = &pane_id {
-                task_list.mark_pane_active(pane_id);
-            }
+            task_list.activate_task_pane(&name);
         }
         self.permissions.take(&name)
     }
@@ -171,14 +164,7 @@ impl ScreenState {
         if let Some(name) = self.task_name_for_cwd(cwd)
             && let Some(task_list) = self.task_list_for_task_mut(&name)
         {
-            let pane_id = task_list
-                .tasks
-                .iter()
-                .find(|t| t.name == name)
-                .and_then(|t| t.tmux_pane.clone());
-            if let Some(pane_id) = pane_id {
-                task_list.mark_pane_idle(pane_id);
-            }
+            task_list.idle_task_pane(&name);
         }
     }
 
@@ -187,14 +173,7 @@ impl ScreenState {
         if let Some(name) = self.task_name_for_cwd(cwd)
             && let Some(task_list) = self.task_list_for_task_mut(&name)
         {
-            let pane_id = task_list
-                .tasks
-                .iter()
-                .find(|t| t.name == name)
-                .and_then(|t| t.tmux_pane.clone());
-            if let Some(pane_id) = &pane_id {
-                task_list.mark_pane_active(pane_id);
-            }
+            task_list.activate_task_pane(&name);
         }
     }
 
@@ -206,14 +185,7 @@ impl ScreenState {
     /// Mark a task's pane as active by task name.
     pub fn mark_task_active_by_name(&mut self, name: &TaskName) {
         if let Some(task_list) = self.task_list_for_task_mut(name) {
-            let pane_id = task_list
-                .tasks
-                .iter()
-                .find(|t| t.name == *name)
-                .and_then(|t| t.tmux_pane.clone());
-            if let Some(pane_id) = &pane_id {
-                task_list.mark_pane_active(pane_id);
-            }
+            task_list.activate_task_pane(name);
         }
     }
 
