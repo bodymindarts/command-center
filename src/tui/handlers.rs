@@ -6,7 +6,7 @@ use crossterm::event::KeyEvent;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::app::ClatApp;
-use crate::permission::PermissionRequest;
+use crate::permission::{HookEvent, PermissionRequest};
 use crate::primitives::{ChatId, MessageRole, ProjectId, TaskName};
 use crate::runtime::Runtime;
 
@@ -1046,139 +1046,155 @@ fn find_project_state_for_task<'a>(
     None
 }
 
-pub(super) fn drain_resolved(
+/// Drain all hook events from the unified socket channel.
+pub(super) fn drain_hooks(
     state: &mut ScreenState,
-    resolved_rx: &mpsc::Receiver<String>,
-    tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
-    tg_perm_ids: &mut HashSet<u64>,
-) {
-    while let Ok(cwd) = resolved_rx.try_recv() {
-        let resolved_cwd =
-            std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
-        let task_name = find_task_name_by_cwd(state.global_task_work_dirs(), &resolved_cwd);
-        if let Some(ref name) = task_name {
-            if let Some(task_list) = find_project_state_for_task(state, name) {
-                let pane_id = task_list
-                    .tasks
-                    .iter()
-                    .find(|t| t.name == *name)
-                    .and_then(|t| t.tmux_pane.clone());
-                if let Some(pane_id) = &pane_id {
-                    task_list.mark_pane_active(pane_id);
-                }
-            }
-            if let Some(perm) = state.permissions.take(name) {
-                let _ = write_response_to_stream(perm.stream, false, None);
-                if tg_perm_ids.remove(&perm.perm_id) {
-                    notify_tg_resolved(tg_tx, perm.perm_id, "✅ Resolved in pane");
-                }
-            }
-        }
-    }
-}
-
-pub(super) fn drain_idle(state: &mut ScreenState, idle_rx: &mpsc::Receiver<String>) {
-    while let Ok(cwd) = idle_rx.try_recv() {
-        let cwd_path =
-            std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
-        if let Some(task_name) = find_task_name_by_cwd(state.global_task_work_dirs(), &cwd_path)
-            && let Some(task_list) = find_project_state_for_task(state, &task_name)
-        {
-            let pane_id = task_list
-                .tasks
-                .iter()
-                .find(|t| t.name == task_name)
-                .and_then(|t| t.tmux_pane.clone());
-            if let Some(pane_id) = pane_id {
-                task_list.mark_pane_idle(pane_id);
-            }
-        }
-    }
-}
-
-/// Drain active notifications from Notification hooks — mark pane as not idle.
-pub(super) fn drain_active(state: &mut ScreenState, active_rx: &mpsc::Receiver<String>) {
-    while let Ok(cwd) = active_rx.try_recv() {
-        let cwd_path =
-            std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
-        if let Some(task_name) = find_task_name_by_cwd(state.global_task_work_dirs(), &cwd_path)
-            && let Some(task_list) = find_project_state_for_task(state, &task_name)
-        {
-            let pane_id = task_list
-                .tasks
-                .iter()
-                .find(|t| t.name == task_name)
-                .and_then(|t| t.tmux_pane.clone());
-            if let Some(pane_id) = &pane_id {
-                task_list.mark_pane_active(pane_id);
-            }
-        }
-    }
-}
-
-pub(super) fn drain_permissions(
-    state: &mut ScreenState,
-    perm_rx: &mpsc::Receiver<(UnixStream, PermissionRequest)>,
+    hook_rx: &mpsc::Receiver<(HookEvent, UnixStream)>,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
     tg_perm_ids: &mut HashSet<u64>,
     perm_id_counter: &mut u64,
 ) {
-    while let Ok((stream, req)) = perm_rx.try_recv() {
-        let req_cwd =
-            std::fs::canonicalize(&req.cwd).unwrap_or_else(|_| std::path::PathBuf::from(&req.cwd));
-        let task_name = find_task_name_by_cwd(state.global_task_work_dirs(), &req_cwd)
-            .unwrap_or_else(|| TaskName::from(EXO_PERM_KEY.to_string()));
-        if let Some(task_list) = find_project_state_for_task(state, &task_name) {
+    while let Ok((event, stream)) = hook_rx.try_recv() {
+        match event {
+            HookEvent::Resolved { cwd } => {
+                handle_hook_resolved(state, &cwd, tg_tx, tg_perm_ids);
+            }
+            HookEvent::Idle { cwd } => {
+                handle_hook_idle(state, &cwd);
+            }
+            HookEvent::Active { cwd } => {
+                handle_hook_active(state, &cwd);
+            }
+            HookEvent::Permission(request) => {
+                handle_hook_permission(state, stream, request, tg_tx, tg_perm_ids, perm_id_counter);
+            }
+            HookEvent::Unknown(_) => {}
+        }
+    }
+}
+
+fn handle_hook_resolved(
+    state: &mut ScreenState,
+    cwd: &str,
+    tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
+    tg_perm_ids: &mut HashSet<u64>,
+) {
+    let resolved_cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| std::path::PathBuf::from(cwd));
+    let task_name = find_task_name_by_cwd(state.global_task_work_dirs(), &resolved_cwd);
+    if let Some(ref name) = task_name {
+        if let Some(task_list) = find_project_state_for_task(state, name) {
             let pane_id = task_list
                 .tasks
                 .iter()
-                .find(|t| t.name == task_name)
+                .find(|t| t.name == *name)
                 .and_then(|t| t.tmux_pane.clone());
             if let Some(pane_id) = &pane_id {
                 task_list.mark_pane_active(pane_id);
             }
         }
-        *perm_id_counter += 1;
-        let perm_id = *perm_id_counter;
-        if let Some(tx) = tg_tx {
-            if req.tool_name == "AskUserQuestion"
-                && let Some((question, options)) = parse_ask_user_options(req.tool_input.as_ref())
-            {
-                let _ = tx.send(telegram::TgOutbound::NewQuestion {
-                    perm_id,
-                    task_name: task_name.to_string(),
-                    question,
-                    options,
-                });
-            } else {
-                let _ = tx.send(telegram::TgOutbound::NewPermission {
-                    perm_id,
-                    task_name: task_name.to_string(),
-                    tool_name: req.tool_name.clone(),
-                    tool_input_summary: req.tool_input_summary.clone(),
-                });
+        if let Some(perm) = state.permissions.take(name) {
+            let _ = write_response_to_stream(perm.stream, false, None);
+            if tg_perm_ids.remove(&perm.perm_id) {
+                notify_tg_resolved(tg_tx, perm.perm_id, "✅ Resolved in pane");
             }
-            tg_perm_ids.insert(perm_id);
         }
-        let (askuser_question, askuser_options) = if req.tool_name == "AskUserQuestion"
-            && let Some((q, opts)) = parse_ask_user_options(req.tool_input.as_ref())
-        {
-            (Some(q), opts)
-        } else {
-            (None, Vec::new())
-        };
-        let perm = ActivePermission {
-            perm_id,
-            stream,
-            task_name: task_name.clone(),
-            tool_name: req.tool_name,
-            tool_input_summary: req.tool_input_summary,
-            permission_suggestions: req.permission_suggestions,
-            askuser_question,
-            askuser_options,
-        };
-        state.permissions.add(perm);
     }
+}
+
+fn handle_hook_idle(state: &mut ScreenState, cwd: &str) {
+    let cwd_path = std::fs::canonicalize(cwd).unwrap_or_else(|_| std::path::PathBuf::from(cwd));
+    if let Some(task_name) = find_task_name_by_cwd(state.global_task_work_dirs(), &cwd_path)
+        && let Some(task_list) = find_project_state_for_task(state, &task_name)
+    {
+        let pane_id = task_list
+            .tasks
+            .iter()
+            .find(|t| t.name == task_name)
+            .and_then(|t| t.tmux_pane.clone());
+        if let Some(pane_id) = pane_id {
+            task_list.mark_pane_idle(pane_id);
+        }
+    }
+}
+
+fn handle_hook_active(state: &mut ScreenState, cwd: &str) {
+    let cwd_path = std::fs::canonicalize(cwd).unwrap_or_else(|_| std::path::PathBuf::from(cwd));
+    if let Some(task_name) = find_task_name_by_cwd(state.global_task_work_dirs(), &cwd_path)
+        && let Some(task_list) = find_project_state_for_task(state, &task_name)
+    {
+        let pane_id = task_list
+            .tasks
+            .iter()
+            .find(|t| t.name == task_name)
+            .and_then(|t| t.tmux_pane.clone());
+        if let Some(pane_id) = &pane_id {
+            task_list.mark_pane_active(pane_id);
+        }
+    }
+}
+
+fn handle_hook_permission(
+    state: &mut ScreenState,
+    stream: UnixStream,
+    req: PermissionRequest,
+    tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
+    tg_perm_ids: &mut HashSet<u64>,
+    perm_id_counter: &mut u64,
+) {
+    let req_cwd =
+        std::fs::canonicalize(&req.cwd).unwrap_or_else(|_| std::path::PathBuf::from(&req.cwd));
+    let task_name = find_task_name_by_cwd(state.global_task_work_dirs(), &req_cwd)
+        .unwrap_or_else(|| TaskName::from(EXO_PERM_KEY.to_string()));
+    if let Some(task_list) = find_project_state_for_task(state, &task_name) {
+        let pane_id = task_list
+            .tasks
+            .iter()
+            .find(|t| t.name == task_name)
+            .and_then(|t| t.tmux_pane.clone());
+        if let Some(pane_id) = &pane_id {
+            task_list.mark_pane_active(pane_id);
+        }
+    }
+    *perm_id_counter += 1;
+    let perm_id = *perm_id_counter;
+    if let Some(tx) = tg_tx {
+        if req.tool_name == "AskUserQuestion"
+            && let Some((question, options)) = parse_ask_user_options(req.tool_input.as_ref())
+        {
+            let _ = tx.send(telegram::TgOutbound::NewQuestion {
+                perm_id,
+                task_name: task_name.to_string(),
+                question,
+                options,
+            });
+        } else {
+            let _ = tx.send(telegram::TgOutbound::NewPermission {
+                perm_id,
+                task_name: task_name.to_string(),
+                tool_name: req.tool_name.clone(),
+                tool_input_summary: req.tool_input_summary.clone(),
+            });
+        }
+        tg_perm_ids.insert(perm_id);
+    }
+    let (askuser_question, askuser_options) = if req.tool_name == "AskUserQuestion"
+        && let Some((q, opts)) = parse_ask_user_options(req.tool_input.as_ref())
+    {
+        (Some(q), opts)
+    } else {
+        (None, Vec::new())
+    };
+    let perm = ActivePermission {
+        perm_id,
+        stream,
+        task_name: task_name.clone(),
+        tool_name: req.tool_name,
+        tool_input_summary: req.tool_input_summary,
+        permission_suggestions: req.permission_suggestions,
+        askuser_question,
+        askuser_options,
+    };
+    state.permissions.add(perm);
 }
 
 pub(super) fn drain_telegram<R: Runtime>(

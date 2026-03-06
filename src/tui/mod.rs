@@ -22,7 +22,7 @@ use ratatui::backend::CrosstermBackend;
 
 use crate::app::ClatApp;
 use crate::assistant::{AssistantSession, EXO_SYSTEM_PROMPT};
-use crate::permission::PermissionRequest;
+use crate::permission::HookEvent;
 use crate::primitives::ProjectId;
 use crate::runtime::Runtime;
 use state::{ProjectState, ScreenState};
@@ -144,11 +144,8 @@ pub fn run<R: Runtime>(
         }
     }
 
-    // Permission socket listener
-    let (perm_tx, perm_rx) = mpsc::channel::<(UnixStream, PermissionRequest)>();
-    let (resolved_tx, resolved_rx) = mpsc::channel::<String>();
-    let (idle_tx, idle_rx) = mpsc::channel::<String>();
-    let (active_tx, active_rx) = mpsc::channel::<String>(); // CWD of active agent
+    // Hook event socket listener — single channel for all hook types
+    let (hook_tx, hook_rx) = mpsc::channel::<(HookEvent, UnixStream)>();
     let perm_cancel = Arc::clone(&cancel);
     let (listener, socket_path) = crate::permission::start_socket_listener()?;
     // SAFETY: called once at startup before spawning threads that read env vars.
@@ -186,15 +183,10 @@ pub fn run<R: Runtime>(
                             let _ = writeln!(log, "[{ts}] {}", buf.trim());
                         }
 
-                        if let Some(cwd) = crate::permission::parse_resolved_json(&buf) {
-                            let _ = resolved_tx.send(cwd);
-                        } else if let Some(cwd) = crate::permission::parse_idle_json(&buf) {
-                            let _ = idle_tx.send(cwd);
-                        } else if let Some(cwd) = crate::permission::parse_active_json(&buf) {
-                            let _ = active_tx.send(cwd);
-                        } else if let Some(req) = crate::permission::parse_request_json(&buf) {
-                            let _ = perm_tx.send((stream, req));
-                        }
+                        let event: HookEvent = serde_json::from_str(&buf).unwrap_or_else(|_| {
+                            HookEvent::Unknown(serde_json::Value::String(buf.clone()))
+                        });
+                        let _ = hook_tx.send((event, stream));
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -222,10 +214,7 @@ pub fn run<R: Runtime>(
         &mut exo_session,
         &mut project_contexts,
         &app,
-        &perm_rx,
-        &resolved_rx,
-        &idle_rx,
-        &active_rx,
+        &hook_rx,
         tg_tx.as_ref(),
         tg_rx.as_ref(),
     );
@@ -273,10 +262,7 @@ fn run_loop<R: Runtime>(
     exo_session: &mut AssistantSession,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
     app: &ClatApp<R>, // borrowed from run() which owns it
-    perm_rx: &mpsc::Receiver<(UnixStream, PermissionRequest)>,
-    resolved_rx: &mpsc::Receiver<String>,
-    idle_rx: &mpsc::Receiver<String>,
-    active_rx: &mpsc::Receiver<String>,
+    hook_rx: &mpsc::Receiver<(HookEvent, UnixStream)>,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
     tg_rx: Option<&mpsc::Receiver<telegram::TgInbound>>,
 ) -> anyhow::Result<()> {
@@ -341,17 +327,14 @@ fn run_loop<R: Runtime>(
             last_tick = Instant::now();
         }
 
-        // Drain socket events – permissions first so resolved notifications can find them.
-        handlers::drain_permissions(
+        // Drain hook events from the socket listener
+        handlers::drain_hooks(
             state,
-            perm_rx,
+            hook_rx,
             tg_tx,
             &mut tg_perm_ids,
             &mut perm_id_counter,
         );
-        handlers::drain_resolved(state, resolved_rx, tg_tx, &mut tg_perm_ids);
-        handlers::drain_idle(state, idle_rx);
-        handlers::drain_active(state, active_rx);
         handlers::drain_telegram(state, exo_session, app, tg_rx);
         handlers::detect_vanished_perms(state, tg_tx, &mut tg_perm_ids);
 

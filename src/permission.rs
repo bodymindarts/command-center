@@ -13,6 +13,82 @@ pub struct PermissionRequest {
     pub permission_suggestions: Vec<Value>,
 }
 
+impl<'de> serde::Deserialize<'de> for PermissionRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct Raw {
+            tool_name: String,
+            tool_input: Option<Value>,
+            #[serde(default)]
+            cwd: String,
+            #[serde(default)]
+            permission_suggestions: Vec<Value>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        let tool_input_summary = summarize_tool_input(&raw.tool_name, raw.tool_input.as_ref());
+        Ok(PermissionRequest {
+            tool_name: raw.tool_name,
+            tool_input: raw.tool_input,
+            tool_input_summary,
+            cwd: raw.cwd,
+            permission_suggestions: raw.permission_suggestions,
+        })
+    }
+}
+
+/// A parsed hook event arriving over the permission socket.
+///
+/// Deserialized from the raw JSON sent by Claude Code hooks.
+/// The `UnixStream` for responding to permission requests is carried
+/// separately through the channel — this enum is pure data.
+pub enum HookEvent {
+    Permission(PermissionRequest),
+    Resolved {
+        cwd: String,
+    },
+    Idle {
+        cwd: String,
+    },
+    Active {
+        cwd: String,
+    },
+    /// Catch-all for hook messages we don't recognise.
+    #[allow(dead_code)]
+    Unknown(Value),
+}
+
+impl<'de> serde::Deserialize<'de> for HookEvent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+
+        if value.get("_resolved").and_then(|v| v.as_bool()) == Some(true) {
+            let cwd = value["cwd"].as_str().unwrap_or("").to_string();
+            return Ok(HookEvent::Resolved { cwd });
+        }
+        if value.get("_idle").and_then(|v| v.as_bool()) == Some(true) {
+            let cwd = value["cwd"].as_str().unwrap_or("").to_string();
+            return Ok(HookEvent::Idle { cwd });
+        }
+        if value.get("_active").and_then(|v| v.as_bool()) == Some(true) {
+            let cwd = value["cwd"].as_str().unwrap_or("").to_string();
+            return Ok(HookEvent::Active { cwd });
+        }
+        if value.get("tool_name").is_some() {
+            let req: PermissionRequest =
+                serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+            return Ok(HookEvent::Permission(req));
+        }
+
+        Ok(HookEvent::Unknown(value))
+    }
+}
+
 /// Environment variable that spawned agents read to locate the permission socket.
 pub const SOCKET_ENV: &str = "CC_PERM_SOCKET";
 
@@ -70,68 +146,8 @@ pub fn make_response_json(
     .to_string()
 }
 
-/// Check if a message is a "resolved" notification from a PostToolUse hook.
-/// Returns the CWD if so.
-pub fn parse_resolved_json(json: &str) -> Option<String> {
-    let parsed: Value = serde_json::from_str(json).ok()?;
-    if parsed.get("_resolved")?.as_bool()? {
-        return parsed.get("cwd").and_then(|c| c.as_str()).map(String::from);
-    }
-    None
-}
-
-/// Check if a message is an "active" notification from a Notification hook
-/// (permission_prompt or elicitation_dialog). Returns the CWD if so.
-pub fn parse_active_json(json: &str) -> Option<String> {
-    let parsed: Value = serde_json::from_str(json).ok()?;
-    if parsed.get("_active")?.as_bool()? {
-        return parsed.get("cwd").and_then(|c| c.as_str()).map(String::from);
-    }
-    None
-}
-
-/// Check if a message is an "idle" notification from a Notification hook.
-/// Returns the CWD if so.
-pub fn parse_idle_json(json: &str) -> Option<String> {
-    let parsed: Value = serde_json::from_str(json).ok()?;
-    if parsed.get("_idle")?.as_bool()? {
-        return parsed.get("cwd").and_then(|c| c.as_str()).map(String::from);
-    }
-    None
-}
-
 pub fn parse_request_json(json: &str) -> Option<PermissionRequest> {
-    let parsed: Value = serde_json::from_str(json).ok()?;
-
-    // Claude Code sends tool_name and tool_input at top level.
-    // Require tool_name to be present — messages without it are not permission requests.
-    let tool_name = parsed
-        .get("tool_name")
-        .and_then(|n| n.as_str())?
-        .to_string();
-
-    let tool_input = parsed.get("tool_input");
-    let tool_input_summary = summarize_tool_input(&tool_name, tool_input);
-
-    let cwd = parsed
-        .get("cwd")
-        .and_then(|c| c.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let permission_suggestions = parsed
-        .get("permission_suggestions")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    Some(PermissionRequest {
-        tool_name,
-        tool_input: tool_input.cloned(),
-        tool_input_summary,
-        cwd,
-        permission_suggestions,
-    })
+    serde_json::from_str(json).ok()
 }
 
 pub fn gate_request() -> anyhow::Result<()> {
@@ -526,100 +542,77 @@ mod tests {
         assert!(parse_request_json("not json {{{").is_none());
     }
 
-    // -- parse_resolved_json tests --
+    // -- HookEvent deserialization tests --
+
+    fn deser(json: &str) -> HookEvent {
+        serde_json::from_str(json).unwrap()
+    }
 
     #[test]
-    fn parse_resolved_json_returns_cwd_when_resolved() {
+    fn hook_event_resolved() {
         let json = r#"{"_resolved": true, "cwd": "/home/user/project"}"#;
-        assert_eq!(
-            parse_resolved_json(json),
-            Some("/home/user/project".to_string())
-        );
+        assert!(matches!(deser(json), HookEvent::Resolved { cwd } if cwd == "/home/user/project"));
     }
 
     #[test]
-    fn parse_resolved_json_returns_none_when_false() {
+    fn hook_event_resolved_false_is_unknown() {
         let json = r#"{"_resolved": false, "cwd": "/home/user/project"}"#;
-        assert_eq!(parse_resolved_json(json), None);
+        assert!(matches!(deser(json), HookEvent::Unknown(_)));
     }
 
     #[test]
-    fn parse_resolved_json_returns_none_for_invalid_json() {
-        assert_eq!(parse_resolved_json("not json"), None);
-    }
-
-    #[test]
-    fn parse_resolved_json_returns_none_without_resolved_key() {
-        let json = r#"{"cwd": "/tmp"}"#;
-        assert_eq!(parse_resolved_json(json), None);
-    }
-
-    #[test]
-    fn parse_resolved_json_returns_none_without_cwd() {
+    fn hook_event_resolved_missing_cwd_defaults_empty() {
         let json = r#"{"_resolved": true}"#;
-        assert_eq!(parse_resolved_json(json), None);
+        assert!(matches!(deser(json), HookEvent::Resolved { cwd } if cwd.is_empty()));
     }
 
-    // -- parse_active_json tests --
-
     #[test]
-    fn parse_active_json_returns_cwd_when_active() {
+    fn hook_event_active() {
         let json = r#"{"_active": true, "cwd": "/workspace"}"#;
-        assert_eq!(parse_active_json(json), Some("/workspace".to_string()));
+        assert!(matches!(deser(json), HookEvent::Active { cwd } if cwd == "/workspace"));
     }
 
     #[test]
-    fn parse_active_json_returns_none_when_false() {
+    fn hook_event_active_false_is_unknown() {
         let json = r#"{"_active": false, "cwd": "/workspace"}"#;
-        assert_eq!(parse_active_json(json), None);
+        assert!(matches!(deser(json), HookEvent::Unknown(_)));
     }
 
     #[test]
-    fn parse_active_json_returns_none_for_invalid_json() {
-        assert_eq!(parse_active_json("garbage"), None);
-    }
-
-    #[test]
-    fn parse_active_json_returns_none_without_active_key() {
-        let json = r#"{"cwd": "/tmp"}"#;
-        assert_eq!(parse_active_json(json), None);
-    }
-
-    #[test]
-    fn parse_active_json_returns_none_without_cwd() {
-        let json = r#"{"_active": true}"#;
-        assert_eq!(parse_active_json(json), None);
-    }
-
-    // -- parse_idle_json tests --
-
-    #[test]
-    fn parse_idle_json_returns_cwd_when_idle() {
+    fn hook_event_idle() {
         let json = r#"{"_idle": true, "cwd": "/workspace"}"#;
-        assert_eq!(parse_idle_json(json), Some("/workspace".to_string()));
+        assert!(matches!(deser(json), HookEvent::Idle { cwd } if cwd == "/workspace"));
     }
 
     #[test]
-    fn parse_idle_json_returns_none_when_false() {
+    fn hook_event_idle_false_is_unknown() {
         let json = r#"{"_idle": false, "cwd": "/workspace"}"#;
-        assert_eq!(parse_idle_json(json), None);
+        assert!(matches!(deser(json), HookEvent::Unknown(_)));
     }
 
     #[test]
-    fn parse_idle_json_returns_none_for_invalid_json() {
-        assert_eq!(parse_idle_json("garbage"), None);
+    fn hook_event_permission() {
+        let json = r#"{"tool_name":"Bash","tool_input":{"command":"ls"},"cwd":"/tmp"}"#;
+        let event = deser(json);
+        match event {
+            HookEvent::Permission(req) => {
+                assert_eq!(req.tool_name, "Bash");
+                assert_eq!(req.tool_input_summary, "ls");
+                assert_eq!(req.cwd, "/tmp");
+            }
+            _ => panic!("expected Permission variant"),
+        }
     }
 
     #[test]
-    fn parse_idle_json_returns_none_without_idle_key() {
-        let json = r#"{"cwd": "/tmp"}"#;
-        assert_eq!(parse_idle_json(json), None);
+    fn hook_event_unknown_for_unrecognised() {
+        let json = r#"{"some_other_key": "value"}"#;
+        assert!(matches!(deser(json), HookEvent::Unknown(_)));
     }
 
     #[test]
-    fn parse_idle_json_returns_none_without_cwd() {
-        let json = r#"{"_idle": true}"#;
-        assert_eq!(parse_idle_json(json), None);
+    fn hook_event_invalid_json_is_err() {
+        assert!(serde_json::from_str::<HookEvent>("not json").is_err());
     }
 
     #[test]
