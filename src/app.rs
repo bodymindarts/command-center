@@ -444,12 +444,22 @@ impl<R: Runtime> ClatApp<R> {
         crate::runtime::tmux_window_numbers()
     }
 
-    pub fn insert_exo_message(&self, role: MessageRole, content: &str) -> anyhow::Result<()> {
-        self.store.insert_message(&EXO_CHAT, role, content)
+    pub fn insert_session_message(
+        &self,
+        project_id: Option<&ProjectId>,
+        role: MessageRole,
+        content: &str,
+    ) -> anyhow::Result<()> {
+        let chat = Self::chat_id(project_id);
+        self.store.insert_message(&chat, role, content)
     }
 
-    pub fn exo_messages(&self) -> anyhow::Result<Vec<TaskMessage>> {
-        self.store.list_messages(&EXO_CHAT)
+    pub fn session_messages(
+        &self,
+        project_id: Option<&ProjectId>,
+    ) -> anyhow::Result<Vec<TaskMessage>> {
+        let chat = Self::chat_id(project_id);
+        self.store.list_messages(&chat)
     }
 
     // -- Project methods --
@@ -482,19 +492,11 @@ impl<R: Runtime> ClatApp<R> {
         Ok(project.id)
     }
 
-    pub fn project_messages(&self, project_id: &ProjectId) -> anyhow::Result<Vec<TaskMessage>> {
-        let chat = ChatId::Project(project_id.clone());
-        self.store.list_messages(&chat)
-    }
-
-    pub fn insert_project_message(
-        &self,
-        project_id: &ProjectId,
-        role: MessageRole,
-        content: &str,
-    ) -> anyhow::Result<()> {
-        let chat = ChatId::Project(project_id.clone());
-        self.store.insert_message(&chat, role, content)
+    fn chat_id(project_id: Option<&ProjectId>) -> ChatId {
+        match project_id {
+            None => EXO_CHAT,
+            Some(pid) => ChatId::Project(pid.clone()),
+        }
     }
 
     pub fn complete(

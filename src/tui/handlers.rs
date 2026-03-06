@@ -714,12 +714,15 @@ fn handle_chat_enter<R: Runtime>(
                 && matches!(msg.role, MessageRole::Assistant)
                 && msg.has_text()
             {
-                let _ =
-                    app.insert_project_message(&pid, MessageRole::Assistant, &msg.text_content());
+                let _ = app.insert_session_message(
+                    Some(&pid),
+                    MessageRole::Assistant,
+                    &msg.text_content(),
+                );
             }
         }
         let msg = active.input.take();
-        let _ = app.insert_project_message(&pid, MessageRole::User, &msg);
+        let _ = app.insert_session_message(Some(&pid), MessageRole::User, &msg);
         chat.add_user_message(msg.clone());
         ctx.session.send_message(&msg, chat.session_id.as_deref());
         active.chat_view.reset_scroll();
@@ -732,11 +735,12 @@ fn handle_chat_enter<R: Runtime>(
                 && matches!(msg.role, MessageRole::Assistant)
                 && msg.has_text()
             {
-                let _ = app.insert_exo_message(MessageRole::Assistant, &msg.text_content());
+                let _ =
+                    app.insert_session_message(None, MessageRole::Assistant, &msg.text_content());
             }
         }
         let msg = active.input.take();
-        let _ = app.insert_exo_message(MessageRole::User, &msg);
+        let _ = app.insert_session_message(None, MessageRole::User, &msg);
         chat.add_user_message(msg.clone());
         exo_session.send_message(&msg, chat.session_id.as_deref());
         active.chat_view.reset_scroll();
@@ -979,18 +983,11 @@ fn handle_session_event<R: Runtime>(
                 && matches!(msg.role, MessageRole::Assistant)
                 && msg.has_text()
             {
-                match project_id {
-                    None => {
-                        let _ = app.insert_exo_message(MessageRole::Assistant, &msg.text_content());
-                    }
-                    Some(pid) => {
-                        let _ = app.insert_project_message(
-                            pid,
-                            MessageRole::Assistant,
-                            &msg.text_content(),
-                        );
-                    }
-                }
+                let _ = app.insert_session_message(
+                    project_id,
+                    MessageRole::Assistant,
+                    &msg.text_content(),
+                );
             }
             if project_id.is_none()
                 && let Some(tx) = tg_tx
@@ -1015,18 +1012,11 @@ fn handle_session_event<R: Runtime>(
                 && matches!(msg.role, MessageRole::Assistant)
                 && msg.has_text()
             {
-                match project_id {
-                    None => {
-                        let _ = app.insert_exo_message(MessageRole::Assistant, &msg.text_content());
-                    }
-                    Some(pid) => {
-                        let _ = app.insert_project_message(
-                            pid,
-                            MessageRole::Assistant,
-                            &msg.text_content(),
-                        );
-                    }
-                }
+                let _ = app.insert_session_message(
+                    project_id,
+                    MessageRole::Assistant,
+                    &msg.text_content(),
+                );
             }
         }
     }
@@ -1248,10 +1238,14 @@ pub(super) fn drain_telegram<R: Runtime>(
                         && matches!(msg.role, MessageRole::Assistant)
                         && msg.has_text()
                     {
-                        let _ = app.insert_exo_message(MessageRole::Assistant, &msg.text_content());
+                        let _ = app.insert_session_message(
+                            None,
+                            MessageRole::Assistant,
+                            &msg.text_content(),
+                        );
                     }
                 }
-                let _ = app.insert_exo_message(MessageRole::User, &text);
+                let _ = app.insert_session_message(None, MessageRole::User, &text);
                 chat.add_user_message(text.clone());
                 exo_session.send_message(&text, chat.session_id.as_deref());
             }
