@@ -170,16 +170,7 @@ fn handle_input_editing(input: &mut super::input::InputState, key: &KeyEvent) ->
 // ── Paste handling ──────────────────────────────────────────────────
 
 pub(super) fn handle_paste(state: &mut ScreenState, text: String) {
-    if matches!(state.current_focus(), Focus::ChatInput) {
-        let input = &mut state.active_state_mut().input;
-        if text.contains('\n') || text.contains('\r') {
-            input.set_paste(text);
-        } else {
-            for c in text.chars() {
-                input.insert(c);
-            }
-        }
-    }
+    state.accept_paste(text);
 }
 
 // ── Global key handler ──────────────────────────────────────────────

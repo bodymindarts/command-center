@@ -201,6 +201,14 @@ impl ScreenState {
         self.focus = Focus::TaskList;
     }
 
+    // ── Paste ─────────────────────────────────────────────────────────
+
+    pub fn accept_paste(&mut self, text: String) {
+        if matches!(self.focus, Focus::ChatInput) {
+            self.active_state_mut().input.accept_paste(text);
+        }
+    }
+
     // ── Delegates to active ChatViewState ────────────────────────────
 
     pub fn update_chat_viewport_height(&mut self, area_height: u16) {

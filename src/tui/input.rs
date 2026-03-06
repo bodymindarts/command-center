@@ -87,6 +87,18 @@ impl InputState {
             .any(|seg| matches!(seg, Segment::Pasted(_)))
     }
 
+    /// Accept pasted text: multi-line pastes become a `Pasted` block,
+    /// single-line pastes are inserted character-by-character.
+    pub fn accept_paste(&mut self, text: String) {
+        if text.contains('\n') || text.contains('\r') {
+            self.set_paste(text);
+        } else {
+            for c in text.chars() {
+                self.insert(c);
+            }
+        }
+    }
+
     /// Insert a multi-line paste at the current cursor position.
     /// Splits the current `Typed` segment and inserts a `Pasted` block between
     /// the two halves.  The cursor moves to the start of the second half so
