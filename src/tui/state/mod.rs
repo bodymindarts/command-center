@@ -17,7 +17,7 @@ pub use super::permissions::PermissionStore;
 
 pub enum Focus {
     TaskList,
-    TaskSearch,
+    ListSearch,
     ProjectList,
     ChatInput,
     ChatHistory,

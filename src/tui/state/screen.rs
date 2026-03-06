@@ -503,7 +503,7 @@ impl ScreenState {
     pub fn enter_search_mode(&mut self) {
         self.search_input.take();
         self.update_search_filter();
-        self.focus = Focus::TaskSearch;
+        self.focus = Focus::ListSearch;
     }
 
     /// Exit search mode: clear filters, clamp selection, restore focus.
@@ -803,7 +803,7 @@ mod tests {
 
         s.enter_search_mode();
 
-        assert!(matches!(s.focus, Focus::TaskSearch));
+        assert!(matches!(s.focus, Focus::ListSearch));
         assert!(s.search_input.buffer().is_empty());
     }
 
@@ -813,7 +813,7 @@ mod tests {
     fn exit_search_tasks_restores_task_list() {
         let mut s = state_with_tasks(3);
         s.project_list.hide();
-        s.focus = Focus::TaskSearch;
+        s.focus = Focus::ListSearch;
         s.active_state_mut()
             .task_list
             .set_filtered_indices(vec![0, 2]);
@@ -830,7 +830,7 @@ mod tests {
         let mut s = state_with_tasks(0);
         s.project_list
             .show(vec![make_project("a"), make_project("b")]);
-        s.focus = Focus::TaskSearch;
+        s.focus = Focus::ListSearch;
         s.project_list.set_filtered_indices(vec![0, 1]);
         s.project_list.list_state.select(Some(1));
 

@@ -417,7 +417,7 @@ pub(super) fn handle_focus_key<R: Runtime>(
 ) {
     match state.current_focus() {
         Focus::TaskList => handle_task_list_key(state, key, app),
-        Focus::TaskSearch => handle_task_search_key(state, key),
+        Focus::ListSearch => handle_task_search_key(state, key),
         Focus::ProjectList => handle_project_list_key(state, key, app),
         Focus::ChatInput if state.active_state().task_list.is_detail_visible() => {
             handle_task_chat_input_key(state, key, app)
@@ -499,10 +499,6 @@ fn handle_task_search_key(state: &mut ScreenState, key: KeyEvent) {
         KeyCode::Up | KeyCode::BackTab => state.search_prev(),
         KeyCode::Char('n') if ctrl => state.search_next(),
         KeyCode::Char('p') if ctrl => state.search_prev(),
-        KeyCode::Char('k') if ctrl => {
-            state.search_input.kill_line();
-            state.update_search_filter();
-        }
         _ => {
             if handle_input_editing(&mut state.search_input, &key) {
                 state.update_search_filter();

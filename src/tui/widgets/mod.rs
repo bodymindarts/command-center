@@ -14,7 +14,7 @@ pub(in crate::tui) fn ui(frame: &mut ratatui::Frame, state: &mut ScreenState) {
         .split(frame.area());
 
     // Left side: chat + (optional mid-panel) + input + prompt bar
-    let searching = matches!(state.current_focus(), Focus::TaskSearch);
+    let searching = matches!(state.current_focus(), Focus::ListSearch);
     let active = state.active_state();
     let show_detail = active.task_list.is_detail_visible();
     let in_task_chat = !searching && show_detail && active.task_list.selected_task().is_some();
@@ -128,7 +128,7 @@ pub(in crate::tui) fn ui(frame: &mut ratatui::Frame, state: &mut ScreenState) {
     // Right side: task list or project list
     let focused_task_list = matches!(
         state.current_focus(),
-        Focus::TaskList | Focus::TaskSearch | Focus::ProjectList
+        Focus::TaskList | Focus::ListSearch | Focus::ProjectList
     );
     let search_query = state.search_input.buffer();
     if state.project_list.is_visible() {

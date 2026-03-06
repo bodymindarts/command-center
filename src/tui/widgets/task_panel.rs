@@ -109,7 +109,7 @@ pub(in crate::tui) fn render_task_list(
     area: Rect,
     focused: bool,
 ) {
-    let searching = matches!(focus, Focus::TaskSearch);
+    let searching = matches!(focus, Focus::ListSearch);
 
     let (list_area, search_area) = if searching {
         let chunks = Layout::default()
@@ -226,7 +226,7 @@ pub(in crate::tui) fn render_project_list(
     area: Rect,
     focused: bool,
 ) {
-    let searching = matches!(focus, Focus::TaskSearch) && project_list.is_visible();
+    let searching = matches!(focus, Focus::ListSearch) && project_list.is_visible();
 
     let (list_area, search_area) = if searching {
         let chunks = Layout::default()

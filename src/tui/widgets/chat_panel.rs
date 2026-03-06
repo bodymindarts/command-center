@@ -16,7 +16,7 @@ pub(in crate::tui) fn render_chat(
     active_project_name: Option<&str>,
     area: Rect,
 ) {
-    let searching = matches!(focus, Focus::TaskSearch);
+    let searching = matches!(focus, Focus::ListSearch);
     let in_task_chat =
         !searching && task_list.is_detail_visible() && task_list.selected_task().is_some();
 

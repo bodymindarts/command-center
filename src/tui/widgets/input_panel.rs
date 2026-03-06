@@ -34,7 +34,7 @@ pub(in crate::tui) fn render_input(
     } else {
         Color::DarkGray
     };
-    let searching = matches!(focus, Focus::TaskSearch);
+    let searching = matches!(focus, Focus::ListSearch);
     let prefix = if !searching && task_list.is_detail_visible() {
         let name = task_list
             .selected_task()
@@ -178,7 +178,7 @@ pub(in crate::tui) fn render_prompt_bar(
                 Span::raw(" cancel"),
             ]
         }
-        Focus::TaskSearch => {
+        Focus::ListSearch => {
             vec![
                 Span::styled(" Enter", Style::default().fg(Color::Yellow)),
                 Span::raw(" select  "),
