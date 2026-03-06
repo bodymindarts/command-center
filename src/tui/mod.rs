@@ -345,7 +345,7 @@ fn run_loop<R: Runtime>(
             match event::read()? {
                 Event::Paste(text) => handlers::handle_paste(state, text),
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    state.status_error = None;
+                    state.clear_status_error();
                     // Ctrl+Z suspends — needs terminal access, handled inline
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('z')
@@ -396,7 +396,7 @@ fn run_loop<R: Runtime>(
         handlers::drain_telegram(state, exo_session, app, tg_rx);
         handlers::detect_vanished_perms(state, tg_tx, &mut tg_perm_ids);
 
-        if state.should_quit {
+        if state.should_quit() {
             return Ok(());
         }
     }

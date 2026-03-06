@@ -196,7 +196,7 @@ pub(super) fn handle_global_keys<R: Runtime>(
 
     // Ctrl+C quits
     if ctrl && key.code == KeyCode::Char('c') {
-        state.should_quit = true;
+        state.request_quit();
         return true;
     }
 
@@ -307,7 +307,7 @@ fn handle_cycle_permissions<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R
             state.open_task_detail(pos);
         } else {
             // Task is in a different project — switch to it
-            let target_pid = state.global_task_projects.get(&name).cloned().flatten();
+            let target_pid = state.global_task_project(&name).cloned().flatten();
             if let Some(pid) = target_pid {
                 if let Ok(projects) = app.list_projects() {
                     state.project_list.set_projects(projects);
@@ -368,8 +368,7 @@ fn handle_goto_project<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
         }
         // Try last_project_id first, then fall back to first project
         let target = state
-            .last_project_id
-            .as_ref()
+            .last_project_id()
             .and_then(|pid| {
                 state
                     .project_list
@@ -445,7 +444,7 @@ pub(super) fn handle_focus_key<R: Runtime>(
 
 fn handle_task_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app: &ClatApp<R>) {
     match key.code {
-        KeyCode::Char('q') => state.should_quit = true,
+        KeyCode::Char('q') => state.request_quit(),
         KeyCode::Esc => {
             state.close_task_detail();
         }
@@ -482,7 +481,7 @@ fn handle_task_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app:
                 && task.status.is_running()
             {
                 let id = task.id.clone();
-                state.focus = Focus::ConfirmCloseTask(id);
+                state.set_focus(Focus::ConfirmCloseTask(id));
             }
         }
         KeyCode::Char('r') => {
@@ -491,24 +490,24 @@ fn handle_task_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app:
         KeyCode::Backspace => {
             if let Some(task) = state.selected_task() {
                 let id = task.id.clone();
-                state.focus = Focus::ConfirmDelete(id);
+                state.set_focus(Focus::ConfirmDelete(id));
             }
         }
         KeyCode::Char('/') => {
             state.enter_search_mode();
         }
         KeyCode::Tab => {
-            state.focus = Focus::ChatInput;
+            state.set_focus(Focus::ChatInput);
         }
         KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            state.focus = Focus::ChatInput;
+            state.set_focus(Focus::ChatInput);
         }
         KeyCode::Char('p') => {
             if let Ok(projects) = app.list_projects() {
                 state.show_project_list(projects);
             } else {
                 state.project_list.show();
-                state.focus = Focus::ProjectList;
+                state.set_focus(Focus::ProjectList);
             }
         }
         _ => {}
@@ -574,13 +573,13 @@ fn handle_task_search_key(state: &mut ScreenState, key: KeyEvent) {
 
 fn handle_project_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app: &ClatApp<R>) {
     match key.code {
-        KeyCode::Char('q') => state.should_quit = true,
+        KeyCode::Char('q') => state.request_quit(),
         KeyCode::Char('j') | KeyCode::Down => state.next_project(),
         KeyCode::Char('k') | KeyCode::Up => state.previous_project(),
         KeyCode::Char('/') => {
             state.search_input.take();
             state.update_project_search_filter();
-            state.focus = Focus::TaskSearch;
+            state.set_focus(Focus::TaskSearch);
         }
         KeyCode::Enter => {
             if let Some(project) = state.selected_project() {
@@ -594,13 +593,13 @@ fn handle_project_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, a
         KeyCode::Backspace => {
             if let Some(project) = state.selected_project() {
                 let name = project.name.clone();
-                state.focus = Focus::ConfirmDeleteProject(name);
+                state.set_focus(Focus::ConfirmDeleteProject(name));
             }
         }
         KeyCode::Char('p') | KeyCode::Esc => {
             if let Ok(tasks) = app.list_visible(None) {
                 state.switch_to_project(None, tasks, None);
-                state.focus = Focus::TaskList;
+                state.set_focus(Focus::TaskList);
             }
         }
         _ => {}
@@ -624,18 +623,18 @@ fn handle_task_chat_input_key<R: Runtime>(
             state.navigate_to_adjacent_task(false);
         }
         KeyCode::Char('k') if ctrl => {
-            state.focus = Focus::ChatHistory;
+            state.set_focus(Focus::ChatHistory);
         }
         KeyCode::Char('x') if ctrl => {
             if let Some(task) = state.selected_task()
                 && task.status.is_running()
             {
                 let id = task.id.clone();
-                state.focus = Focus::ConfirmCloseTask(id);
+                state.set_focus(Focus::ConfirmCloseTask(id));
             }
         }
         KeyCode::Char('l') if ctrl => {
-            state.focus = Focus::TaskList;
+            state.set_focus(Focus::TaskList);
         }
         KeyCode::Char('g') if ctrl => {
             goto_task_window(state, app);
@@ -654,7 +653,7 @@ fn handle_task_chat_input_key<R: Runtime>(
                             }
                         }
                         Err(e) => {
-                            state.status_error = Some(format!("send: {e}"));
+                            state.set_status_error(format!("send: {e}"));
                         }
                     }
                 }
@@ -699,13 +698,13 @@ fn handle_chat_input_key<R: Runtime>(
             }
         }
         KeyCode::Char('k') if ctrl => {
-            state.focus = Focus::ChatHistory;
+            state.set_focus(Focus::ChatHistory);
         }
         KeyCode::Char('x') if ctrl && state.active_project_name.is_some() => {
-            state.focus = Focus::ConfirmCloseProject;
+            state.set_focus(Focus::ConfirmCloseProject);
         }
         KeyCode::Char('l') if ctrl => {
-            state.focus = Focus::TaskList;
+            state.set_focus(Focus::TaskList);
             let active = state.active_state_mut();
             if active.task_list.list_state.selected().is_some() {
                 active.task_list.show_detail();
@@ -733,7 +732,7 @@ fn handle_chat_enter<R: Runtime>(
     }
     if let Some(pid) = state.active_project_id.clone() {
         let Some(ctx) = project_contexts.get_mut(&pid) else {
-            state.status_error = Some("PM session not initialized".to_string());
+            state.set_status_error("PM session not initialized".to_string());
             return;
         };
         let active = state.active_state_mut();
@@ -803,10 +802,10 @@ fn handle_confirm_delete_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent,
             if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()) {
                 state.refresh_tasks(tasks);
             }
-            state.focus = Focus::TaskList;
+            state.set_focus(Focus::TaskList);
         }
         KeyCode::Char('n') | KeyCode::Esc => {
-            state.focus = Focus::TaskList;
+            state.set_focus(Focus::TaskList);
         }
         _ => {}
     }
@@ -830,11 +829,12 @@ fn handle_confirm_close_task_key<R: Runtime>(
             state.close_task_detail();
         }
         KeyCode::Char('n') | KeyCode::Esc => {
-            state.focus = if state.active_state().task_list.is_detail_visible() {
+            let f = if state.active_state().task_list.is_detail_visible() {
                 Focus::ChatInput
             } else {
                 Focus::TaskList
             };
+            state.set_focus(f);
         }
         _ => {}
     }
@@ -855,10 +855,10 @@ fn handle_confirm_delete_project_key<R: Runtime>(
             if let Ok(projects) = app.list_projects() {
                 state.refresh_projects(projects);
             }
-            state.focus = Focus::ProjectList;
+            state.set_focus(Focus::ProjectList);
         }
         KeyCode::Char('n') | KeyCode::Esc => {
-            state.focus = Focus::ProjectList;
+            state.set_focus(Focus::ProjectList);
         }
         _ => {}
     }
@@ -875,14 +875,14 @@ fn handle_confirm_close_project_key<R: Runtime>(
             let closed_pid = state.active_project_id.clone();
             if let Ok(tasks) = app.list_visible(None) {
                 state.switch_to_project(None, tasks, None);
-                state.focus = Focus::TaskList;
+                state.set_focus(Focus::TaskList);
             }
             if let Some(pid) = closed_pid {
                 super::cancel_project_context(project_contexts, state, &pid);
             }
         }
         KeyCode::Char('n') | KeyCode::Esc => {
-            state.focus = Focus::ChatInput;
+            state.set_focus(Focus::ChatInput);
         }
         _ => {}
     }
@@ -905,7 +905,7 @@ fn goto_task_window<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
                     app.goto_window(&window_id);
                 }
                 Err(e) => {
-                    state.status_error = Some(format!("reopen: {e}"));
+                    state.set_status_error(format!("reopen: {e}"));
                 }
             }
         }
@@ -925,7 +925,7 @@ fn reopen_task<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
                 }
             }
             Err(e) => {
-                state.status_error = Some(format!("reopen: {e}"));
+                state.set_status_error(format!("reopen: {e}"));
             }
         }
     }
@@ -1104,7 +1104,7 @@ pub(super) fn drain_resolved(
     while let Ok(cwd) = resolved_rx.try_recv() {
         let resolved_cwd =
             std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
-        let task_name = find_task_name_by_cwd(&state.global_task_work_dirs, &resolved_cwd);
+        let task_name = find_task_name_by_cwd(state.global_task_work_dirs(), &resolved_cwd);
         if let Some(ref name) = task_name {
             if let Some(task_list) = find_project_state_for_task(state, name) {
                 let pane_id = task_list
@@ -1130,7 +1130,7 @@ pub(super) fn drain_idle(state: &mut ScreenState, idle_rx: &mpsc::Receiver<Strin
     while let Ok(cwd) = idle_rx.try_recv() {
         let cwd_path =
             std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
-        if let Some(task_name) = find_task_name_by_cwd(&state.global_task_work_dirs, &cwd_path)
+        if let Some(task_name) = find_task_name_by_cwd(state.global_task_work_dirs(), &cwd_path)
             && let Some(task_list) = find_project_state_for_task(state, &task_name)
         {
             let pane_id = task_list
@@ -1150,7 +1150,7 @@ pub(super) fn drain_active(state: &mut ScreenState, active_rx: &mpsc::Receiver<S
     while let Ok(cwd) = active_rx.try_recv() {
         let cwd_path =
             std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
-        if let Some(task_name) = find_task_name_by_cwd(&state.global_task_work_dirs, &cwd_path)
+        if let Some(task_name) = find_task_name_by_cwd(state.global_task_work_dirs(), &cwd_path)
             && let Some(task_list) = find_project_state_for_task(state, &task_name)
         {
             let pane_id = task_list
@@ -1175,7 +1175,7 @@ pub(super) fn drain_permissions(
     while let Ok((stream, req)) = perm_rx.try_recv() {
         let req_cwd =
             std::fs::canonicalize(&req.cwd).unwrap_or_else(|_| std::path::PathBuf::from(&req.cwd));
-        let task_name = find_task_name_by_cwd(&state.global_task_work_dirs, &req_cwd)
+        let task_name = find_task_name_by_cwd(state.global_task_work_dirs(), &req_cwd)
             .unwrap_or_else(|| TaskName::from(EXO_PERM_KEY.to_string()));
         if let Some(task_list) = find_project_state_for_task(state, &task_name) {
             let pane_id = task_list
@@ -1309,14 +1309,15 @@ pub(super) fn tick_refresh<R: Runtime>(
     // Update global task→project mapping and drain stale permissions.
     let all_active = app.list_active().unwrap_or_default();
     let all_running_names: HashSet<TaskName> = all_active.iter().map(|t| t.name.clone()).collect();
-    state.global_task_projects = all_active
+    let projects_map = all_active
         .iter()
         .map(|t| (t.name.clone(), t.project_id.clone()))
         .collect();
-    state.global_task_work_dirs = all_active
+    let work_dirs = all_active
         .iter()
         .filter_map(|t| t.work_dir.as_ref().map(|wd| (t.name.clone(), wd.clone())))
         .collect();
+    state.update_global_task_mappings(projects_map, work_dirs);
     for perm in state.permissions.drain_stale(&all_running_names) {
         notify_tg_resolved(tg_tx, perm.perm_id, "⚪ Expired (task ended)");
         let _ = write_response_to_stream(perm.stream, false, None);

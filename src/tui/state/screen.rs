@@ -17,23 +17,23 @@ pub struct ScreenState {
     /// Currently active project name (for display). None = ExO.
     pub active_project_name: Option<ProjectName>,
     /// Last active project ID — remembered for Ctrl+R restore.
-    pub last_project_id: Option<ProjectId>,
+    last_project_id: Option<ProjectId>,
 
     pub project_list: ProjectListState,
-    pub should_quit: bool,
-    pub focus: Focus,
+    should_quit: bool,
+    pub(in crate::tui) focus: Focus,
     pub permissions: PermissionStore,
     /// Transient error message shown in the prompt bar. Cleared on next keypress.
-    pub status_error: Option<String>,
+    status_error: Option<String>,
     /// Input state for the task search filter.
     pub search_input: InputState,
     /// Global map of task_name → project_id for all running tasks.
     /// Updated every tick from the full (unscoped) active task list.
-    pub global_task_projects: HashMap<TaskName, Option<ProjectId>>,
+    global_task_projects: HashMap<TaskName, Option<ProjectId>>,
     /// Global list of (task_name, work_dir) for all running tasks.
     /// Used for CWD→task matching in permission/resolved/idle handlers
     /// so lookups work regardless of which project is currently displayed.
-    pub global_task_work_dirs: Vec<(TaskName, String)>,
+    global_task_work_dirs: Vec<(TaskName, String)>,
 }
 
 impl ScreenState {
@@ -58,6 +58,61 @@ impl ScreenState {
     /// Add a project workspace.
     pub fn add_project(&mut self, project_id: ProjectId, project_state: ProjectState) {
         self.projects.insert(project_id, project_state);
+    }
+
+    // ── Quit ─────────────────────────────────────────────────────────
+
+    pub fn request_quit(&mut self) {
+        self.should_quit = true;
+    }
+
+    pub fn should_quit(&self) -> bool {
+        self.should_quit
+    }
+
+    // ── Focus ────────────────────────────────────────────────────────
+
+    pub fn set_focus(&mut self, focus: Focus) {
+        self.focus = focus;
+    }
+
+    // ── Last project ────────────────────────────────────────────────
+
+    pub fn last_project_id(&self) -> Option<&ProjectId> {
+        self.last_project_id.as_ref()
+    }
+
+    // ── Status error ─────────────────────────────────────────────────
+
+    pub fn set_status_error(&mut self, msg: String) {
+        self.status_error = Some(msg);
+    }
+
+    pub fn clear_status_error(&mut self) {
+        self.status_error = None;
+    }
+
+    pub fn status_error(&self) -> Option<&str> {
+        self.status_error.as_deref()
+    }
+
+    // ── Global task mappings ─────────────────────────────────────────
+
+    pub fn update_global_task_mappings(
+        &mut self,
+        projects: HashMap<TaskName, Option<ProjectId>>,
+        work_dirs: Vec<(TaskName, String)>,
+    ) {
+        self.global_task_projects = projects;
+        self.global_task_work_dirs = work_dirs;
+    }
+
+    pub fn global_task_work_dirs(&self) -> &[(TaskName, String)] {
+        &self.global_task_work_dirs
+    }
+
+    pub fn global_task_project(&self, name: &TaskName) -> Option<&Option<ProjectId>> {
+        self.global_task_projects.get(name)
     }
 
     pub fn render_loop_starting(&mut self) {
