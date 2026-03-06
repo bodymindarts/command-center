@@ -91,13 +91,6 @@ pub enum AssistantEvent {
     Error(String),
 }
 
-/// Project event tagged with its project ID so the shared project_rx channel
-/// can route events to the correct ProjectContext.
-pub struct ProjectEvent {
-    pub project_id: crate::primitives::ProjectId,
-    pub inner: AssistantEvent,
-}
-
 /// Persistent claude session. The claude process stays alive across turns
 /// — messages are sent on stdin and responses streamed back on stdout without
 /// any respawn between turns. Used for both ExO and PM sessions.
@@ -108,6 +101,7 @@ pub struct AssistantSession {
     /// during --resume startup so replayed history is ignored.
     active: Arc<AtomicBool>,
     tx: mpsc::Sender<AssistantEvent>,
+    rx: mpsc::Receiver<AssistantEvent>,
     session_id: Option<String>,
     system_prompt: String,
 }
@@ -116,17 +110,14 @@ impl AssistantSession {
     /// Create a new session and eagerly spawn the claude process so it
     /// warms up in the background. `Command::spawn` returns immediately
     /// (fork+exec) so this does not block the caller.
-    pub fn new(
-        session_id: Option<&str>,
-        cancel: Arc<AtomicBool>,
-        tx: mpsc::Sender<AssistantEvent>,
-        system_prompt: &str,
-    ) -> Self {
+    pub fn new(session_id: Option<&str>, cancel: Arc<AtomicBool>, system_prompt: &str) -> Self {
+        let (tx, rx) = mpsc::channel();
         let mut session = AssistantSession {
             stdin: None,
             cancel,
             active: Arc::new(AtomicBool::new(false)),
             tx,
+            rx,
             session_id: session_id.map(|s| s.to_string()),
             system_prompt: system_prompt.to_string(),
         };
@@ -248,6 +239,11 @@ impl AssistantSession {
             )));
             self.stdin = None;
         }
+    }
+
+    /// Try to receive the next pending event from this session's channel.
+    pub fn try_recv(&self) -> Result<AssistantEvent, mpsc::TryRecvError> {
+        self.rx.try_recv()
     }
 
     /// Update the session_id (called when we receive one from the process).

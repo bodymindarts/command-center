@@ -14,7 +14,7 @@ use super::ProjectContext;
 use super::permissions::ActivePermission;
 use super::state::{Focus, ScreenState};
 use super::telegram;
-use crate::assistant::{AssistantEvent, AssistantSession, ProjectEvent};
+use crate::assistant::{AssistantEvent, AssistantSession};
 
 const EXO_PERM_KEY: &str = "exo";
 
@@ -904,138 +904,128 @@ fn reopen_task<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
 
 // ── Channel draining ────────────────────────────────────────────────
 
-pub(super) fn drain_exo_events<R: Runtime>(
+pub(super) fn drain_events<R: Runtime>(
     exo_session: &mut AssistantSession,
+    project_contexts: &mut HashMap<ProjectId, ProjectContext>,
     app: &ClatApp<R>,
-    rx: &mpsc::Receiver<AssistantEvent>,
     state: &mut ScreenState,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
 ) {
-    while let Ok(ev) = rx.try_recv() {
-        let chat = &mut state.exo.chat_view.assistant;
-        match ev {
-            AssistantEvent::TextDelta(text) => {
-                if chat.streaming {
-                    chat.append_text(&text);
-                    if state.active_project_id.is_none() {
-                        state.exo.chat_view.reset_scroll();
-                    }
-                    if let Some(tx) = tg_tx {
-                        let _ = tx.send(telegram::TgOutbound::ExoTextDelta { text: text.clone() });
-                    }
-                }
-            }
-            AssistantEvent::ToolStart(name) => {
-                if chat.streaming {
-                    chat.add_tool_activity(name);
-                }
-            }
-            AssistantEvent::SessionId(id) => {
-                app.write_exo_session_id(&id);
-                chat.session_id = Some(id.clone());
-                exo_session.set_session_id(id);
-            }
-            AssistantEvent::TurnDone => {
-                chat.finish_streaming();
-                if let Some(msg) = chat.messages.last()
-                    && matches!(msg.role, MessageRole::Assistant)
-                    && msg.has_text()
-                {
-                    let _ = app.insert_exo_message(MessageRole::Assistant, &msg.text_content());
-                }
-                if let Some(tx) = tg_tx {
-                    let _ = tx.send(telegram::TgOutbound::ExoTurnDone);
-                }
-            }
-            AssistantEvent::ProcessExited => {
-                chat.had_process_error = false;
-                exo_session.mark_exited();
-                if chat.streaming {
-                    chat.add_error("Claude process exited unexpectedly");
-                }
-            }
-            AssistantEvent::Error(e) => {
-                chat.had_process_error = true;
-                chat.add_error(&e);
-                if let Some(msg) = chat.messages.last()
-                    && matches!(msg.role, MessageRole::Assistant)
-                    && msg.has_text()
-                {
-                    let _ = app.insert_exo_message(MessageRole::Assistant, &msg.text_content());
-                }
-            }
+    // Drain ExO session
+    let is_exo_viewing = state.active_project_id.is_none();
+    while let Ok(ev) = exo_session.try_recv() {
+        handle_session_event(
+            app,
+            &mut state.exo,
+            is_exo_viewing,
+            exo_session,
+            None,
+            tg_tx,
+            ev,
+        );
+    }
+
+    // Drain each project session
+    for (pid, ctx) in project_contexts.iter_mut() {
+        let is_viewing = state.active_project_id.as_ref() == Some(pid);
+        let Some(ps) = state.projects.get_mut(pid) else {
+            continue;
+        };
+        while let Ok(ev) = ctx.session.try_recv() {
+            handle_session_event(app, ps, is_viewing, &mut ctx.session, Some(pid), tg_tx, ev);
         }
     }
 }
 
-pub(super) fn drain_project_events<R: Runtime>(
-    project_contexts: &mut HashMap<ProjectId, ProjectContext>,
+fn handle_session_event<R: Runtime>(
     app: &ClatApp<R>,
-    project_rx: &mpsc::Receiver<ProjectEvent>,
-    state: &mut ScreenState,
+    ps: &mut super::state::ProjectState,
+    is_viewing: bool,
+    session: &mut AssistantSession,
+    project_id: Option<&ProjectId>,
+    tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
+    ev: AssistantEvent,
 ) {
-    while let Ok(ev) = project_rx.try_recv() {
-        let project_id = ev.project_id;
-        let is_active_project = state.active_project_id.as_ref() == Some(&project_id);
-        let Some(project_state) = state.projects.get_mut(&project_id) else {
-            continue;
-        };
-        let chat = &mut project_state.chat_view.assistant;
-        match ev.inner {
-            AssistantEvent::TextDelta(text) => {
-                if chat.streaming {
-                    chat.append_text(&text);
-                    if is_active_project {
-                        project_state.chat_view.reset_scroll();
+    match ev {
+        AssistantEvent::TextDelta(text) => {
+            if ps.chat_view.assistant.streaming {
+                ps.chat_view.assistant.append_text(&text);
+                if is_viewing {
+                    ps.chat_view.reset_scroll();
+                }
+                if project_id.is_none()
+                    && let Some(tx) = tg_tx
+                {
+                    let _ = tx.send(telegram::TgOutbound::ExoTextDelta { text: text.clone() });
+                }
+            }
+        }
+        AssistantEvent::ToolStart(name) => {
+            if ps.chat_view.assistant.streaming {
+                ps.chat_view.assistant.add_tool_activity(name);
+            }
+        }
+        AssistantEvent::SessionId(id) => {
+            match project_id {
+                None => app.write_exo_session_id(&id),
+                Some(pid) => app.write_project_session_id(pid, &id),
+            }
+            ps.chat_view.assistant.session_id = Some(id.clone());
+            session.set_session_id(id);
+        }
+        AssistantEvent::TurnDone => {
+            ps.chat_view.assistant.finish_streaming();
+            if let Some(msg) = ps.chat_view.assistant.messages.last()
+                && matches!(msg.role, MessageRole::Assistant)
+                && msg.has_text()
+            {
+                match project_id {
+                    None => {
+                        let _ = app.insert_exo_message(MessageRole::Assistant, &msg.text_content());
+                    }
+                    Some(pid) => {
+                        let _ = app.insert_project_message(
+                            pid,
+                            MessageRole::Assistant,
+                            &msg.text_content(),
+                        );
                     }
                 }
             }
-            AssistantEvent::ToolStart(name) => {
-                if chat.streaming {
-                    chat.add_tool_activity(name);
-                }
+            if project_id.is_none()
+                && let Some(tx) = tg_tx
+            {
+                let _ = tx.send(telegram::TgOutbound::ExoTurnDone);
             }
-            AssistantEvent::SessionId(id) => {
-                app.write_project_session_id(&project_id, &id);
-                chat.session_id = Some(id.clone());
-                if let Some(ctx) = project_contexts.get_mut(&project_id) {
-                    ctx.session.set_session_id(id);
-                }
+        }
+        AssistantEvent::ProcessExited => {
+            ps.chat_view.assistant.had_process_error = false;
+            session.mark_exited();
+            if ps.chat_view.assistant.streaming {
+                let label = if project_id.is_none() { "Claude" } else { "PM" };
+                ps.chat_view
+                    .assistant
+                    .add_error(&format!("{label} process exited unexpectedly"));
             }
-            AssistantEvent::TurnDone => {
-                chat.finish_streaming();
-                if let Some(msg) = chat.messages.last()
-                    && matches!(msg.role, MessageRole::Assistant)
-                    && msg.has_text()
-                {
-                    let _ = app.insert_project_message(
-                        &project_id,
-                        MessageRole::Assistant,
-                        &msg.text_content(),
-                    );
-                }
-            }
-            AssistantEvent::ProcessExited => {
-                chat.had_process_error = false;
-                if let Some(ctx) = project_contexts.get_mut(&project_id) {
-                    ctx.session.mark_exited();
-                }
-                if chat.streaming {
-                    chat.add_error("PM process exited unexpectedly");
-                }
-            }
-            AssistantEvent::Error(e) => {
-                chat.had_process_error = true;
-                chat.add_error(&e);
-                if let Some(msg) = chat.messages.last()
-                    && matches!(msg.role, MessageRole::Assistant)
-                    && msg.has_text()
-                {
-                    let _ = app.insert_project_message(
-                        &project_id,
-                        MessageRole::Assistant,
-                        &msg.text_content(),
-                    );
+        }
+        AssistantEvent::Error(e) => {
+            ps.chat_view.assistant.had_process_error = true;
+            ps.chat_view.assistant.add_error(&e);
+            if let Some(msg) = ps.chat_view.assistant.messages.last()
+                && matches!(msg.role, MessageRole::Assistant)
+                && msg.has_text()
+            {
+                match project_id {
+                    None => {
+                        let _ = app.insert_exo_message(MessageRole::Assistant, &msg.text_content());
+                    }
+                    Some(pid) => {
+                        let _ = app.insert_project_message(
+                            pid,
+                            MessageRole::Assistant,
+                            &msg.text_content(),
+                        );
+                    }
                 }
             }
         }

@@ -100,7 +100,7 @@ task_field() {
 
 @test "spawn creates worktree and git branch" {
     cd "$PROJECT_DIR"
-    run clat spawn wt-test --skill noop
+    run clat spawn --repo . wt-test --skill noop
     echo "$output"
     [ "$status" -eq 0 ]
     [[ "$output" == *"Spawned task wt-test"* ]]
@@ -115,7 +115,7 @@ task_field() {
 
 @test "spawn copies .claude hooks into worktree" {
     cd "$PROJECT_DIR"
-    clat spawn sym-test --skill noop
+    clat spawn --repo . sym-test --skill noop
 
     local worktree
     worktree=$(find_worktree sym-test)
@@ -128,7 +128,7 @@ task_field() {
 
 @test "spawn writes permissions.allow with base and skill tools" {
     cd "$PROJECT_DIR"
-    clat spawn perm-test --skill noop
+    clat spawn --repo . perm-test --skill noop
 
     local worktree
     worktree=$(find_worktree perm-test)
@@ -153,7 +153,7 @@ task_field() {
 
 @test "spawn creates tmux window with 3 panes" {
     cd "$PROJECT_DIR"
-    clat spawn pane-test --skill noop
+    clat spawn --repo . pane-test --skill noop
 
     tmux list-windows -F '#{window_name}' | grep -q 'cc:pane-test'
 
@@ -168,7 +168,7 @@ task_field() {
 
 @test "list shows spawned task as running" {
     cd "$PROJECT_DIR"
-    clat spawn list-test --skill noop
+    clat spawn --repo . list-test --skill noop
 
     run clat list
     [ "$status" -eq 0 ]
@@ -179,7 +179,7 @@ task_field() {
 
 @test "complete marks task as completed" {
     cd "$PROJECT_DIR"
-    clat spawn done-test --skill noop
+    clat spawn --repo . done-test --skill noop
 
     local task_id
     task_id=$(task_field id done-test)
@@ -192,7 +192,7 @@ task_field() {
 
 @test "complete with nonzero exit marks task as failed" {
     cd "$PROJECT_DIR"
-    clat spawn fail-test --skill noop
+    clat spawn --repo . fail-test --skill noop
 
     local task_id
     task_id=$(task_field id fail-test)
@@ -205,7 +205,7 @@ task_field() {
 
 @test "goto switches to task window" {
     cd "$PROJECT_DIR"
-    clat spawn goto-test --skill noop
+    clat spawn --repo . goto-test --skill noop
 
     local short_id
     short_id=$(task_field "substr(id, 1, 8)" goto-test)
@@ -231,7 +231,7 @@ task_field() {
     local dash_pane
     dash_pane=$(tmux display-message -t test -p '#{pane_id}')
 
-    clat spawn perm-rt --skill noop
+    clat spawn --repo . perm-rt --skill noop
 
     local worktree
     worktree=$(find_worktree perm-rt)
@@ -321,7 +321,7 @@ REQJSON
     chmod +x "$TEST_DIR/bin/claude"
 
     cd "$PROJECT_DIR"
-    clat spawn msg-test --skill noop
+    clat spawn --repo . msg-test --skill noop
 
     local short_id
     short_id=$(task_field "substr(id, 1, 8)" msg-test)
@@ -349,7 +349,7 @@ REQJSON
 
 @test "close marks task as closed and kills tmux window" {
     cd "$PROJECT_DIR"
-    clat spawn close-test --skill noop
+    clat spawn --repo . close-test --skill noop
 
     local short_id
     short_id=$(task_field "substr(id, 1, 8)" close-test)
@@ -373,7 +373,7 @@ REQJSON
 
 @test "close rejects already completed task" {
     cd "$PROJECT_DIR"
-    clat spawn close-done --skill noop
+    clat spawn --repo . close-done --skill noop
 
     local task_id
     task_id=$(task_field id close-done)
@@ -389,8 +389,8 @@ REQJSON
 
 @test "list shows active by default, --all shows history" {
     cd "$PROJECT_DIR"
-    clat spawn active-one --skill noop
-    clat spawn active-two --skill noop
+    clat spawn --repo . active-one --skill noop
+    clat spawn --repo . active-two --skill noop
 
     local task_id
     task_id=$(task_field id active-two)
@@ -415,7 +415,7 @@ REQJSON
 
 @test "spawn records initial prompt in log" {
     cd "$PROJECT_DIR"
-    clat spawn log-init --skill noop
+    clat spawn --repo . log-init --skill noop
 
     local short_id
     short_id=$(task_field "substr(id, 1, 8)" log-init)
@@ -433,7 +433,7 @@ REQJSON
     chmod +x "$TEST_DIR/bin/claude"
 
     cd "$PROJECT_DIR"
-    clat spawn log-send --skill noop
+    clat spawn --repo . log-send --skill noop
 
     local short_id
     short_id=$(task_field "substr(id, 1, 8)" log-send)

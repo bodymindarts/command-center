@@ -21,7 +21,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use crate::app::ClatApp;
-use crate::assistant::{AssistantEvent, AssistantSession, EXO_SYSTEM_PROMPT, ProjectEvent};
+use crate::assistant::{AssistantSession, EXO_SYSTEM_PROMPT};
 use crate::permission::PermissionRequest;
 use crate::primitives::ProjectId;
 use crate::runtime::Runtime;
@@ -35,31 +35,9 @@ struct ProjectContext {
 }
 
 impl ProjectContext {
-    fn new(
-        project_id: &ProjectId,
-        project_tx: &mpsc::Sender<ProjectEvent>,
-        session_id: Option<&str>,
-        system_prompt: &str,
-    ) -> Self {
+    fn new(session_id: Option<&str>, system_prompt: &str) -> Self {
         let cancel = Arc::new(AtomicBool::new(false));
-        let (bridge_tx, bridge_rx) = mpsc::channel::<AssistantEvent>();
-        let pid = project_id.clone();
-        let project_tx = project_tx.clone();
-        std::thread::spawn(move || {
-            for event in bridge_rx {
-                if project_tx
-                    .send(ProjectEvent {
-                        project_id: pid.clone(),
-                        inner: event,
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
-        let session =
-            AssistantSession::new(session_id, Arc::clone(&cancel), bridge_tx, system_prompt);
+        let session = AssistantSession::new(session_id, Arc::clone(&cancel), system_prompt);
         ProjectContext { session, cancel }
     }
 }
@@ -93,13 +71,12 @@ fn init_project_context<R: Runtime>(
     app: &ClatApp<R>,
     project_id: &ProjectId,
     project_name: &str,
-    project_tx: &mpsc::Sender<ProjectEvent>,
 ) -> ProjectContext {
     let project_state = build_project_state(app, project_id);
     let session_id = project_state.chat_view.assistant.session_id.clone();
     state.add_project(project_id.clone(), project_state);
     let prompt = crate::assistant::project_system_prompt(project_name);
-    ProjectContext::new(project_id, project_tx, session_id.as_deref(), &prompt)
+    ProjectContext::new(session_id.as_deref(), &prompt)
 }
 
 /// Spawn `caffeinate -s` to prevent system sleep (macOS only).
@@ -147,31 +124,22 @@ pub fn run<R: Runtime>(
         ProjectState::new(assistant, tasks)
     };
     let mut state = ScreenState::new(exo);
-    let (tx, rx) = mpsc::channel::<AssistantEvent>();
     let cancel = Arc::new(AtomicBool::new(false));
     let mut exo_session = AssistantSession::new(
         state.exo.chat_view.assistant.session_id.as_deref(),
         Arc::clone(&cancel),
-        tx.clone(),
         EXO_SYSTEM_PROMPT,
     );
 
     // Project contexts: one per project, keyed by project ID
     let mut project_contexts: HashMap<ProjectId, ProjectContext> = HashMap::new();
-    let (project_tx, project_rx) = mpsc::channel::<ProjectEvent>();
 
     // Boot all PM sessions eagerly so they warm up in the background.
     if let Ok(projects) = app.list_projects() {
         for project in &projects {
             project_contexts.insert(
                 project.id.clone(),
-                init_project_context(
-                    &mut state,
-                    &app,
-                    &project.id,
-                    project.name.as_str(),
-                    &project_tx,
-                ),
+                init_project_context(&mut state, &app, &project.id, project.name.as_str()),
             );
         }
     }
@@ -254,8 +222,6 @@ pub fn run<R: Runtime>(
         &mut exo_session,
         &mut project_contexts,
         &app,
-        &rx,
-        &project_rx,
         &perm_rx,
         &resolved_rx,
         &idle_rx,
@@ -307,8 +273,6 @@ fn run_loop<R: Runtime>(
     exo_session: &mut AssistantSession,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
     app: &ClatApp<R>, // borrowed from run() which owns it
-    rx: &mpsc::Receiver<AssistantEvent>,
-    project_rx: &mpsc::Receiver<ProjectEvent>,
     perm_rx: &mpsc::Receiver<(UnixStream, PermissionRequest)>,
     resolved_rx: &mpsc::Receiver<String>,
     idle_rx: &mpsc::Receiver<String>,
@@ -332,8 +296,7 @@ fn run_loop<R: Runtime>(
         terminal.draw(|frame| widgets::ui(frame, state))?;
 
         // Drain channel events
-        handlers::drain_exo_events(exo_session, app, rx, state, tg_tx);
-        handlers::drain_project_events(project_contexts, app, project_rx, state);
+        handlers::drain_events(exo_session, project_contexts, app, state, tg_tx);
 
         // Poll terminal input
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
