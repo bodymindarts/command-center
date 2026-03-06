@@ -977,10 +977,13 @@ pub(super) fn drain_hooks(
             }
             // New hook events — received and dropped for now.
             // No response needed; stream is dropped which closes the connection.
-            HookEvent::PreToolUse { .. }
-            | HookEvent::Stop { .. }
-            | HookEvent::UserPromptSubmit { .. }
-            | HookEvent::SubagentStop { .. } => {
+            HookEvent::PreToolUse { cwd, .. }
+            | HookEvent::UserPromptSubmit { cwd, .. }
+            | HookEvent::SubagentStop { cwd, .. } => {
+                handle_hook_active(state, &cwd);
+            }
+            HookEvent::Stop { cwd, .. } => {
+                handle_hook_idle(state, &cwd);
                 drop(stream);
             }
             HookEvent::Unknown(_) => {}
