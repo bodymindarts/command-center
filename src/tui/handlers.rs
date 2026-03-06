@@ -285,7 +285,7 @@ fn handle_cycle_permissions<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R
                     state.switch_to_project(None, tasks, None);
                 }
             } else {
-                state.active_state_mut().task_list.hide_detail();
+                state.hide_active_detail();
             }
         } else if let Some(pos) = state
             .active_state()
@@ -440,12 +440,10 @@ fn handle_task_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app:
             state.close_task_detail();
         }
         KeyCode::Char('j') | KeyCode::Down => {
-            state.next();
-            state.active_state_mut().task_list.show_detail();
+            state.next_with_detail();
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            state.previous();
-            state.active_state_mut().task_list.show_detail();
+            state.previous_with_detail();
         }
         KeyCode::PageDown => {
             state.scroll_detail_down();
@@ -526,28 +524,28 @@ fn handle_task_search_key(state: &mut ScreenState, key: KeyEvent) {
             if searching_projects {
                 state.search_next_project();
             } else {
-                state.active_state_mut().task_list.search_next();
+                state.search_next_task();
             }
         }
         KeyCode::Up | KeyCode::BackTab => {
             if searching_projects {
                 state.search_prev_project();
             } else {
-                state.active_state_mut().task_list.search_prev();
+                state.search_prev_task();
             }
         }
         KeyCode::Char('n') if ctrl => {
             if searching_projects {
                 state.search_next_project();
             } else {
-                state.active_state_mut().task_list.search_next();
+                state.search_next_task();
             }
         }
         KeyCode::Char('p') if ctrl => {
             if searching_projects {
                 state.search_prev_project();
             } else {
-                state.active_state_mut().task_list.search_prev();
+                state.search_prev_task();
             }
         }
         KeyCode::Char('k') if ctrl => {
@@ -666,27 +664,13 @@ fn handle_chat_input_key<R: Runtime>(
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Esc => {
-            let active = state.active_state_mut();
-            if active.chat_view.assistant.streaming {
-                active.chat_view.assistant.finish_streaming();
-            }
-            active.chat_view.reset_scroll();
+            state.cancel_streaming();
         }
         KeyCode::Tab => {
-            let has_tasks = !state.active_state().task_list.tasks.is_empty();
-            if has_tasks {
-                state.open_task_detail(0);
-            } else {
-                state.active_state_mut().chat_view.reset_scroll();
-            }
+            state.open_first_task_detail();
         }
         KeyCode::BackTab => {
-            let last = state.active_state().task_list.tasks.len().checked_sub(1);
-            if let Some(last) = last {
-                state.open_task_detail(last);
-            } else {
-                state.active_state_mut().chat_view.reset_scroll();
-            }
+            state.open_last_task_detail();
         }
         KeyCode::Char('k') if ctrl => {
             state.set_focus(Focus::ChatHistory);
@@ -695,11 +679,7 @@ fn handle_chat_input_key<R: Runtime>(
             state.set_focus(Focus::ConfirmCloseProject);
         }
         KeyCode::Char('l') if ctrl => {
-            state.set_focus(Focus::TaskList);
-            let active = state.active_state_mut();
-            if active.task_list.list_state.selected().is_some() {
-                active.task_list.show_detail();
-            }
+            state.focus_task_list_with_detail();
         }
         KeyCode::Enter => {
             handle_chat_enter(state, app, exo_session, project_contexts);

@@ -149,12 +149,28 @@ impl ScreenState {
         self.active_state().task_list.selected_task()
     }
 
-    pub fn next(&mut self) {
-        self.active_state_mut().task_list.next();
+    pub fn next_with_detail(&mut self) {
+        let active = self.active_state_mut();
+        active.task_list.next();
+        active.task_list.show_detail();
     }
 
-    pub fn previous(&mut self) {
-        self.active_state_mut().task_list.previous();
+    pub fn previous_with_detail(&mut self) {
+        let active = self.active_state_mut();
+        active.task_list.previous();
+        active.task_list.show_detail();
+    }
+
+    pub fn hide_active_detail(&mut self) {
+        self.active_state_mut().task_list.hide_detail();
+    }
+
+    pub fn search_next_task(&mut self) {
+        self.active_state_mut().task_list.search_next();
+    }
+
+    pub fn search_prev_task(&mut self) {
+        self.active_state_mut().task_list.search_prev();
     }
 
     pub fn refresh_tasks(&mut self, tasks: Vec<Task>) {
@@ -201,6 +217,15 @@ impl ScreenState {
         self.focus = Focus::TaskList;
     }
 
+    /// Focus the task list. If a task is selected, show its detail panel.
+    pub fn focus_task_list_with_detail(&mut self) {
+        self.focus = Focus::TaskList;
+        let active = self.active_state_mut();
+        if active.task_list.list_state.selected().is_some() {
+            active.task_list.show_detail();
+        }
+    }
+
     // ── Paste ─────────────────────────────────────────────────────────
 
     pub fn accept_paste(&mut self, text: String) {
@@ -223,6 +248,15 @@ impl ScreenState {
 
     pub fn scroll_chat_down(&mut self) {
         self.active_state_mut().chat_view.scroll_chat_down();
+    }
+
+    /// If the active chat is streaming, finish it. Reset scroll regardless.
+    pub fn cancel_streaming(&mut self) {
+        let active = self.active_state_mut();
+        if active.chat_view.assistant.streaming {
+            active.chat_view.assistant.finish_streaming();
+        }
+        active.chat_view.reset_scroll();
     }
 
     // ── Permissions ──────────────────────────────────────────────────
@@ -294,6 +328,25 @@ impl ScreenState {
             active.enter_task_detail(&tid);
         }
         self.focus = Focus::ChatInput;
+    }
+
+    /// Open the first task's detail, or reset chat scroll if no tasks.
+    pub fn open_first_task_detail(&mut self) {
+        if !self.active_state().task_list.tasks.is_empty() {
+            self.open_task_detail(0);
+        } else {
+            self.active_state_mut().chat_view.reset_scroll();
+        }
+    }
+
+    /// Open the last task's detail, or reset chat scroll if no tasks.
+    pub fn open_last_task_detail(&mut self) {
+        let last = self.active_state().task_list.tasks.len().checked_sub(1);
+        if let Some(idx) = last {
+            self.open_task_detail(idx);
+        } else {
+            self.active_state_mut().chat_view.reset_scroll();
+        }
     }
 
     /// Leave the task detail view and return to the main chat.
