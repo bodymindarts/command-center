@@ -25,8 +25,12 @@ impl ProjectListState {
 
     // ── Visibility ───────────────────────────────────────────────────
 
-    pub fn show(&mut self) {
+    pub fn show(&mut self, projects: Vec<Project>) {
+        self.projects = projects;
         self.show_projects = true;
+        if !self.projects.is_empty() {
+            self.list_state.select(Some(0));
+        }
     }
 
     pub fn hide(&mut self) {

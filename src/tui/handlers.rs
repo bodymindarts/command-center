@@ -440,64 +440,49 @@ fn handle_task_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app:
             state.close_task_detail();
         }
         KeyCode::Char('j') | KeyCode::Down => {
-            state.next_with_detail();
+            state.next_task_with_detail();
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            state.previous_with_detail();
+            state.previous_task_with_detail();
         }
         KeyCode::PageDown => {
-            state.scroll_detail_down();
+            state.scroll_down_tasks();
         }
         KeyCode::PageUp => {
-            state.scroll_detail_up();
+            state.scroll_up_tasks();
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            state.scroll_detail_down();
+            state.scroll_down_tasks();
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            state.scroll_detail_up();
+            state.scroll_up_tasks();
         }
         KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             goto_task_window(state, app);
         }
         KeyCode::Enter => {
-            if let Some(idx) = state.active_state().task_list.list_state.selected() {
-                state.open_task_detail(idx);
-            }
+            state.open_selected_task();
         }
         KeyCode::Char('x') => {
-            if let Some(task) = state.selected_task()
-                && task.status.is_running()
-            {
-                let id = task.id.clone();
-                state.set_focus(Focus::ConfirmCloseTask(id));
-            }
+            state.confirm_close_selected_task();
         }
         KeyCode::Char('r') => {
             reopen_task(state, app);
         }
         KeyCode::Backspace => {
-            if let Some(task) = state.selected_task() {
-                let id = task.id.clone();
-                state.set_focus(Focus::ConfirmDelete(id));
-            }
+            state.confirm_delete_selected_task();
         }
         KeyCode::Char('/') => {
             state.enter_search_mode();
         }
         KeyCode::Tab => {
-            state.set_focus(Focus::ChatInput);
+            state.focus_left();
         }
         KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            state.set_focus(Focus::ChatInput);
+            state.focus_left();
         }
         KeyCode::Char('p') => {
-            if let Ok(projects) = app.list_projects() {
-                state.show_project_list(projects);
-            } else {
-                state.project_list.show();
-                state.set_focus(Focus::ProjectList);
-            }
+            state.show_project_list(app.list_projects().unwrap_or_default());
         }
         _ => {}
     }

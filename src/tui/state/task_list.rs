@@ -186,11 +186,11 @@ impl TaskListState {
         }
     }
 
-    pub fn scroll_detail_down(&mut self) {
+    pub fn scroll_down_tasks(&mut self) {
         self.detail_scroll = self.detail_scroll.saturating_add(10);
     }
 
-    pub fn scroll_detail_up(&mut self) {
+    pub fn scroll_up_tasks(&mut self) {
         self.detail_scroll = self.detail_scroll.saturating_sub(10);
     }
 

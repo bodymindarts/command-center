@@ -158,13 +158,13 @@ impl ScreenState {
         self.active_state().task_list.selected_task()
     }
 
-    pub fn next_with_detail(&mut self) {
+    pub fn next_task_with_detail(&mut self) {
         let active = self.active_state_mut();
         active.task_list.next();
         active.task_list.show_detail();
     }
 
-    pub fn previous_with_detail(&mut self) {
+    pub fn previous_task_with_detail(&mut self) {
         let active = self.active_state_mut();
         active.task_list.previous();
         active.task_list.show_detail();
@@ -186,16 +186,44 @@ impl ScreenState {
         self.active_state_mut().task_list.refresh_tasks(tasks);
     }
 
-    pub fn scroll_detail_down(&mut self) {
-        self.active_state_mut().task_list.scroll_detail_down();
+    pub fn scroll_down_tasks(&mut self) {
+        self.active_state_mut().task_list.scroll_down_tasks();
     }
 
-    pub fn scroll_detail_up(&mut self) {
-        self.active_state_mut().task_list.scroll_detail_up();
+    pub fn scroll_up_tasks(&mut self) {
+        self.active_state_mut().task_list.scroll_up_tasks();
     }
 
     pub fn selected_filtered_task_index(&self) -> Option<usize> {
         self.active_state().task_list.selected_filtered_task_index()
+    }
+
+    pub fn open_selected_task(&mut self) {
+        if let Some(idx) = self.active_state().task_list.list_state.selected() {
+            self.open_task_detail(idx);
+        }
+    }
+
+    /// If the selected task is running, enter the close-task confirmation flow.
+    pub fn confirm_close_selected_task(&mut self) {
+        if let Some(task) = self.selected_task()
+            && task.status.is_running()
+        {
+            let id = task.id.clone();
+            self.set_focus(Focus::ConfirmCloseTask(id));
+        }
+    }
+
+    /// Enter the delete confirmation flow for the selected task.
+    pub fn confirm_delete_selected_task(&mut self) {
+        if let Some(task) = self.selected_task() {
+            let id = task.id.clone();
+            self.set_focus(Focus::ConfirmDelete(id));
+        }
+    }
+
+    pub fn focus_left(&mut self) {
+        self.set_focus(Focus::ChatInput);
     }
 
     // ── Delegates to ProjectListState ────────────────────────────────
@@ -449,11 +477,7 @@ impl ScreenState {
 
     /// Show the project list overlay, replacing the task list.
     pub fn show_project_list(&mut self, projects: Vec<Project>) {
-        self.project_list.set_projects(projects);
-        if !self.project_list.projects().is_empty() {
-            self.project_list.list_state.select(Some(0));
-        }
-        self.project_list.show();
+        self.project_list.show(projects);
         self.focus = Focus::ProjectList;
     }
 
@@ -664,34 +688,34 @@ mod tests {
         ScreenState::new(exo)
     }
 
-    // ── scroll_detail_up / scroll_detail_down ───────────────────────
+    // ── scroll_up_tasks / scroll_down_tasks ───────────────────────
 
     #[test]
-    fn scroll_detail_down_increments() {
+    fn scroll_down_tasks_increments() {
         let mut s = state_with_tasks(0);
-        s.scroll_detail_down();
+        s.scroll_down_tasks();
         assert_eq!(s.active_state().task_list.detail_scroll(), 10);
-        s.scroll_detail_down();
+        s.scroll_down_tasks();
         assert_eq!(s.active_state().task_list.detail_scroll(), 20);
     }
 
     #[test]
-    fn scroll_detail_up_decrements() {
+    fn scroll_up_tasks_decrements() {
         let mut s = state_with_tasks(0);
         // Scroll down first to set a value we can decrement
-        s.scroll_detail_down(); // 10
-        s.scroll_detail_down(); // 20
-        s.scroll_detail_down(); // 30 (close enough to 25)
-        s.scroll_detail_up();
+        s.scroll_down_tasks(); // 10
+        s.scroll_down_tasks(); // 20
+        s.scroll_down_tasks(); // 30 (close enough to 25)
+        s.scroll_up_tasks();
         assert_eq!(s.active_state().task_list.detail_scroll(), 20);
     }
 
     #[test]
-    fn scroll_detail_up_saturates_at_zero() {
+    fn scroll_up_tasks_saturates_at_zero() {
         let mut s = state_with_tasks(0);
-        s.scroll_detail_down(); // 10
-        s.scroll_detail_up(); // 0
-        s.scroll_detail_up(); // still 0
+        s.scroll_down_tasks(); // 10
+        s.scroll_up_tasks(); // 0
+        s.scroll_up_tasks(); // still 0
         assert_eq!(s.active_state().task_list.detail_scroll(), 0);
     }
 
@@ -874,9 +898,8 @@ mod tests {
     #[test]
     fn exit_search_projects_restores_project_list() {
         let mut s = state_with_tasks(0);
-        s.project_list.show();
         s.project_list
-            .set_projects(vec![make_project("a"), make_project("b")]);
+            .show(vec![make_project("a"), make_project("b")]);
         s.focus = Focus::TaskSearch;
         s.project_list.set_filtered_indices(vec![0, 1]);
         s.project_list.list_state.select(Some(1));
@@ -925,8 +948,7 @@ mod tests {
     #[test]
     fn confirm_search_selection_project() {
         let mut s = state_with_tasks(0);
-        s.project_list.show();
-        s.project_list.set_projects(vec![
+        s.project_list.show(vec![
             make_project("a"),
             make_project("b"),
             make_project("c"),
