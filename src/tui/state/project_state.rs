@@ -15,9 +15,9 @@ pub struct ProjectState {
     pub task_list: TaskListState,
     pub input: InputState,
     /// Saved main chat input when entering task detail view.
-    pub saved_chat_input: Option<String>,
+    saved_chat_input: Option<String>,
     /// Per-task input buffers, preserved across task detail navigations.
-    pub task_inputs: HashMap<TaskId, String>,
+    task_inputs: HashMap<TaskId, String>,
 }
 
 impl ProjectState {
