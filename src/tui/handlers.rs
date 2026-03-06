@@ -962,10 +962,6 @@ pub(super) fn drain_hooks(
     perm_id_counter: &mut u64,
 ) {
     while let Ok((event, stream)) = hook_rx.try_recv() {
-        super::state::log_hook(
-            "drain_hooks",
-            &format!("received: {}", event.variant_name()),
-        );
         match event {
             HookEvent::Resolved { cwd } => {
                 handle_hook_resolved(state, &cwd, tg_tx, tg_perm_ids);

@@ -10,18 +10,6 @@ use super::project_state::ProjectState;
 use super::{Focus, InputState, PermissionStore};
 use crate::tui::permissions::ActivePermission;
 
-pub(in crate::tui) fn log_hook(event: &str, detail: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("data/hook-received.log")
-    {
-        let now = chrono::Local::now().format("%H:%M:%S%.3f");
-        let _ = writeln!(f, "[{now}] {event}: {detail}");
-    }
-}
-
 pub struct ScreenState {
     /// ExO workspace — always present.
     pub exo: ProjectState,
@@ -173,22 +161,18 @@ impl ScreenState {
 
     /// Mark the pane for a task (identified by CWD) as idle.
     pub fn mark_task_idle(&mut self, cwd: &str) {
-        log_hook("idle", cwd);
         if let Some(name) = self.task_name_for_cwd(cwd)
             && let Some(task_list) = self.task_list_for_task_mut(&name)
         {
-            log_hook("idle_matched", &format!("{cwd} -> {name}"));
             task_list.idle_task_pane(&name);
         }
     }
 
     /// Mark the pane for a task (identified by CWD) as active.
     pub fn mark_task_active(&mut self, cwd: &str) {
-        log_hook("active", cwd);
         if let Some(name) = self.task_name_for_cwd(cwd)
             && let Some(task_list) = self.task_list_for_task_mut(&name)
         {
-            log_hook("active_matched", &format!("{cwd} -> {name}"));
             task_list.activate_task_pane(&name);
         }
     }

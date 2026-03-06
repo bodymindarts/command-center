@@ -97,12 +97,7 @@ impl TaskListState {
     }
 
     pub fn mark_pane_active(&mut self, pane: &PaneId) {
-        let before = self.idle_panes.len();
         self.idle_panes.remove(pane);
-        super::screen::log_hook(
-            "mark_pane_active",
-            &format!("{pane} idle_panes: {before} -> {}", self.idle_panes.len()),
-        );
     }
 
     pub fn idle_panes(&self) -> &HashSet<PaneId> {
@@ -111,13 +106,12 @@ impl TaskListState {
 
     /// Mark the pane of the named task as active (not idle).
     pub fn activate_task_pane(&mut self, name: &TaskName) {
-        let pane_id = self
+        if let Some(pane_id) = self
             .tasks
             .iter()
             .find(|t| t.name == *name)
-            .and_then(|t| t.tmux_pane.clone());
-        super::screen::log_hook("activate_task_pane", &format!("{name} pane={pane_id:?}"));
-        if let Some(pane_id) = pane_id {
+            .and_then(|t| t.tmux_pane.clone())
+        {
             self.mark_pane_active(&pane_id);
         }
     }

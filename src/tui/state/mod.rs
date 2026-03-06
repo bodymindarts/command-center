@@ -10,7 +10,6 @@ pub use chat_view::ChatViewState;
 pub use project_list::ProjectListState;
 pub use project_state::ProjectState;
 pub use screen::ScreenState;
-pub(super) use screen::log_hook;
 pub use task_list::TaskListState;
 
 pub use super::input::InputState;
