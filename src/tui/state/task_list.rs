@@ -38,6 +38,16 @@ impl TaskListState {
         }
     }
 
+    /// Mark all running task panes as idle.
+    pub fn reset_tasks_to_idle(&mut self) {
+        self.idle_panes = self
+            .tasks
+            .iter()
+            .filter(|t| t.status.is_running())
+            .filter_map(|t| t.tmux_pane.clone())
+            .collect();
+    }
+
     pub fn selected_task(&self) -> Option<&Task> {
         self.list_state.selected().and_then(|i| self.tasks.get(i))
     }

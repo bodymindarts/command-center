@@ -320,17 +320,7 @@ fn run_loop<R: Runtime>(
     let mut perm_id_counter: u64 = 0;
     let mut tg_perm_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
 
-    // Start with all running panes assumed idle. Notification hooks
-    // (idle_prompt → idle, permission_prompt/elicitation_dialog → active)
-    // and message-sent will flip state — no screen-capture polling needed.
-    state.exo.task_list.idle_panes = state
-        .exo
-        .task_list
-        .tasks
-        .iter()
-        .filter(|t| t.status.is_running())
-        .filter_map(|t| t.tmux_pane.clone())
-        .collect();
+    state.render_loop_starting();
 
     loop {
         let any_project_streaming = state

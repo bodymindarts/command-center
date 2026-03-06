@@ -60,6 +60,13 @@ impl ScreenState {
         self.projects.insert(project_id, project_state);
     }
 
+    pub fn render_loop_starting(&mut self) {
+        self.exo.reset_tasks_to_idle();
+        for project in self.projects.values_mut() {
+            project.reset_tasks_to_idle();
+        }
+    }
+
     // ── Active state accessors ───────────────────────────────────────
 
     /// Get a reference to the active project state (ExO or current project).

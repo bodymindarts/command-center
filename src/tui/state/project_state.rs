@@ -31,6 +31,11 @@ impl ProjectState {
         }
     }
 
+    /// Mark all running task panes as idle.
+    pub fn reset_tasks_to_idle(&mut self) {
+        self.task_list.reset_tasks_to_idle();
+    }
+
     /// Save current input before entering task detail.
     /// Stores the main chat input and restores the target task's saved buffer.
     pub fn enter_task_detail(&mut self, task_id: &TaskId) {
