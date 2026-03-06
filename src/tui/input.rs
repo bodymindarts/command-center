@@ -221,6 +221,7 @@ impl InputState {
         };
     }
 
+    #[cfg(test)]
     pub fn kill_line(&mut self) {
         if let Segment::Typed(ref mut chars) = self.segments[self.cursor_seg] {
             chars.truncate(self.cursor_off);

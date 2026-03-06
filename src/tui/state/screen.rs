@@ -234,6 +234,18 @@ impl ScreenState {
         self.set_focus(Focus::ChatInput);
     }
 
+    pub fn move_focus_up(&mut self) {
+        self.set_focus(Focus::ChatHistory);
+    }
+
+    pub fn is_project_selected(&self) -> bool {
+        self.active_project_name.is_some()
+    }
+
+    pub fn confirm_close_project(&mut self) {
+        self.set_focus(Focus::ConfirmCloseProject);
+    }
+
     // ── Delegates to ProjectListState ────────────────────────────────
 
     pub fn selected_project(&self) -> Option<&Project> {

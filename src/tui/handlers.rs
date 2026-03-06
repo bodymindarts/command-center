@@ -618,10 +618,10 @@ fn handle_chat_input_key<R: Runtime>(
             state.open_last_task_detail();
         }
         KeyCode::Char('k') if ctrl => {
-            state.set_focus(Focus::ChatHistory);
+            state.move_focus_up();
         }
-        KeyCode::Char('x') if ctrl && state.active_project_name.is_some() => {
-            state.set_focus(Focus::ConfirmCloseProject);
+        KeyCode::Char('x') if ctrl && state.is_project_selected() => {
+            state.confirm_close_project();
         }
         KeyCode::Char('l') if ctrl => {
             state.focus_task_list_with_detail();
