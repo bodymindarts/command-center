@@ -25,10 +25,10 @@ use crate::assistant::{AssistantEvent, AssistantSession, EXO_SYSTEM_PROMPT, Proj
 use crate::permission::PermissionRequest;
 use crate::primitives::ProjectId;
 use crate::runtime::Runtime;
-use state::ScreenState;
+use state::{ProjectState, ScreenState};
 
 /// Holds the project session and bridge for a single project.
-/// Chat state (messages, streaming) lives in `ScreenState::project_chats`.
+/// Chat state (messages, streaming) lives in `ProjectState::chat_view`.
 struct ProjectContext {
     session: AssistantSession,
     cancel: Arc<AtomicBool>,
@@ -73,33 +73,33 @@ fn cancel_project_context(
     if let Some(ctx) = project_contexts.remove(project_id) {
         ctx.cancel.store(true, Ordering::Relaxed);
     }
-    state.chat_view.project_chats.remove(project_id);
+    state.projects.remove(project_id);
 }
 
-/// Ensure a ProjectContext exists for the project, creating and loading history if needed.
-fn ensure_project_context<R: Runtime>(
-    project_contexts: &mut HashMap<ProjectId, ProjectContext>,
+/// Build a fully-initialized ProjectState: loads session ID and chat history from the DB.
+fn build_project_state<R: Runtime>(app: &ClatApp<R>, project_id: &ProjectId) -> ProjectState {
+    let mut assistant = chat::AssistantChat::new();
+    assistant.session_id = app.read_project_session_id(project_id);
+    if let Ok(messages) = app.project_messages(project_id) {
+        let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
+        assistant.load_history(recent.into_iter().rev().collect());
+    }
+    ProjectState::new(assistant, Vec::new())
+}
+
+/// Initialize a project: build its ProjectState, add it to ScreenState, return a ProjectContext.
+fn init_project_context<R: Runtime>(
     state: &mut ScreenState,
     app: &ClatApp<R>,
     project_id: &ProjectId,
     project_name: &str,
     project_tx: &mpsc::Sender<ProjectEvent>,
-) {
-    if !project_contexts.contains_key(project_id) {
-        let chat = state
-            .chat_view
-            .project_chats
-            .entry(project_id.clone())
-            .or_insert_with(chat::AssistantChat::new);
-        chat.session_id = app.read_project_session_id(project_id);
-        if let Ok(messages) = app.project_messages(project_id) {
-            let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
-            chat.load_history(recent.into_iter().rev().collect());
-        }
-        let prompt = crate::assistant::project_system_prompt(project_name);
-        let ctx = ProjectContext::new(project_id, project_tx, chat.session_id.as_deref(), &prompt);
-        project_contexts.insert(project_id.clone(), ctx);
-    }
+) -> ProjectContext {
+    let project_state = build_project_state(app, project_id);
+    let session_id = project_state.chat_view.assistant.session_id.clone();
+    state.add_project(project_id.clone(), project_state);
+    let prompt = crate::assistant::project_system_prompt(project_name);
+    ProjectContext::new(project_id, project_tx, session_id.as_deref(), &prompt)
 }
 
 /// Spawn `caffeinate -s` to prevent system sleep (macOS only).
@@ -133,23 +133,24 @@ pub fn run<R: Runtime>(
     let mut terminal = Terminal::new(backend)?;
 
     let tasks = app.list_visible(None)?;
-    let mut state = ScreenState::new(tasks);
-    if let Some(sid) = resume_session {
-        state.chat_view.exo_chat.session_id = Some(sid.to_string());
-    } else if let Some(sid) = app.read_exo_session_id() {
-        state.chat_view.exo_chat.session_id = Some(sid);
-    }
-    if let Ok(messages) = app.exo_messages() {
-        let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
-        state
-            .chat_view
-            .exo_chat
-            .load_history(recent.into_iter().rev().collect());
-    }
+    let exo = {
+        let mut assistant = chat::AssistantChat::new();
+        if let Some(sid) = resume_session {
+            assistant.session_id = Some(sid.to_string());
+        } else if let Some(sid) = app.read_exo_session_id() {
+            assistant.session_id = Some(sid);
+        }
+        if let Ok(messages) = app.exo_messages() {
+            let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
+            assistant.load_history(recent.into_iter().rev().collect());
+        }
+        ProjectState::new(assistant, tasks)
+    };
+    let mut state = ScreenState::new(exo);
     let (tx, rx) = mpsc::channel::<AssistantEvent>();
     let cancel = Arc::new(AtomicBool::new(false));
     let mut exo_session = AssistantSession::new(
-        state.chat_view.exo_chat.session_id.as_deref(),
+        state.exo.chat_view.assistant.session_id.as_deref(),
         Arc::clone(&cancel),
         tx.clone(),
         EXO_SYSTEM_PROMPT,
@@ -162,13 +163,15 @@ pub fn run<R: Runtime>(
     // Boot all PM sessions eagerly so they warm up in the background.
     if let Ok(projects) = app.list_projects() {
         for project in &projects {
-            ensure_project_context(
-                &mut project_contexts,
-                &mut state,
-                &app,
-                &project.id,
-                project.name.as_str(),
-                &project_tx,
+            project_contexts.insert(
+                project.id.clone(),
+                init_project_context(
+                    &mut state,
+                    &app,
+                    &project.id,
+                    project.name.as_str(),
+                    &project_tx,
+                ),
             );
         }
     }
@@ -187,6 +190,7 @@ pub fn run<R: Runtime>(
     crate::permission::write_socket_breadcrumb(app.project_root(), &socket_path);
     {
         let work_dirs: Vec<String> = state
+            .exo
             .task_list
             .tasks
             .iter()
@@ -249,7 +253,6 @@ pub fn run<R: Runtime>(
         &mut state,
         &mut exo_session,
         &mut project_contexts,
-        &project_tx,
         &app,
         &rx,
         &project_rx,
@@ -303,7 +306,6 @@ fn run_loop<R: Runtime>(
     state: &mut ScreenState,
     exo_session: &mut AssistantSession,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
-    project_tx: &mpsc::Sender<ProjectEvent>,
     app: &ClatApp<R>, // borrowed from run() which owns it
     rx: &mpsc::Receiver<AssistantEvent>,
     project_rx: &mpsc::Receiver<ProjectEvent>,
@@ -321,7 +323,8 @@ fn run_loop<R: Runtime>(
     // Start with all running panes assumed idle. Notification hooks
     // (idle_prompt → idle, permission_prompt/elicitation_dialog → active)
     // and message-sent will flip state — no screen-capture polling needed.
-    state.task_list.idle_panes = state
+    state.exo.task_list.idle_panes = state
+        .exo
         .task_list
         .tasks
         .iter()
@@ -330,8 +333,11 @@ fn run_loop<R: Runtime>(
         .collect();
 
     loop {
-        let any_project_streaming = state.chat_view.project_chats.values().any(|c| c.streaming);
-        let tick_rate = if state.chat_view.exo_chat.streaming || any_project_streaming {
+        let any_project_streaming = state
+            .projects
+            .values()
+            .any(|ps| ps.chat_view.assistant.streaming);
+        let tick_rate = if state.exo.chat_view.assistant.streaming || any_project_streaming {
             Duration::from_millis(50)
         } else {
             Duration::from_millis(500)
@@ -372,22 +378,8 @@ fn run_loop<R: Runtime>(
                         )?;
                         terminal.hide_cursor()?;
                         terminal.clear()?;
-                    } else if !handlers::handle_global_keys(
-                        state,
-                        key,
-                        app,
-                        project_contexts,
-                        project_tx,
-                        tg_tx,
-                    ) {
-                        handlers::handle_focus_key(
-                            state,
-                            key,
-                            app,
-                            exo_session,
-                            project_contexts,
-                            project_tx,
-                        );
+                    } else if !handlers::handle_global_keys(state, key, app, tg_tx) {
+                        handlers::handle_focus_key(state, key, app, exo_session, project_contexts);
                     }
                 }
                 _ => {}

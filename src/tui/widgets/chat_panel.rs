@@ -6,14 +6,14 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use crate::primitives::MessageRole;
 
 use super::super::chat::{ChatMessage, ContentBlock};
-use super::super::state::{ChatViewState, Focus, ProjectListState, TaskListState};
+use super::super::state::{ChatViewState, Focus, TaskListState};
 
 pub(in crate::tui) fn render_chat(
     frame: &mut ratatui::Frame,
     focus: &Focus,
     task_list: &TaskListState,
-    project_list: &ProjectListState,
     chat_view: &ChatViewState,
+    active_project_name: Option<&str>,
     area: Rect,
 ) {
     let searching = matches!(focus, Focus::TaskSearch);
@@ -25,8 +25,8 @@ pub(in crate::tui) fn render_chat(
             .map(|t| t.name.as_str())
             .unwrap_or("?");
         format!(" Chat: {name} ")
-    } else if let Some(ref name) = project_list.active_project {
-        format!(" PM: {} ", name.as_str())
+    } else if let Some(name) = active_project_name {
+        format!(" PM: {name} ")
     } else {
         " ExO Chat ".to_string()
     };
@@ -89,28 +89,27 @@ pub(in crate::tui) fn render_chat(
                 lines.push(Line::from(l.to_string()));
             }
         }
-    } else if let Some(ref pid) = project_list.active_project_id {
-        // Render PM chat
-        if let Some(pm) = chat_view.project_chats.get(pid) {
-            render_chat_messages(&mut lines, &pm.messages, "PM", pm.streaming);
-        }
-        if lines.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "Chat with PM to plan and coordinate project work",
-                Style::default().fg(Color::DarkGray),
-            )));
-        }
     } else {
-        // Render ExO chat
+        // Render assistant chat (ExO or PM — both use the same single chat)
+        let label = if active_project_name.is_some() {
+            "PM"
+        } else {
+            "ExO"
+        };
         render_chat_messages(
             &mut lines,
-            &chat_view.exo_chat.messages,
-            "ExO",
-            chat_view.exo_chat.streaming,
+            &chat_view.assistant.messages,
+            label,
+            chat_view.assistant.streaming,
         );
         if lines.is_empty() {
+            let hint = if active_project_name.is_some() {
+                "Chat with PM to plan and coordinate project work"
+            } else {
+                "Press Tab to chat with ExO"
+            };
             lines.push(Line::from(Span::styled(
-                "Press Tab to chat with ExO",
+                hint,
                 Style::default().fg(Color::DarkGray),
             )));
         }

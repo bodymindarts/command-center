@@ -6,14 +6,14 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::primitives::TaskName;
 
 use super::super::permissions::PermissionStore;
-use super::super::state::{Focus, InputState, ProjectListState, TaskListState};
+use super::super::state::{Focus, InputState, TaskListState};
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::tui) fn render_input(
     frame: &mut ratatui::Frame,
     focus: &Focus,
     task_list: &TaskListState,
-    project_list: &ProjectListState,
+    active_project_name: Option<&str>,
     permissions: &PermissionStore,
     perm_key: &TaskName,
     input: &InputState,
@@ -41,8 +41,8 @@ pub(in crate::tui) fn render_input(
             .map(|t| t.name.as_str())
             .unwrap_or("?");
         format!("[{name}] > ")
-    } else if let Some(ref name) = project_list.active_project {
-        format!("[{}] > ", name.as_str())
+    } else if let Some(name) = active_project_name {
+        format!("[{name}] > ")
     } else {
         "[ExO] > ".to_string()
     };

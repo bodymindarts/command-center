@@ -1,15 +1,6 @@
 use ratatui::widgets::ListState;
 
-use crate::primitives::{ProjectId, ProjectName, TaskName};
 use crate::task::Project;
-
-/// Saved UI state for a project, restored on Ctrl+R.
-pub struct SavedProjectState {
-    pub name: ProjectName,
-    pub id: ProjectId,
-    pub show_detail: bool,
-    pub selected_task_name: Option<TaskName>,
-}
 
 pub struct ProjectListState {
     /// Cached list of projects for rendering.
@@ -18,12 +9,6 @@ pub struct ProjectListState {
     pub list_state: ListState,
     /// Whether the right panel shows the project list instead of the task list.
     pub show_projects: bool,
-    /// Currently active project name (for display). None = default (ExO).
-    pub active_project: Option<ProjectName>,
-    /// Currently active project ID (for queries). None = default (ExO).
-    pub active_project_id: Option<ProjectId>,
-    /// Last active project state — remembered when Ctrl+O leaves a project.
-    pub last_project: Option<SavedProjectState>,
     /// Indices into `projects` that match the current search query.
     pub filtered_project_indices: Vec<usize>,
 }
@@ -34,9 +19,6 @@ impl ProjectListState {
             projects: Vec::new(),
             list_state: ListState::default(),
             show_projects: false,
-            active_project: None,
-            active_project_id: None,
-            last_project: None,
             filtered_project_indices: Vec::new(),
         }
     }

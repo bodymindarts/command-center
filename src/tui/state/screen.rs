@@ -3,18 +3,25 @@ use std::collections::HashMap;
 use crate::primitives::{ProjectId, ProjectName, TaskName};
 use crate::task::{Project, Task};
 
-use super::chat_view::{ChatViewState, current_chat_id};
-use super::project_list::{ProjectListState, SavedProjectState};
-use super::task_list::TaskListState;
+use super::project_list::ProjectListState;
+use super::project_state::ProjectState;
 use super::{Focus, InputState, PermissionStore};
 
 pub struct ScreenState {
-    pub task_list: TaskListState,
+    /// ExO workspace — always present.
+    pub exo: ProjectState,
+    /// Per-project workspaces, keyed by project ID.
+    pub projects: HashMap<ProjectId, ProjectState>,
+    /// Currently active project ID. None = ExO.
+    pub active_project_id: Option<ProjectId>,
+    /// Currently active project name (for display). None = ExO.
+    pub active_project_name: Option<ProjectName>,
+    /// Last active project ID — remembered for Ctrl+R restore.
+    pub last_project_id: Option<ProjectId>,
+
     pub project_list: ProjectListState,
-    pub chat_view: ChatViewState,
     pub should_quit: bool,
     pub focus: Focus,
-    pub input: InputState,
     pub permissions: PermissionStore,
     /// Transient error message shown in the prompt bar. Cleared on next keypress.
     pub status_error: Option<String>,
@@ -30,14 +37,16 @@ pub struct ScreenState {
 }
 
 impl ScreenState {
-    pub fn new(tasks: Vec<Task>) -> Self {
+    pub fn new(exo: ProjectState) -> Self {
         Self {
-            task_list: TaskListState::new(tasks),
+            exo,
+            projects: HashMap::new(),
+            active_project_id: None,
+            active_project_name: None,
+            last_project_id: None,
             project_list: ProjectListState::new(),
-            chat_view: ChatViewState::new(),
             should_quit: false,
             focus: Focus::ChatInput,
-            input: InputState::new(),
             permissions: PermissionStore::new(),
             status_error: None,
             search_input: InputState::new(),
@@ -46,37 +55,63 @@ impl ScreenState {
         }
     }
 
-    // ── Delegates to TaskListState ──────────────────────────────────
+    /// Add a project workspace.
+    pub fn add_project(&mut self, project_id: ProjectId, project_state: ProjectState) {
+        self.projects.insert(project_id, project_state);
+    }
+
+    // ── Active state accessors ───────────────────────────────────────
+
+    /// Get a reference to the active project state (ExO or current project).
+    pub fn active_state(&self) -> &ProjectState {
+        match &self.active_project_id {
+            Some(pid) => self.projects.get(pid).unwrap_or(&self.exo),
+            None => &self.exo,
+        }
+    }
+
+    /// Get a mutable reference to the active project state.
+    pub fn active_state_mut(&mut self) -> &mut ProjectState {
+        match &self.active_project_id {
+            Some(pid) => {
+                let pid = pid.clone();
+                self.projects.get_mut(&pid).unwrap_or(&mut self.exo)
+            }
+            None => &mut self.exo,
+        }
+    }
+
+    // ── Delegates to active TaskListState ─────────────────────────────
 
     pub fn selected_task(&self) -> Option<&Task> {
-        self.task_list.selected_task()
+        self.active_state().task_list.selected_task()
     }
 
     pub fn next(&mut self) {
-        self.task_list.next();
+        self.active_state_mut().task_list.next();
     }
 
     pub fn previous(&mut self) {
-        self.task_list.previous();
+        self.active_state_mut().task_list.previous();
     }
 
     pub fn refresh_tasks(&mut self, tasks: Vec<Task>) {
-        self.task_list.refresh_tasks(tasks);
+        self.active_state_mut().task_list.refresh_tasks(tasks);
     }
 
     pub fn scroll_detail_down(&mut self) {
-        self.task_list.scroll_detail_down();
+        self.active_state_mut().task_list.scroll_detail_down();
     }
 
     pub fn scroll_detail_up(&mut self) {
-        self.task_list.scroll_detail_up();
+        self.active_state_mut().task_list.scroll_detail_up();
     }
 
     pub fn selected_filtered_task_index(&self) -> Option<usize> {
-        self.task_list.selected_filtered_task_index()
+        self.active_state().task_list.selected_filtered_task_index()
     }
 
-    // ── Delegates to ProjectListState ───────────────────────────────
+    // ── Delegates to ProjectListState ────────────────────────────────
 
     pub fn selected_project(&self) -> Option<&Project> {
         self.project_list.selected_project()
@@ -90,7 +125,7 @@ impl ScreenState {
         self.project_list.selected_filtered_project_index()
     }
 
-    // ── Focus ───────────────────────────────────────────────────────
+    // ── Focus ────────────────────────────────────────────────────────
 
     pub fn current_focus(&self) -> &Focus {
         &self.focus
@@ -104,34 +139,34 @@ impl ScreenState {
         self.focus = Focus::TaskList;
     }
 
-    // ── Delegates to ChatViewState ─────────────────────────────────
+    // ── Delegates to active ChatViewState ────────────────────────────
 
     pub fn update_chat_viewport_height(&mut self, area_height: u16) {
-        self.chat_view.update_chat_viewport_height(area_height);
+        self.active_state_mut()
+            .chat_view
+            .update_chat_viewport_height(area_height);
     }
 
     pub fn scroll_chat_up(&mut self) {
-        self.chat_view.scroll_chat_up();
+        self.active_state_mut().chat_view.scroll_chat_up();
     }
 
     pub fn scroll_chat_down(&mut self) {
-        self.chat_view.scroll_chat_down();
+        self.active_state_mut().chat_view.scroll_chat_down();
     }
 
-    // ── Permissions ─────────────────────────────────────────────────
+    // ── Permissions ──────────────────────────────────────────────────
 
     /// Count pending permissions only for tasks in the current project.
     pub fn current_project_perm_count(&self) -> usize {
-        self.permissions.count_for_project(
-            self.project_list.active_project_id.as_ref(),
-            &self.global_task_projects,
-        )
+        self.permissions
+            .count_for_project(self.active_project_id.as_ref(), &self.global_task_projects)
     }
 
     /// Count pending permissions for tasks NOT in the current project.
     pub fn other_project_perm_counts(&self) -> Vec<(String, usize)> {
         self.permissions.other_project_counts(
-            self.project_list.active_project_id.as_ref(),
+            self.active_project_id.as_ref(),
             &self.global_task_projects,
             &self.project_list.projects,
         )
@@ -139,17 +174,18 @@ impl ScreenState {
 
     /// Count pending AskUser permissions in the current project.
     pub fn current_project_askuser_count(&self) -> usize {
-        self.permissions.askuser_count_for_project(
-            self.project_list.active_project_id.as_ref(),
-            &self.global_task_projects,
-        )
+        self.permissions
+            .askuser_count_for_project(self.active_project_id.as_ref(), &self.global_task_projects)
     }
 
     /// Returns the permission key for the currently visible pane.
     /// Task name if viewing a task's detail, "exo" otherwise.
     pub fn focused_perm_key(&self) -> TaskName {
-        if self.task_list.show_detail {
-            self.selected_task()
+        let active = self.active_state();
+        if active.task_list.show_detail {
+            active
+                .task_list
+                .selected_task()
                 .map(|t| t.name.clone())
                 .unwrap_or_else(|| TaskName::from("exo".to_string()))
         } else {
@@ -171,133 +207,115 @@ impl ScreenState {
             .next()
     }
 
-    // ── Input save/restore ──────────────────────────────────────────
-
-    pub fn save_current_input(&mut self) {
-        let chat_id = current_chat_id(&self.task_list, &self.project_list);
-        let text = self.input.buffer();
-        if text.is_empty() {
-            self.chat_view.chat_buffers.remove(&chat_id);
-        } else {
-            self.chat_view.chat_buffers.insert(chat_id, text);
-        }
-    }
-
-    pub fn restore_input(&mut self) {
-        let chat_id = current_chat_id(&self.task_list, &self.project_list);
-        let text = self
-            .chat_view
-            .chat_buffers
-            .get(&chat_id)
-            .cloned()
-            .unwrap_or_default();
-        self.input.take();
-        self.input.set(&text);
-    }
-
-    // ── Detail view ─────────────────────────────────────────────────
+    // ── Detail view ──────────────────────────────────────────────────
 
     /// Open a task's detail view: select it, show detail panel, reset scrolls,
     /// focus chat input, and restore that task's input buffer.
     /// Callers that need to preserve the *current* input should call
     /// `save_current_input()` **before** this method.
     pub fn open_task_detail(&mut self, index: usize) {
-        self.task_list.list_state.select(Some(index));
-        self.task_list.show_detail = true;
-        self.task_list.detail_scroll = 0;
+        let active = self.active_state_mut();
+        // Get the task ID for the target index
+        let task_id = active.task_list.tasks.get(index).map(|t| t.id.clone());
+        active.task_list.list_state.select(Some(index));
+        active.task_list.show_detail = true;
+        active.task_list.detail_scroll = 0;
+        active.chat_view.chat_scroll = 0;
+        if let Some(tid) = task_id {
+            active.enter_task_detail(&tid);
+        }
         self.focus = Focus::ChatInput;
-        self.chat_view.chat_scroll = 0;
-        self.restore_input();
     }
 
     /// Leave the task detail view and return to the main chat.
     /// Resets chat scroll and restores the main chat input buffer.
-    /// Callers that need to preserve the *current* input should call
-    /// `save_current_input()` **before** this method.
     pub fn close_task_detail(&mut self) {
-        self.task_list.show_detail = false;
-        self.chat_view.chat_scroll = 0;
+        let active = self.active_state_mut();
+        let task_id = active.task_list.selected_task().map(|t| t.id.clone());
+        active.task_list.show_detail = false;
+        active.chat_view.chat_scroll = 0;
+        if let Some(tid) = task_id {
+            active.leave_task_detail(&tid);
+        }
         self.focus = Focus::ChatInput;
-        self.restore_input();
     }
 
     /// Move to the next (forward=true) or previous (forward=false) task
     /// from within the task chat input. Returns `true` if navigation stayed
     /// within bounds, `false` if it wrapped past the edge (detail is hidden).
     pub fn navigate_to_adjacent_task(&mut self, forward: bool) -> bool {
-        self.save_current_input();
-        self.chat_view.chat_scroll = 0;
-        let current = self.task_list.list_state.selected().unwrap_or(0);
+        let active = self.active_state_mut();
+        let old_task_id = active.task_list.selected_task().map(|t| t.id.clone());
+        active.chat_view.chat_scroll = 0;
+        let current = active.task_list.list_state.selected().unwrap_or(0);
         let in_bounds = if forward {
-            if current + 1 < self.task_list.tasks.len() {
-                self.task_list.list_state.select(Some(current + 1));
-                self.task_list.detail_scroll = 0;
+            if current + 1 < active.task_list.tasks.len() {
+                active.task_list.list_state.select(Some(current + 1));
+                active.task_list.detail_scroll = 0;
                 true
             } else {
-                self.task_list.show_detail = false;
+                active.task_list.show_detail = false;
                 false
             }
         } else if current > 0 {
-            self.task_list.list_state.select(Some(current - 1));
-            self.task_list.detail_scroll = 0;
+            active.task_list.list_state.select(Some(current - 1));
+            active.task_list.detail_scroll = 0;
             true
         } else {
-            self.task_list.show_detail = false;
+            active.task_list.show_detail = false;
             false
         };
-        self.restore_input();
+        let new_task_id = active.task_list.selected_task().map(|t| t.id.clone());
+        // Switch input buffers between old and new tasks
+        if active.task_list.show_detail {
+            if let (Some(old), Some(new)) = (&old_task_id, &new_task_id)
+                && old != new
+            {
+                active.switch_task_detail(old, new);
+            }
+        } else if let Some(old) = &old_task_id {
+            // Leaving detail view
+            active.leave_task_detail(old);
+        }
         in_bounds
     }
 
-    // ── Project switching ───────────────────────────────────────────
+    // ── Project switching ────────────────────────────────────────────
 
     /// Switch to a project (or ExO when `project` is `None`).
-    /// Saves current project state, swaps project context, loads tasks,
-    /// and optionally focuses a specific task by name.
+    /// State persists in `projects[pid]` — no save/restore needed.
+    /// Just sets IDs, hides project list, loads tasks, and optionally focuses a task.
     pub fn switch_to_project(
         &mut self,
         project: Option<(ProjectName, ProjectId)>,
         tasks: Vec<Task>,
         focus_task: Option<&TaskName>,
     ) {
-        // Save current project state for Ctrl+R restore
-        let selected_task_name = self.selected_task().map(|t| t.name.clone());
-        if let (Some(name), Some(id)) = (
-            self.project_list.active_project.take(),
-            self.project_list.active_project_id.take(),
-        ) {
-            self.project_list.last_project = Some(SavedProjectState {
-                name,
-                id,
-                show_detail: self.task_list.show_detail,
-                selected_task_name,
-            });
-        }
-
-        // Switch context
-        self.save_current_input();
-        self.project_list.active_project = project.as_ref().map(|(n, _)| n.clone());
-        self.project_list.active_project_id = project.map(|(_, id)| id);
+        // Remember current project for Ctrl+R
+        self.last_project_id = self.active_project_id.take();
+        self.active_project_name = project.as_ref().map(|(n, _)| n.clone());
+        self.active_project_id = project.map(|(_, id)| id);
         self.project_list.show_projects = false;
-        self.task_list.show_detail = false;
         self.focus = Focus::ChatInput;
-        self.chat_view.chat_scroll = 0;
 
-        // Load tasks and restore input
-        self.refresh_tasks(tasks);
-        self.restore_input();
+        // Load tasks into target workspace
+        let active = self.active_state_mut();
+        active.task_list.show_detail = false;
+        active.chat_view.chat_scroll = 0;
+        active.task_list.refresh_tasks(tasks);
 
         // Focus a specific task if requested
-        if let Some(name) = focus_task
-            && let Some(pos) = self.task_list.tasks.iter().position(|t| &t.name == name)
-        {
-            self.task_list.list_state.select(Some(pos));
-            self.task_list.show_detail = true;
-            self.task_list.detail_scroll = 0;
+        if let Some(name) = focus_task {
+            let active = self.active_state_mut();
+            if let Some(pos) = active.task_list.tasks.iter().position(|t| &t.name == name) {
+                active.task_list.list_state.select(Some(pos));
+                active.task_list.show_detail = true;
+                active.task_list.detail_scroll = 0;
+            }
         }
     }
 
-    // ── Project list ────────────────────────────────────────────────
+    // ── Project list ─────────────────────────────────────────────────
 
     /// Show the project list overlay, replacing the task list.
     pub fn show_project_list(&mut self, projects: Vec<Project>) {
@@ -317,7 +335,7 @@ impl ScreenState {
         self.project_list.previous_project();
     }
 
-    // ── Search ──────────────────────────────────────────────────────
+    // ── Search ───────────────────────────────────────────────────────
 
     /// Enter search mode: clear the search input and focus the search bar.
     pub fn enter_search_mode(&mut self) {
@@ -342,15 +360,16 @@ impl ScreenState {
             }
             self.focus = Focus::ProjectList;
         } else {
-            self.task_list.filtered_indices.clear();
-            if !self.task_list.tasks.is_empty() {
-                let sel = self
+            let active = self.active_state_mut();
+            active.task_list.filtered_indices.clear();
+            if !active.task_list.tasks.is_empty() {
+                let sel = active
                     .task_list
                     .list_state
                     .selected()
                     .unwrap_or(0)
-                    .min(self.task_list.tasks.len() - 1);
-                self.task_list.list_state.select(Some(sel));
+                    .min(active.task_list.tasks.len() - 1);
+                active.task_list.list_state.select(Some(sel));
             }
             self.focus = Focus::TaskList;
         }
@@ -376,7 +395,7 @@ impl ScreenState {
                 false
             };
             self.search_input.take();
-            self.task_list.filtered_indices.clear();
+            self.active_state_mut().task_list.filtered_indices.clear();
             selected
         }
     }
@@ -385,7 +404,8 @@ impl ScreenState {
     /// Fuzzy match: each query char must appear in order (e.g. "res" matches "r.*e.*s.*").
     pub fn update_search_filter(&mut self) {
         let query: Vec<char> = self.search_input.buffer().to_lowercase().chars().collect();
-        self.task_list.filtered_indices = self
+        let active = self.active_state_mut();
+        active.task_list.filtered_indices = active
             .task_list
             .tasks
             .iter()
@@ -409,19 +429,19 @@ impl ScreenState {
             .map(|(i, _)| i)
             .collect();
         // Clamp selection to filtered range
-        if self.task_list.filtered_indices.is_empty() {
-            self.task_list.list_state.select(None);
+        if active.task_list.filtered_indices.is_empty() {
+            active.task_list.list_state.select(None);
         } else {
-            let sel = self.task_list.list_state.selected().unwrap_or(0);
-            if let Some(filtered_pos) = self
+            let sel = active.task_list.list_state.selected().unwrap_or(0);
+            if let Some(filtered_pos) = active
                 .task_list
                 .filtered_indices
                 .iter()
                 .position(|&i| i == sel)
             {
-                self.task_list.list_state.select(Some(filtered_pos));
+                active.task_list.list_state.select(Some(filtered_pos));
             } else {
-                self.task_list.list_state.select(Some(0));
+                active.task_list.list_state.select(Some(0));
             }
         }
     }
@@ -508,7 +528,8 @@ mod tests {
 
     fn state_with_tasks(n: usize) -> ScreenState {
         let tasks: Vec<Task> = (0..n).map(|i| make_task(&format!("task-{i}"))).collect();
-        ScreenState::new(tasks)
+        let exo = ProjectState::new(crate::tui::chat::AssistantChat::new(), tasks);
+        ScreenState::new(exo)
     }
 
     // ── scroll_detail_up / scroll_detail_down ───────────────────────
@@ -517,25 +538,25 @@ mod tests {
     fn scroll_detail_down_increments() {
         let mut s = state_with_tasks(0);
         s.scroll_detail_down();
-        assert_eq!(s.task_list.detail_scroll, 10);
+        assert_eq!(s.active_state().task_list.detail_scroll, 10);
         s.scroll_detail_down();
-        assert_eq!(s.task_list.detail_scroll, 20);
+        assert_eq!(s.active_state().task_list.detail_scroll, 20);
     }
 
     #[test]
     fn scroll_detail_up_decrements() {
         let mut s = state_with_tasks(0);
-        s.task_list.detail_scroll = 25;
+        s.active_state_mut().task_list.detail_scroll = 25;
         s.scroll_detail_up();
-        assert_eq!(s.task_list.detail_scroll, 15);
+        assert_eq!(s.active_state().task_list.detail_scroll, 15);
     }
 
     #[test]
     fn scroll_detail_up_saturates_at_zero() {
         let mut s = state_with_tasks(0);
-        s.task_list.detail_scroll = 5;
+        s.active_state_mut().task_list.detail_scroll = 5;
         s.scroll_detail_up();
-        assert_eq!(s.task_list.detail_scroll, 0);
+        assert_eq!(s.active_state().task_list.detail_scroll, 0);
     }
 
     // ── open_task_detail ────────────────────────────────────────────
@@ -543,17 +564,18 @@ mod tests {
     #[test]
     fn open_task_detail_sets_expected_fields() {
         let mut s = state_with_tasks(3);
-        s.task_list.show_detail = false;
-        s.task_list.detail_scroll = 99;
-        s.chat_view.chat_scroll = 42;
+        s.active_state_mut().task_list.show_detail = false;
+        s.active_state_mut().task_list.detail_scroll = 99;
+        s.active_state_mut().chat_view.chat_scroll = 42;
         s.focus = Focus::TaskList;
 
         s.open_task_detail(2);
 
-        assert!(s.task_list.show_detail);
-        assert_eq!(s.task_list.list_state.selected(), Some(2));
-        assert_eq!(s.task_list.detail_scroll, 0);
-        assert_eq!(s.chat_view.chat_scroll, 0);
+        let active = s.active_state();
+        assert!(active.task_list.show_detail);
+        assert_eq!(active.task_list.list_state.selected(), Some(2));
+        assert_eq!(active.task_list.detail_scroll, 0);
+        assert_eq!(active.chat_view.chat_scroll, 0);
         assert!(matches!(s.focus, Focus::ChatInput));
     }
 
@@ -562,14 +584,15 @@ mod tests {
     #[test]
     fn close_task_detail_hides_and_resets() {
         let mut s = state_with_tasks(2);
-        s.task_list.show_detail = true;
-        s.chat_view.chat_scroll = 10;
+        s.active_state_mut().task_list.show_detail = true;
+        s.active_state_mut().chat_view.chat_scroll = 10;
         s.focus = Focus::TaskList;
 
         s.close_task_detail();
 
-        assert!(!s.task_list.show_detail);
-        assert_eq!(s.chat_view.chat_scroll, 0);
+        let active = s.active_state();
+        assert!(!active.task_list.show_detail);
+        assert_eq!(active.chat_view.chat_scroll, 0);
         assert!(matches!(s.focus, Focus::ChatInput));
     }
 
@@ -578,52 +601,54 @@ mod tests {
     #[test]
     fn navigate_forward_within_bounds() {
         let mut s = state_with_tasks(3);
-        s.task_list.show_detail = true;
-        s.task_list.list_state.select(Some(0));
+        s.active_state_mut().task_list.show_detail = true;
+        s.active_state_mut().task_list.list_state.select(Some(0));
 
         let result = s.navigate_to_adjacent_task(true);
 
         assert!(result);
-        assert_eq!(s.task_list.list_state.selected(), Some(1));
-        assert!(s.task_list.show_detail);
-        assert_eq!(s.task_list.detail_scroll, 0);
+        let active = s.active_state();
+        assert_eq!(active.task_list.list_state.selected(), Some(1));
+        assert!(active.task_list.show_detail);
+        assert_eq!(active.task_list.detail_scroll, 0);
     }
 
     #[test]
     fn navigate_forward_past_end_hides_detail() {
         let mut s = state_with_tasks(2);
-        s.task_list.show_detail = true;
-        s.task_list.list_state.select(Some(1));
+        s.active_state_mut().task_list.show_detail = true;
+        s.active_state_mut().task_list.list_state.select(Some(1));
 
         let result = s.navigate_to_adjacent_task(true);
 
         assert!(!result);
-        assert!(!s.task_list.show_detail);
+        assert!(!s.active_state().task_list.show_detail);
     }
 
     #[test]
     fn navigate_backward_within_bounds() {
         let mut s = state_with_tasks(3);
-        s.task_list.show_detail = true;
-        s.task_list.list_state.select(Some(2));
+        s.active_state_mut().task_list.show_detail = true;
+        s.active_state_mut().task_list.list_state.select(Some(2));
 
         let result = s.navigate_to_adjacent_task(false);
 
         assert!(result);
-        assert_eq!(s.task_list.list_state.selected(), Some(1));
-        assert!(s.task_list.show_detail);
+        let active = s.active_state();
+        assert_eq!(active.task_list.list_state.selected(), Some(1));
+        assert!(active.task_list.show_detail);
     }
 
     #[test]
     fn navigate_backward_past_start_hides_detail() {
         let mut s = state_with_tasks(2);
-        s.task_list.show_detail = true;
-        s.task_list.list_state.select(Some(0));
+        s.active_state_mut().task_list.show_detail = true;
+        s.active_state_mut().task_list.list_state.select(Some(0));
 
         let result = s.navigate_to_adjacent_task(false);
 
         assert!(!result);
-        assert!(!s.task_list.show_detail);
+        assert!(!s.active_state().task_list.show_detail);
     }
 
     // ── show_project_list ───────────────────────────────────────────
@@ -696,13 +721,13 @@ mod tests {
         let mut s = state_with_tasks(3);
         s.project_list.show_projects = false;
         s.focus = Focus::TaskSearch;
-        s.task_list.filtered_indices = vec![0, 2];
-        s.task_list.list_state.select(Some(0));
+        s.active_state_mut().task_list.filtered_indices = vec![0, 2];
+        s.active_state_mut().task_list.list_state.select(Some(0));
 
         s.exit_search();
 
         assert!(matches!(s.focus, Focus::TaskList));
-        assert!(s.task_list.filtered_indices.is_empty());
+        assert!(s.active_state().task_list.filtered_indices.is_empty());
     }
 
     #[test]
@@ -727,24 +752,25 @@ mod tests {
     fn confirm_search_selection_opens_task_detail() {
         let mut s = state_with_tasks(3);
         s.project_list.show_projects = false;
-        s.task_list.filtered_indices = vec![0, 2];
-        s.task_list.list_state.select(Some(1)); // points to filtered_indices[1] = 2
+        s.active_state_mut().task_list.filtered_indices = vec![0, 2];
+        s.active_state_mut().task_list.list_state.select(Some(1)); // points to filtered_indices[1] = 2
 
         let result = s.confirm_search_selection();
 
         assert!(result);
-        assert!(s.task_list.show_detail);
-        assert_eq!(s.task_list.list_state.selected(), Some(2)); // real index
+        let active = s.active_state();
+        assert!(active.task_list.show_detail);
+        assert_eq!(active.task_list.list_state.selected(), Some(2)); // real index
         assert!(matches!(s.focus, Focus::ChatInput));
-        assert!(s.task_list.filtered_indices.is_empty());
+        assert!(s.active_state().task_list.filtered_indices.is_empty());
     }
 
     #[test]
     fn confirm_search_selection_no_match_goes_to_task_list() {
         let mut s = state_with_tasks(3);
         s.project_list.show_projects = false;
-        s.task_list.filtered_indices = vec![];
-        s.task_list.list_state.select(None);
+        s.active_state_mut().task_list.filtered_indices = vec![];
+        s.active_state_mut().task_list.list_state.select(None);
 
         let result = s.confirm_search_selection();
 

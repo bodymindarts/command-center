@@ -15,7 +15,9 @@ pub(in crate::tui) fn ui(frame: &mut ratatui::Frame, state: &mut ScreenState) {
 
     // Left side: chat + (optional mid-panel) + input + prompt bar
     let searching = matches!(state.current_focus(), Focus::TaskSearch);
-    let in_task_chat = !searching && state.task_list.show_detail && state.selected_task().is_some();
+    let active = state.active_state();
+    let show_detail = active.task_list.show_detail;
+    let in_task_chat = !searching && show_detail && active.task_list.selected_task().is_some();
     let focused_perm_key = state.focused_perm_key();
     let front_perm = state.permissions.peek(&focused_perm_key);
     let show_perm = in_task_chat && front_perm.is_some_and(|p| !p.is_askuser());
@@ -61,25 +63,26 @@ pub(in crate::tui) fn ui(frame: &mut ratatui::Frame, state: &mut ScreenState) {
 
     state.update_chat_viewport_height(left[0].height);
 
+    let active = state.active_state();
+    let active_project_name = state.active_project_name.as_ref().map(|n| n.as_str());
     chat_panel::render_chat(
         frame,
         state.current_focus(),
-        &state.task_list,
-        &state.project_list,
-        &state.chat_view,
+        &active.task_list,
+        &active.chat_view,
+        active_project_name,
         left[0],
     );
     if show_close_task {
         confirm::render_close_task_panel(
             frame,
             state.current_focus(),
-            &state.task_list.tasks,
+            &state.active_state().task_list.tasks,
             left[1],
         );
     } else if show_close_project {
         let name = state
-            .project_list
-            .active_project
+            .active_project_name
             .as_ref()
             .map(|n| n.as_str())
             .unwrap_or("?");
@@ -90,7 +93,7 @@ pub(in crate::tui) fn ui(frame: &mut ratatui::Frame, state: &mut ScreenState) {
         confirm::render_delete_confirm_panel(
             frame,
             state.current_focus(),
-            &state.task_list.tasks,
+            &state.active_state().task_list.tasks,
             left[1],
         );
     } else if show_perm {
@@ -100,21 +103,22 @@ pub(in crate::tui) fn ui(frame: &mut ratatui::Frame, state: &mut ScreenState) {
     }
 
     let focused_input = matches!(state.current_focus(), Focus::ChatInput);
+    let active = state.active_state();
     input_panel::render_input(
         frame,
         state.current_focus(),
-        &state.task_list,
-        &state.project_list,
+        &active.task_list,
+        active_project_name,
         &state.permissions,
         &focused_perm_key,
-        &state.input,
+        &active.input,
         left[2],
         focused_input,
     );
     input_panel::render_prompt_bar(
         frame,
         state.current_focus(),
-        state.task_list.show_detail,
+        show_detail,
         &state.permissions,
         &focused_perm_key,
         state.status_error.as_deref(),
@@ -142,17 +146,29 @@ pub(in crate::tui) fn ui(frame: &mut ratatui::Frame, state: &mut ScreenState) {
             .current_project_perm_count()
             .saturating_sub(total_askuser);
         let other_perms = state.other_project_perm_counts();
-        let active_project_name = state
-            .project_list
-            .active_project
+        // Use direct field access to avoid borrow conflict with active_project_name
+        let active_name = state
+            .active_project_name
             .as_ref()
-            .map(|n| n.as_str());
+            .map(|n| n.as_str().to_string());
+        let active_name_ref = active_name.as_deref();
+        let task_list = match &state.active_project_id {
+            Some(pid) => {
+                let pid = pid.clone();
+                &mut state
+                    .projects
+                    .get_mut(&pid)
+                    .unwrap_or(&mut state.exo)
+                    .task_list
+            }
+            None => &mut state.exo.task_list,
+        };
         task_panel::render_task_list(
             frame,
             &state.focus,
-            &mut state.task_list,
+            task_list,
             &state.permissions,
-            active_project_name,
+            active_name_ref,
             total_perm,
             total_askuser,
             &other_perms,
