@@ -569,7 +569,7 @@ fn handle_task_chat_input_key<R: Runtime>(
                     match app.send(&task_id, &msg) {
                         Ok(_) => {
                             if let Some(pane) = pane {
-                                active.task_list.mark_pane_active(&pane);
+                                active.task_list.mark_pane_active(pane);
                             }
                         }
                         Err(e) => {

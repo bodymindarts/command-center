@@ -83,19 +83,19 @@ impl Task {
         }
     }
 
-    fn is_idle(&self, idle_panes: &HashSet<PaneId>) -> bool {
+    fn is_active(&self, active_panes: &HashSet<PaneId>) -> bool {
         self.status.is_running()
             && self
                 .tmux_pane
                 .as_ref()
-                .is_some_and(|p| idle_panes.contains(p))
+                .is_some_and(|p| active_panes.contains(p))
     }
 
-    /// Derive the visual display status from persisted status + idle set.
-    pub fn display_status(&self, idle_panes: &HashSet<PaneId>) -> DisplayStatus {
+    /// Derive the visual display status from persisted status + active set.
+    pub fn display_status(&self, active_panes: &HashSet<PaneId>) -> DisplayStatus {
         match self.status {
-            TaskStatus::Running if self.is_idle(idle_panes) => DisplayStatus::Idle,
-            TaskStatus::Running => DisplayStatus::Active,
+            TaskStatus::Running if self.is_active(active_panes) => DisplayStatus::Active,
+            TaskStatus::Running => DisplayStatus::Idle,
             TaskStatus::Completed => DisplayStatus::Completed,
             TaskStatus::Failed => DisplayStatus::Failed,
             TaskStatus::Closed => DisplayStatus::Closed,

@@ -13,8 +13,9 @@ pub struct TaskListState {
     detail_scroll: u16,
     detail_live_output: Option<String>,
     window_numbers: HashMap<WindowId, String>,
-    /// Pane IDs that appear idle (shell prompt visible), refreshed periodically.
-    idle_panes: HashSet<PaneId>,
+    /// Pane IDs that are actively working (hook reported activity).
+    /// Absence from this set means idle (the safe default).
+    active_panes: HashSet<PaneId>,
     /// Indices into `tasks` that match the current search query.
     filtered_indices: Vec<usize>,
 }
@@ -33,7 +34,7 @@ impl TaskListState {
             detail_scroll: 0,
             detail_live_output: None,
             window_numbers: HashMap::new(),
-            idle_panes: HashSet::new(),
+            active_panes: HashSet::new(),
             filtered_indices: Vec::new(),
         }
     }
@@ -90,22 +91,26 @@ impl TaskListState {
         self.window_numbers.get(id).map(|s| s.as_str())
     }
 
-    // ── Idle panes ───────────────────────────────────────────────────
+    // ── Active panes ────────────────────────────────────────────────
 
-    pub fn mark_pane_idle(&mut self, pane: PaneId) -> bool {
-        self.idle_panes.insert(pane)
+    /// Mark a pane as idle (remove from active set).
+    /// Returns `true` if the pane was previously active.
+    pub fn mark_pane_idle(&mut self, pane: &PaneId) -> bool {
+        self.active_panes.remove(pane)
     }
 
-    pub fn mark_pane_active(&mut self, pane: &PaneId) -> bool {
-        self.idle_panes.remove(pane)
+    /// Mark a pane as active (add to active set).
+    /// Returns `true` if the pane was not already active.
+    pub fn mark_pane_active(&mut self, pane: PaneId) -> bool {
+        self.active_panes.insert(pane)
     }
 
-    pub fn idle_panes(&self) -> &HashSet<PaneId> {
-        &self.idle_panes
+    pub fn active_panes(&self) -> &HashSet<PaneId> {
+        &self.active_panes
     }
 
-    /// Mark the pane of the named task as active (not idle).
-    /// Returns `true` if the pane was newly marked active (was previously idle).
+    /// Mark the pane of the named task as active.
+    /// Returns `true` if the pane was newly marked active.
     pub fn activate_task_pane(&mut self, name: &TaskName) -> bool {
         if let Some(pane_id) = self
             .tasks
@@ -113,14 +118,14 @@ impl TaskListState {
             .find(|t| t.name == *name)
             .and_then(|t| t.tmux_pane.clone())
         {
-            self.mark_pane_active(&pane_id)
+            self.mark_pane_active(pane_id)
         } else {
             false
         }
     }
 
     /// Mark the pane of the named task as idle.
-    /// Returns `true` if the pane was newly marked idle (was not already idle).
+    /// Returns `true` if the pane was newly marked idle (was previously active).
     pub fn idle_task_pane(&mut self, name: &TaskName) -> bool {
         if let Some(pane_id) = self
             .tasks
@@ -128,20 +133,15 @@ impl TaskListState {
             .find(|t| t.name == *name)
             .and_then(|t| t.tmux_pane.clone())
         {
-            self.mark_pane_idle(pane_id)
+            self.mark_pane_idle(&pane_id)
         } else {
             false
         }
     }
 
-    /// Mark all running task panes as idle.
+    /// Clear all active panes (everything defaults to idle).
     pub fn reset_tasks_to_idle(&mut self) {
-        self.idle_panes = self
-            .tasks
-            .iter()
-            .filter(|t| t.status.is_running())
-            .filter_map(|t| t.tmux_pane.clone())
-            .collect();
+        self.active_panes.clear();
     }
 
     // ── Filtered indices ─────────────────────────────────────────────

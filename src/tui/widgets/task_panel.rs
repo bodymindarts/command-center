@@ -13,7 +13,7 @@ fn task_list_item(
     permissions: &PermissionStore,
     task: &crate::task::Task,
 ) -> ListItem<'static> {
-    let ds = task.display_status(task_list.idle_panes());
+    let ds = task.display_status(task_list.active_panes());
     let status_char = ds.indicator();
     let color = display_status_color(&ds);
     let dim = if ds.is_dim() {
