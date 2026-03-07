@@ -176,7 +176,7 @@ pub fn run<R: Runtime>(
                         if let Ok(mut log) = std::fs::OpenOptions::new()
                             .create(true)
                             .append(true)
-                            .open("data/hook-sent.log")
+                            .open("data/hooks.log")
                         {
                             use std::io::Write;
                             let ts = chrono::Local::now().format("%H:%M:%S%.3f");
