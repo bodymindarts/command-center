@@ -484,12 +484,14 @@ impl<R: Runtime> ClatApp<R> {
         self.store.delete_project(&project.id)
     }
 
-    pub fn resolve_project_id(&self, name: &str) -> anyhow::Result<ProjectId> {
-        let project = self
-            .store
+    pub fn resolve_project(&self, name: &str) -> anyhow::Result<Project> {
+        self.store
             .get_project_by_name(name)?
-            .ok_or_else(|| anyhow::anyhow!("no project found with name '{name}'"))?;
-        Ok(project.id)
+            .ok_or_else(|| anyhow::anyhow!("no project found with name '{name}'"))
+    }
+
+    pub fn resolve_project_id(&self, name: &str) -> anyhow::Result<ProjectId> {
+        Ok(self.resolve_project(name)?.id)
     }
 
     fn chat_id(project_id: Option<&ProjectId>) -> ChatId {

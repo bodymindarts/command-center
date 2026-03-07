@@ -954,8 +954,10 @@ fn handle_session_event<R: Runtime>(
 }
 
 /// Drain all hook events from the unified socket channel.
-pub(super) fn drain_hooks(
+pub(super) fn drain_hooks<R: Runtime>(
     state: &mut ScreenState,
+    project_contexts: &mut HashMap<ProjectId, ProjectContext>,
+    app: &ClatApp<R>,
     hook_rx: &mpsc::Receiver<(HookEvent, UnixStream)>,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
     tg_perm_ids: &mut HashSet<u64>,
@@ -985,6 +987,9 @@ pub(super) fn drain_hooks(
             HookEvent::Stop { cwd, .. } => {
                 handle_hook_idle(state, &cwd, tg_tx);
                 drop(stream);
+            }
+            HookEvent::PmMessage { project, message } => {
+                handle_hook_pm_message(state, project_contexts, app, stream, &project, &message);
             }
             HookEvent::Unknown(_) => {}
         }
@@ -1021,6 +1026,60 @@ fn handle_hook_idle(
 
 fn handle_hook_active(state: &mut ScreenState, cwd: &str) {
     state.mark_task_active(cwd);
+}
+
+fn handle_hook_pm_message<R: Runtime>(
+    state: &mut ScreenState,
+    project_contexts: &mut HashMap<ProjectId, ProjectContext>,
+    app: &ClatApp<R>,
+    stream: UnixStream,
+    project_name: &str,
+    message: &str,
+) {
+    use std::io::Write;
+
+    let project = match app.resolve_project(project_name) {
+        Ok(p) => p,
+        Err(_) => {
+            let resp = serde_json::json!({"error": format!("unknown project '{project_name}'")});
+            let _ = write!(&stream, "{resp}");
+            return;
+        }
+    };
+
+    let pid = project.id;
+    let Some(ctx) = project_contexts.get_mut(&pid) else {
+        let resp = serde_json::json!({"error": format!("PM session not initialized for '{project_name}'")});
+        let _ = write!(&stream, "{resp}");
+        return;
+    };
+
+    let Some(ps) = state.projects.get_mut(&pid) else {
+        let resp =
+            serde_json::json!({"error": format!("project state not found for '{project_name}'")});
+        let _ = write!(&stream, "{resp}");
+        return;
+    };
+
+    let chat = &mut ps.chat_view.assistant;
+    if chat.streaming {
+        chat.finish_streaming();
+        if let Some(msg) = chat.messages.last()
+            && matches!(msg.role, MessageRole::Assistant)
+            && msg.has_text()
+        {
+            let _ =
+                app.insert_session_message(Some(&pid), MessageRole::Assistant, &msg.text_content());
+        }
+    }
+    let _ = app.insert_session_message(Some(&pid), MessageRole::User, message);
+    chat.add_user_message(message.to_string());
+    ctx.session
+        .send_message(message, chat.session_id.as_deref());
+    ps.chat_view.reset_scroll();
+
+    let resp = serde_json::json!({"ok": true});
+    let _ = write!(&stream, "{resp}");
 }
 
 fn handle_hook_permission(

@@ -441,6 +441,17 @@ fn cmd_project(action: ProjectAction, app: ClatApp<impl Runtime>) -> anyhow::Res
             app.delete_project(&name)?;
             println!("Deleted project '{name}'");
         }
+        ProjectAction::Send { name, message } => {
+            cmd_project_send(&app, &name, &message)?;
+        }
     }
+    Ok(())
+}
+
+fn cmd_project_send(app: &ClatApp<impl Runtime>, name: &str, message: &str) -> anyhow::Result<()> {
+    // Verify the project exists
+    let project = app.resolve_project(name)?;
+    crate::permission::send_pm_message(app.project_root(), project.name.as_str(), message)?;
+    println!("Sent message to PM for project '{}'", project.name);
     Ok(())
 }

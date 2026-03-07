@@ -330,6 +330,8 @@ fn run_loop<R: Runtime>(
         // Drain hook events from the socket listener
         handlers::drain_hooks(
             state,
+            project_contexts,
+            app,
             hook_rx,
             tg_tx,
             &mut tg_perm_ids,

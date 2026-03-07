@@ -166,6 +166,15 @@ pub enum ProjectAction {
         /// Project name
         name: String,
     },
+
+    /// Send a message to a project's PM session
+    Send {
+        /// Project name
+        name: String,
+
+        /// Message to send
+        message: String,
+    },
 }
 
 #[derive(Subcommand)]

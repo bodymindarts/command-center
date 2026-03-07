@@ -79,6 +79,11 @@ pub enum HookEvent {
         #[allow(dead_code)]
         payload: Value,
     },
+    /// A message sent from the CLI to a project's PM session.
+    PmMessage {
+        project: String,
+        message: String,
+    },
     /// Catch-all for hook messages we don't recognise.
     #[allow(dead_code)]
     Unknown(Value),
@@ -113,6 +118,13 @@ impl<'de> serde::Deserialize<'de> for HookEvent {
                 }),
                 _ => Ok(HookEvent::Unknown(value)),
             };
+        }
+
+        // PM message from the CLI
+        if value.get("_pm_message").and_then(|v| v.as_bool()) == Some(true) {
+            let project = value["project"].as_str().unwrap_or("").to_string();
+            let message = value["message"].as_str().unwrap_or("").to_string();
+            return Ok(HookEvent::PmMessage { project, message });
         }
 
         // Legacy events: boolean flag discriminators
@@ -230,6 +242,44 @@ pub fn gate_request() -> anyhow::Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => popup_fallback(&input),
         Err(e) => Err(e).context("failed to connect to permission socket"),
     }
+}
+
+/// Send a message to a project's PM session via the dashboard socket.
+pub fn send_pm_message(
+    project_root: &std::path::Path,
+    project: &str,
+    message: &str,
+) -> anyhow::Result<()> {
+    let sock = read_socket_breadcrumb(project_root)
+        .map(PathBuf::from)
+        .unwrap_or_else(session_socket_path);
+
+    let payload = serde_json::json!({
+        "_pm_message": true,
+        "project": project,
+        "message": message,
+    });
+
+    let mut stream = UnixStream::connect(&sock).context("dashboard is not running")?;
+    stream
+        .write_all(payload.to_string().as_bytes())
+        .context("failed to write to socket")?;
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .context("failed to shutdown write")?;
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .context("failed to read response from socket")?;
+
+    // Check for error response
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&response)
+        && let Some(err) = val.get("error").and_then(|v| v.as_str())
+    {
+        anyhow::bail!("{err}");
+    }
+
+    Ok(())
 }
 
 fn popup_fallback(request_json: &str) -> anyhow::Result<()> {
@@ -694,6 +744,25 @@ mod tests {
     #[test]
     fn hook_event_unknown_hook_type() {
         let json = r#"{"_hook":"FutureEvent","cwd":"/workspace"}"#;
+        assert!(matches!(deser(json), HookEvent::Unknown(_)));
+    }
+
+    #[test]
+    fn hook_event_pm_message() {
+        let json = r#"{"_pm_message": true, "project": "lana", "message": "hello PM"}"#;
+        let event = deser(json);
+        match event {
+            HookEvent::PmMessage { project, message } => {
+                assert_eq!(project, "lana");
+                assert_eq!(message, "hello PM");
+            }
+            _ => panic!("expected PmMessage variant"),
+        }
+    }
+
+    #[test]
+    fn hook_event_pm_message_false_is_unknown() {
+        let json = r#"{"_pm_message": false, "project": "lana", "message": "hello"}"#;
         assert!(matches!(deser(json), HookEvent::Unknown(_)));
     }
 
