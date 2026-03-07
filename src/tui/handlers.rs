@@ -967,7 +967,7 @@ pub(super) fn drain_hooks(
                 handle_hook_resolved(state, &cwd, tg_tx, tg_perm_ids);
             }
             HookEvent::Idle { cwd } => {
-                handle_hook_idle(state, &cwd);
+                handle_hook_idle(state, &cwd, tg_tx);
             }
             HookEvent::Active { cwd } => {
                 handle_hook_active(state, &cwd);
@@ -983,7 +983,7 @@ pub(super) fn drain_hooks(
                 handle_hook_active(state, &cwd);
             }
             HookEvent::Stop { cwd, .. } => {
-                handle_hook_idle(state, &cwd);
+                handle_hook_idle(state, &cwd, tg_tx);
                 drop(stream);
             }
             HookEvent::Unknown(_) => {}
@@ -1005,8 +1005,18 @@ fn handle_hook_resolved(
     }
 }
 
-fn handle_hook_idle(state: &mut ScreenState, cwd: &str) {
-    state.mark_task_idle(cwd);
+fn handle_hook_idle(
+    state: &mut ScreenState,
+    cwd: &str,
+    tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
+) {
+    if let Some(task_name) = state.mark_task_idle(cwd)
+        && let Some(tx) = tg_tx
+    {
+        let _ = tx.send(telegram::TgOutbound::Notify {
+            text: format!("💤 Task idle: {task_name}"),
+        });
+    }
 }
 
 fn handle_hook_active(state: &mut ScreenState, cwd: &str) {

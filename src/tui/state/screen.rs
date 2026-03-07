@@ -160,11 +160,15 @@ impl ScreenState {
     }
 
     /// Mark the pane for a task (identified by CWD) as idle.
-    pub fn mark_task_idle(&mut self, cwd: &str) {
+    /// Returns `Some(task_name)` if the task was newly marked idle (for notification).
+    pub fn mark_task_idle(&mut self, cwd: &str) -> Option<TaskName> {
         if let Some(name) = self.task_name_for_cwd(cwd)
             && let Some(task_list) = self.task_list_for_task_mut(&name)
+            && task_list.idle_task_pane(&name)
         {
-            task_list.idle_task_pane(&name);
+            Some(name)
+        } else {
+            None
         }
     }
 

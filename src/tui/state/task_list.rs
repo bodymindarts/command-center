@@ -92,8 +92,8 @@ impl TaskListState {
 
     // ── Idle panes ───────────────────────────────────────────────────
 
-    pub fn mark_pane_idle(&mut self, pane: PaneId) {
-        self.idle_panes.insert(pane);
+    pub fn mark_pane_idle(&mut self, pane: PaneId) -> bool {
+        self.idle_panes.insert(pane)
     }
 
     pub fn mark_pane_active(&mut self, pane: &PaneId) {
@@ -117,14 +117,17 @@ impl TaskListState {
     }
 
     /// Mark the pane of the named task as idle.
-    pub fn idle_task_pane(&mut self, name: &TaskName) {
+    /// Returns `true` if the pane was newly marked idle (was not already idle).
+    pub fn idle_task_pane(&mut self, name: &TaskName) -> bool {
         if let Some(pane_id) = self
             .tasks
             .iter()
             .find(|t| t.name == *name)
             .and_then(|t| t.tmux_pane.clone())
         {
-            self.mark_pane_idle(pane_id);
+            self.mark_pane_idle(pane_id)
+        } else {
+            false
         }
     }
 

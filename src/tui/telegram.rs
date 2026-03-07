@@ -39,6 +39,8 @@ pub enum TgOutbound {
     /// A permission was resolved; edit the Telegram message to reflect the
     /// outcome (e.g. "Approved locally", "Denied via Telegram", …).
     Resolved { perm_id: u64, outcome: String },
+    /// Send a one-shot notification message (no buttons).
+    Notify { text: String },
     /// Stream an ExO response chunk (accumulate in the bot thread).
     ExoTextDelta { text: String },
     /// ExO finished responding — send the accumulated message.
@@ -219,6 +221,9 @@ fn drain_outbound(
                 {
                     msg_map.insert(perm_id, id);
                 }
+            }
+            TgOutbound::Notify { text } => {
+                tg_send(ctx, &text);
             }
             TgOutbound::Resolved { perm_id, outcome } => {
                 if let Some(msg_id) = msg_map.remove(&perm_id) {
