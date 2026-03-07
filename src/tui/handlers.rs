@@ -972,7 +972,7 @@ pub(super) fn drain_hooks<R: Runtime>(
                 handle_hook_idle(state, &cwd, tg_tx);
             }
             HookEvent::Active { cwd } => {
-                handle_hook_active(state, &cwd);
+                handle_hook_active(state, &cwd, tg_tx);
             }
             HookEvent::Permission(request) => {
                 handle_hook_permission(state, stream, request, tg_tx, tg_perm_ids, perm_id_counter);
@@ -982,7 +982,7 @@ pub(super) fn drain_hooks<R: Runtime>(
             HookEvent::PreToolUse { cwd, .. }
             | HookEvent::UserPromptSubmit { cwd, .. }
             | HookEvent::SubagentStop { cwd, .. } => {
-                handle_hook_active(state, &cwd);
+                handle_hook_active(state, &cwd, tg_tx);
             }
             HookEvent::Stop { cwd, .. } => {
                 handle_hook_idle(state, &cwd, tg_tx);
@@ -1024,8 +1024,18 @@ fn handle_hook_idle(
     }
 }
 
-fn handle_hook_active(state: &mut ScreenState, cwd: &str) {
-    state.mark_task_active(cwd);
+fn handle_hook_active(
+    state: &mut ScreenState,
+    cwd: &str,
+    tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
+) {
+    if let Some(task_name) = state.mark_task_active(cwd)
+        && let Some(tx) = tg_tx
+    {
+        let _ = tx.send(telegram::TgOutbound::Notify {
+            text: format!("⚡ Task active: {task_name}"),
+        });
+    }
 }
 
 fn handle_hook_pm_message<R: Runtime>(
