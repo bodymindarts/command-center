@@ -54,13 +54,16 @@ impl ProjectState {
     }
 
     /// Save current task input and restore main chat input when leaving detail.
+    /// If `saved_chat_input` is None (e.g., detail was shown via `^L` without
+    /// entering task detail), the current input is left unchanged.
     pub fn leave_task_detail(&mut self, task_id: &TaskId) {
-        let text = self.input.take();
-        if !text.is_empty() {
-            self.task_inputs.insert(task_id.clone(), text);
+        if let Some(main) = self.saved_chat_input.take() {
+            let text = self.input.take();
+            if !text.is_empty() {
+                self.task_inputs.insert(task_id.clone(), text);
+            }
+            self.input.set(&main);
         }
-        let main = self.saved_chat_input.take().unwrap_or_default();
-        self.input.set(&main);
     }
 
     /// Switch from one task's detail to another's.

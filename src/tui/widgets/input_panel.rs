@@ -130,14 +130,22 @@ pub(in crate::tui) fn render_prompt_bar(
     let mut spans = match focus {
         Focus::ChatInput if show_detail => {
             vec![
-                Span::styled(" ^G", Style::default().fg(Color::Yellow)),
-                Span::raw(" goto  "),
+                Span::styled(" Enter", Style::default().fg(Color::Yellow)),
+                Span::raw(" send  "),
+                Span::styled("Tab/S-Tab", Style::default().fg(Color::Yellow)),
+                Span::raw(" task  "),
                 Span::styled("^K", Style::default().fg(Color::Yellow)),
                 Span::raw(" scroll  "),
-                Span::styled("^N/^P", Style::default().fg(Color::Yellow)),
-                Span::raw(" next  "),
+                Span::styled("^G", Style::default().fg(Color::Yellow)),
+                Span::raw(" goto  "),
+                Span::styled("^X", Style::default().fg(Color::Yellow)),
+                Span::raw(" close  "),
                 Span::styled("^L", Style::default().fg(Color::Yellow)),
-                Span::raw(" tasks  "),
+                Span::raw(" list  "),
+                Span::styled("^O", Style::default().fg(Color::Yellow)),
+                Span::raw(" ExO  "),
+                Span::styled("^R", Style::default().fg(Color::Yellow)),
+                Span::raw(" proj  "),
                 Span::styled("Esc", Style::default().fg(Color::Yellow)),
                 Span::raw(" back"),
             ]
@@ -146,12 +154,18 @@ pub(in crate::tui) fn render_prompt_bar(
             vec![
                 Span::styled(" Enter", Style::default().fg(Color::Yellow)),
                 Span::raw(" send  "),
+                Span::styled("Tab", Style::default().fg(Color::Yellow)),
+                Span::raw(" task  "),
                 Span::styled("^K", Style::default().fg(Color::Yellow)),
                 Span::raw(" scroll  "),
                 Span::styled("^L", Style::default().fg(Color::Yellow)),
-                Span::raw(" tasks  "),
+                Span::raw(" list  "),
+                Span::styled("^O", Style::default().fg(Color::Yellow)),
+                Span::raw(" ExO  "),
+                Span::styled("^R", Style::default().fg(Color::Yellow)),
+                Span::raw(" proj  "),
                 Span::styled("Esc", Style::default().fg(Color::Yellow)),
-                Span::raw(" back"),
+                Span::raw(" stop"),
             ]
         }
         Focus::ChatHistory => {
@@ -164,8 +178,10 @@ pub(in crate::tui) fn render_prompt_bar(
                 Span::raw(" down  "),
                 Span::styled("^L", Style::default().fg(Color::Yellow)),
                 Span::raw(" tasks  "),
-                Span::styled("Esc", Style::default().fg(Color::Yellow)),
-                Span::raw(" back"),
+                Span::styled("^O", Style::default().fg(Color::Yellow)),
+                Span::raw(" ExO  "),
+                Span::styled("^R", Style::default().fg(Color::Yellow)),
+                Span::raw(" proj"),
             ]
         }
         Focus::ConfirmCloseTask(_)
@@ -173,8 +189,8 @@ pub(in crate::tui) fn render_prompt_bar(
         | Focus::ConfirmDeleteProject(_) => {
             vec![
                 Span::styled(" y", Style::default().fg(Color::Yellow)),
-                Span::raw(" close  "),
-                Span::styled("n", Style::default().fg(Color::Yellow)),
+                Span::raw(" confirm  "),
+                Span::styled("n/Esc", Style::default().fg(Color::Yellow)),
                 Span::raw(" cancel"),
             ]
         }
@@ -194,6 +210,8 @@ pub(in crate::tui) fn render_prompt_bar(
                 Span::raw(" navigate  "),
                 Span::styled("Enter", Style::default().fg(Color::Yellow)),
                 Span::raw(" select  "),
+                Span::styled("/", Style::default().fg(Color::Yellow)),
+                Span::raw(" search  "),
                 Span::styled("\u{232b}", Style::default().fg(Color::Yellow)),
                 Span::raw(" delete  "),
                 Span::styled("p/Esc", Style::default().fg(Color::Yellow)),
@@ -202,20 +220,36 @@ pub(in crate::tui) fn render_prompt_bar(
                 Span::raw(" quit"),
             ]
         }
-        Focus::ConfirmDelete(_) | Focus::TaskList => {
+        Focus::ConfirmDelete(_) => {
+            vec![
+                Span::styled(" y", Style::default().fg(Color::Yellow)),
+                Span::raw(" delete  "),
+                Span::styled("n/Esc", Style::default().fg(Color::Yellow)),
+                Span::raw(" cancel"),
+            ]
+        }
+        Focus::TaskList => {
             vec![
                 Span::styled(" j/k", Style::default().fg(Color::Yellow)),
                 Span::raw(" navigate  "),
                 Span::styled("Enter", Style::default().fg(Color::Yellow)),
-                Span::raw(" chat  "),
+                Span::raw(" open  "),
+                Span::styled("Tab", Style::default().fg(Color::Yellow)),
+                Span::raw(" input  "),
+                Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                Span::raw(" back  "),
                 Span::styled("^G", Style::default().fg(Color::Yellow)),
                 Span::raw(" goto  "),
                 Span::styled("/", Style::default().fg(Color::Yellow)),
                 Span::raw(" search  "),
                 Span::styled("p", Style::default().fg(Color::Yellow)),
                 Span::raw(" projects  "),
+                Span::styled("r", Style::default().fg(Color::Yellow)),
+                Span::raw(" reopen  "),
                 Span::styled("x", Style::default().fg(Color::Yellow)),
                 Span::raw(" close  "),
+                Span::styled("\u{232b}", Style::default().fg(Color::Yellow)),
+                Span::raw(" delete  "),
                 Span::styled("q", Style::default().fg(Color::Yellow)),
                 Span::raw(" quit"),
             ]
