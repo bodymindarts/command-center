@@ -215,9 +215,7 @@ pub(in crate::tui) fn render_prompt_bar(
                 Span::styled("\u{232b}", Style::default().fg(Color::Yellow)),
                 Span::raw(" delete  "),
                 Span::styled("p/Esc", Style::default().fg(Color::Yellow)),
-                Span::raw(" back  "),
-                Span::styled("q", Style::default().fg(Color::Yellow)),
-                Span::raw(" quit"),
+                Span::raw(" back"),
             ]
         }
         Focus::ConfirmDelete(_) => {
@@ -250,8 +248,12 @@ pub(in crate::tui) fn render_prompt_bar(
                 Span::raw(" close  "),
                 Span::styled("\u{232b}", Style::default().fg(Color::Yellow)),
                 Span::raw(" delete  "),
-                Span::styled("q", Style::default().fg(Color::Yellow)),
-                Span::raw(" quit"),
+                Span::styled("^O", Style::default().fg(Color::Yellow)),
+                Span::raw(" exo  "),
+                Span::styled("^R", Style::default().fg(Color::Yellow)),
+                Span::raw(" cycle  "),
+                Span::styled("^H", Style::default().fg(Color::Yellow)),
+                Span::raw(" left"),
             ]
         }
     };

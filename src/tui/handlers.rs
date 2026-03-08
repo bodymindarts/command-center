@@ -421,7 +421,6 @@ pub(super) fn handle_focus_key<R: Runtime>(
 
 fn handle_task_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app: &ClatApp<R>) {
     match key.code {
-        KeyCode::Char('q') => state.request_quit(),
         KeyCode::Esc => {
             state.close_task_detail();
         }
@@ -495,7 +494,6 @@ fn handle_task_search_key(state: &mut ScreenState, key: KeyEvent) {
 
 fn handle_project_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app: &ClatApp<R>) {
     match key.code {
-        KeyCode::Char('q') => state.request_quit(),
         KeyCode::Char('j') | KeyCode::Down => state.next_project(),
         KeyCode::Char('k') | KeyCode::Up => state.previous_project(),
         KeyCode::Char('/') => {
@@ -517,10 +515,7 @@ fn handle_project_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, a
             }
         }
         KeyCode::Char('p') | KeyCode::Esc => {
-            if let Ok(tasks) = app.list_visible(None) {
-                state.switch_to_project(None, tasks, None);
-                state.set_focus(Focus::TaskList);
-            }
+            state.focus_on_tasks();
         }
         _ => {}
     }
@@ -554,7 +549,7 @@ fn handle_task_chat_input_key<R: Runtime>(
             }
         }
         KeyCode::Char('l') if ctrl => {
-            state.set_focus(Focus::TaskList);
+            state.focus_on_tasks();
         }
         KeyCode::Char('g') if ctrl => {
             goto_task_window(state, app);
@@ -708,10 +703,10 @@ fn handle_confirm_delete_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent,
             if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()) {
                 state.refresh_tasks(tasks);
             }
-            state.set_focus(Focus::TaskList);
+            state.focus_on_tasks();
         }
         KeyCode::Char('n') | KeyCode::Esc => {
-            state.set_focus(Focus::TaskList);
+            state.focus_on_tasks();
         }
         _ => {}
     }
@@ -781,7 +776,7 @@ fn handle_confirm_close_project_key<R: Runtime>(
             let closed_pid = state.active_project_id.clone();
             if let Ok(tasks) = app.list_visible(None) {
                 state.switch_to_project(None, tasks, None);
-                state.set_focus(Focus::TaskList);
+                state.focus_on_tasks();
             }
             if let Some(pid) = closed_pid {
                 super::cancel_project_context(project_contexts, state, &pid);

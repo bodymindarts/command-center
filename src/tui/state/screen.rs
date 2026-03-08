@@ -79,6 +79,11 @@ impl ScreenState {
         self.focus = focus;
     }
 
+    pub fn focus_on_tasks(&mut self) {
+        self.project_list.hide();
+        self.focus = Focus::TaskList;
+    }
+
     // ── Last project ────────────────────────────────────────────────
 
     pub fn last_project_id(&self) -> Option<&ProjectId> {
