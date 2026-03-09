@@ -284,6 +284,13 @@ impl<R: Runtime> ClatApp<R> {
             let _ = self.store.close_task(&task.id, None);
         }
 
+        // Clean up the git worktree if the task used one.
+        if let Some(ref work_dir) = task.work_dir
+            && work_dir.contains(".claude/worktrees/")
+        {
+            let _ = self.runtime.remove_worktree(Path::new(work_dir));
+        }
+
         self.store.delete_task(&task.id)?;
         Ok(DeleteOutput {
             task_id: task.id,
@@ -587,6 +594,9 @@ mod tests {
         CaptureOutput {
             pane_id: String,
         },
+        RemoveWorktree {
+            path: PathBuf,
+        },
         KillWindow {
             window_id: String,
         },
@@ -716,6 +726,13 @@ mod tests {
                 .borrow()
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("no capture result"))
+        }
+
+        fn remove_worktree(&self, path: &Path) -> anyhow::Result<()> {
+            self.calls.borrow_mut().push(Call::RemoveWorktree {
+                path: path.to_path_buf(),
+            });
+            Ok(())
         }
 
         fn kill_tmux_window(&self, window_id: &str) -> anyhow::Result<()> {

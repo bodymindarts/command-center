@@ -47,6 +47,7 @@ pub trait Runtime {
     fn relaunch_agent(&self, task_name: &str, work_dir: &Path) -> anyhow::Result<SpawnResult>;
     fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> anyhow::Result<()>;
     fn capture_pane_output(&self, pane_id: &str) -> anyhow::Result<String>;
+    fn remove_worktree(&self, path: &Path) -> anyhow::Result<()>;
     fn kill_tmux_window(&self, window_id: &str) -> anyhow::Result<()>;
     fn select_window(&self, window_id: &str) -> anyhow::Result<()>;
 }
@@ -334,6 +335,20 @@ impl Runtime for TmuxRuntime {
 
     fn capture_pane_output(&self, pane_id: &str) -> anyhow::Result<String> {
         self.tmux_cmd(&["capture-pane", "-p", "-S", "-", "-t", pane_id])
+    }
+
+    fn remove_worktree(&self, path: &Path) -> anyhow::Result<()> {
+        let output = Command::new("git")
+            .args(["worktree", "remove", "--force", &path.display().to_string()])
+            .output()
+            .context("failed to run git worktree remove")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("git worktree remove failed: {stderr}");
+        }
+
+        Ok(())
     }
 
     fn kill_tmux_window(&self, window_id: &str) -> anyhow::Result<()> {
