@@ -398,6 +398,27 @@ impl<R: Runtime> ClatApp<R> {
         }
     }
 
+    /// Close any running tasks whose tmux pane no longer exists.
+    pub fn close_stale_tasks(&self) {
+        let tasks = match self.store.list_active_tasks() {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        // Collect all existing pane IDs in one tmux call.
+        let existing: std::collections::HashSet<String> =
+            match crate::runtime::tmux_cmd(&["list-panes", "-a", "-F", "#{pane_id}"]) {
+                Ok(output) => output.lines().map(|l| l.trim().to_string()).collect(),
+                Err(_) => return, // tmux not running — can't determine staleness
+            };
+        for task in tasks {
+            if let Some(ref pane) = task.tmux_pane
+                && !existing.contains(pane.as_str())
+            {
+                let _ = self.store.close_task(&task.id, None);
+            }
+        }
+    }
+
     pub fn list_active(&self) -> anyhow::Result<Vec<Task>> {
         self.store.list_active_tasks()
     }

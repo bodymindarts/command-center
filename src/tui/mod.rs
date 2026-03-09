@@ -109,6 +109,7 @@ pub fn run<R: Runtime>(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    app.close_stale_tasks();
     let tasks = app.list_visible(None)?;
     let exo = {
         let mut assistant = chat::AssistantChat::new();
