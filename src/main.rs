@@ -154,10 +154,6 @@ fn cmd_list(app: ClatApp<impl Runtime>, all: bool, project: Option<String>) -> a
         status: String,
         #[tabled(rename = "Activity")]
         activity: String,
-        #[tabled(rename = "Pane")]
-        pane: String,
-        #[tabled(rename = "Window")]
-        window: String,
         #[tabled(rename = "Started")]
         started: String,
         #[tabled(rename = "Exit")]
@@ -198,16 +194,6 @@ fn cmd_list(app: ClatApp<impl Runtime>, all: bool, project: Option<String>) -> a
                 skill: t.skill_name.clone(),
                 status: t.status.to_string(),
                 activity,
-                pane: t
-                    .tmux_pane
-                    .as_ref()
-                    .map(|p| p.as_str().to_string())
-                    .unwrap_or_else(|| "-".to_string()),
-                window: t
-                    .tmux_window
-                    .as_ref()
-                    .map(|w| w.to_string())
-                    .unwrap_or_default(),
                 started: t.started_at.format("%H:%M:%S").to_string(),
                 exit_code: t
                     .exit_code
