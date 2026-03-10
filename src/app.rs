@@ -199,11 +199,16 @@ impl<R: Runtime> ClatApp<R> {
         };
 
         // 4. Resolve project name → ID (if given)
+        //    Also write a breadcrumb so spawned sub-tasks can inherit the project.
         let project_id = req
             .project
             .as_deref()
             .map(|name| self.resolve_project_id(name))
             .transpose()?;
+        if let Some(ref name) = req.project {
+            let breadcrumb = work_dir.join(".claude").join("project");
+            let _ = std::fs::write(&breadcrumb, name);
+        }
 
         // 5. Insert task into DB
         let mut task = Task::new(

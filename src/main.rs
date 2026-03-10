@@ -114,13 +114,21 @@ fn cmd_spawn(app: ClatApp<impl Runtime>, opts: SpawnOpts) -> anyhow::Result<()> 
         )
     };
 
+    // Inherit project from parent task's breadcrumb if not explicitly set.
+    let project = opts.project.or_else(|| {
+        std::fs::read_to_string(".claude/project")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    });
+
     let result = app.spawn(SpawnRequest {
         task_name: &opts.name,
         skill_name: &opts.skill,
         params: opts.params,
         work_dir_mode,
         prompt_mode,
-        project: opts.project,
+        project,
     })?;
     println!(
         "Spawned task {} ({})",

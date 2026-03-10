@@ -87,7 +87,7 @@ The clat binary is at: `/Users/jcarter/projects/bodymindarts/command-center/bin/
 ```
 
 Key flags:
-- `--project <name>` — assign to a project
+- `--project <name>` — assign to a project (auto-inherited from parent task if omitted)
 - `--repo <path>` — target a different git repo
 - `--branch <branch>` — check out an existing branch
 - `-s/--skill <skill>` — skill to use (default: engineer)
