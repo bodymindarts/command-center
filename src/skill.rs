@@ -4,6 +4,19 @@ use std::path::Path;
 use anyhow::{Context, bail};
 use serde::Deserialize;
 
+/// Controls which set of base Bash permissions an agent inherits.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BaseTools {
+    /// All git/cargo/nix/shell tools (backwards-compatible default).
+    #[default]
+    Full,
+    /// Only basic read-only shell commands (ls, cat, head, tail, wc, which, pwd).
+    Minimal,
+    /// No base Bash tools at all — only what's in `allowed_tools`.
+    None,
+}
+
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct SkillFile {
@@ -34,6 +47,10 @@ pub struct AgentConfig {
     pub allowed_tools: Vec<String>,
     #[serde(default = "default_model")]
     pub model: String,
+    #[serde(default)]
+    pub base_tools: BaseTools,
+    #[serde(default)]
+    pub allowed_bash_patterns: Vec<String>,
 }
 
 fn default_model() -> String {

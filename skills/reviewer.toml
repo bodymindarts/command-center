@@ -5,6 +5,7 @@ params = [{ name = "task", required = false, default = "Review the full codebase
 
 [agent]
 allowed_tools = ["Read", "Glob", "Grep"]
+base_tools = "full"
 model = "opus"
 
 [template]

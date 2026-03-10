@@ -5,6 +5,7 @@ use std::process::Command;
 use anyhow::{Context, bail};
 
 use crate::primitives::{PaneId, WindowId};
+use crate::skill::BaseTools;
 
 pub struct SpawnResult {
     pub window_id: WindowId,
@@ -20,12 +21,30 @@ pub struct LaunchConfig<'a> {
     pub user_prompt: Option<&'a str>,
 }
 
+/// Bundled permission info extracted from a skill's `[agent]` section.
+/// Passed to worktree/config setup so the correct tools are auto-approved.
+pub struct SkillPermissions<'a> {
+    pub allowed_tools: &'a [String],
+    pub base_tools: &'a BaseTools,
+    pub bash_patterns: &'a [String],
+}
+
+impl Default for SkillPermissions<'_> {
+    fn default() -> Self {
+        Self {
+            allowed_tools: &[],
+            base_tools: &BaseTools::Full,
+            bash_patterns: &[],
+        }
+    }
+}
+
 pub trait Runtime {
     fn create_worktree(
         &self,
         repo_root: &Path,
         name: &str,
-        skill_tools: &[String],
+        perms: &SkillPermissions,
         branch: Option<&str>,
         hooks_source: &Path,
     ) -> anyhow::Result<PathBuf>;
@@ -34,7 +53,7 @@ pub trait Runtime {
         &self,
         hooks_source: &Path,
         work_dir: &Path,
-        skill_tools: &[String],
+        perms: &SkillPermissions,
     ) -> anyhow::Result<()>;
     fn init_scratch_dir(&self, scratch_dir: &Path) -> anyhow::Result<()>;
     fn launch_agent(&self, config: LaunchConfig) -> anyhow::Result<SpawnResult>;
@@ -142,9 +161,9 @@ impl Runtime for TmuxRuntime {
         &self,
         hooks_source: &Path,
         work_dir: &Path,
-        skill_tools: &[String],
+        perms: &SkillPermissions,
     ) -> anyhow::Result<()> {
-        setup_worktree_config(hooks_source, work_dir, skill_tools)
+        setup_worktree_config(hooks_source, work_dir, perms)
     }
 
     fn init_scratch_dir(&self, scratch_dir: &Path) -> anyhow::Result<()> {
@@ -168,7 +187,7 @@ impl Runtime for TmuxRuntime {
         &self,
         repo_root: &Path,
         name: &str,
-        skill_tools: &[String],
+        perms: &SkillPermissions,
         branch: Option<&str>,
         hooks_source: &Path,
     ) -> anyhow::Result<PathBuf> {
@@ -203,7 +222,7 @@ impl Runtime for TmuxRuntime {
             bail!("git worktree add failed: {stderr}");
         }
 
-        setup_worktree_config(hooks_source, &worktree_path, skill_tools)?;
+        setup_worktree_config(hooks_source, &worktree_path, perms)?;
         merge_repo_settings(repo_root, &worktree_path)?;
 
         Ok(worktree_path)
@@ -263,7 +282,7 @@ impl Runtime for TmuxRuntime {
             bail!("git worktree add failed: {stderr}");
         }
 
-        setup_worktree_config(repo_root, work_dir, &[])?;
+        setup_worktree_config(repo_root, work_dir, &SkillPermissions::default())?;
         Ok(())
     }
 
@@ -367,7 +386,7 @@ impl Runtime for TmuxRuntime {
 fn setup_worktree_config(
     repo_root: &Path,
     worktree_path: &Path,
-    skill_tools: &[String],
+    perms: &SkillPermissions,
 ) -> anyhow::Result<()> {
     let source_claude_dir = repo_root.join(".claude");
     let target_claude_dir = worktree_path.join(".claude");
@@ -393,9 +412,12 @@ fn setup_worktree_config(
         // Bash-pattern tools (nix develop, cargo fmt, etc.) into a single
         // permissions.allow list.  Claude Code reads this key from settings
         // files — "allowedTools" is only valid as a CLI flag.
-        let mut allowed: Vec<String> = skill_tools.to_vec();
-        for tool in base_allowed_tools() {
+        let mut allowed: Vec<String> = perms.allowed_tools.to_vec();
+        for tool in base_tools_for(perms.base_tools) {
             allowed.push(tool.to_string());
+        }
+        for pattern in perms.bash_patterns {
+            allowed.push(format!("Bash({pattern})"));
         }
         settings["permissions"] = serde_json::json!({"allow": allowed});
         // Embed CC_PERM_SOCKET into hook commands so agents connect
@@ -506,10 +528,18 @@ fn hooks_json() -> serde_json::Value {
     })
 }
 
-/// Base set of tool permissions that every spawned agent inherits.
-/// These cover common safe operations so agents don't need manual
-/// approval for routine dev workflow commands.
-fn base_allowed_tools() -> Vec<&'static str> {
+/// Return the base tool set for the given tier.
+fn base_tools_for(bt: &BaseTools) -> Vec<&'static str> {
+    match bt {
+        BaseTools::Full => base_allowed_tools_full(),
+        BaseTools::Minimal => base_allowed_tools_minimal(),
+        BaseTools::None => vec![],
+    }
+}
+
+/// Full base set: all git/cargo/nix/shell tools.
+/// Used by engineer, reviewer, researcher, and other dev-oriented skills.
+fn base_allowed_tools_full() -> Vec<&'static str> {
     vec![
         // Git (read-only + staging/committing — no push/force)
         "Bash(git status:*)",
@@ -531,6 +561,20 @@ fn base_allowed_tools() -> Vec<&'static str> {
         "Bash(cargo test:*)",
         "Bash(cargo check:*)",
         // Basic read-only shell commands
+        "Bash(ls:*)",
+        "Bash(cat:*)",
+        "Bash(head:*)",
+        "Bash(tail:*)",
+        "Bash(wc:*)",
+        "Bash(which:*)",
+        "Bash(pwd)",
+    ]
+}
+
+/// Minimal base set: only basic read-only shell commands.
+/// Used by non-dev skills like reporter that don't need git/cargo/nix.
+fn base_allowed_tools_minimal() -> Vec<&'static str> {
+    vec![
         "Bash(ls:*)",
         "Bash(cat:*)",
         "Bash(head:*)",

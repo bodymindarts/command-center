@@ -168,13 +168,18 @@ impl<R: Runtime> ClatApp<R> {
         // 3. Set up working directory
         // For Worktree mode, generate TaskId first since worktree name includes id.short()
         let id = TaskId::generate();
+        let perms = crate::runtime::SkillPermissions {
+            allowed_tools: &skill.agent.allowed_tools,
+            base_tools: &skill.agent.base_tools,
+            bash_patterns: &skill.agent.allowed_bash_patterns,
+        };
         let work_dir = match req.work_dir_mode {
             WorkDirMode::Worktree { repo, branch } => {
                 let worktree_name = format!("{}-{}", req.task_name, id.short());
                 self.runtime.create_worktree(
                     repo,
                     &worktree_name,
-                    &skill.agent.allowed_tools,
+                    &perms,
                     branch,
                     &self.paths.root,
                 )?
@@ -182,16 +187,13 @@ impl<R: Runtime> ClatApp<R> {
             WorkDirMode::Scratch => {
                 let scratch_dir = self.paths.data_dir.join("scratch").join(req.task_name);
                 self.runtime.init_scratch_dir(&scratch_dir)?;
-                self.runtime.setup_dir_config(
-                    &self.paths.root,
-                    &scratch_dir,
-                    &skill.agent.allowed_tools,
-                )?;
+                self.runtime
+                    .setup_dir_config(&self.paths.root, &scratch_dir, &perms)?;
                 scratch_dir
             }
             WorkDirMode::Existing { dir } => {
                 self.runtime
-                    .setup_dir_config(&self.paths.root, dir, &skill.agent.allowed_tools)?;
+                    .setup_dir_config(&self.paths.root, dir, &perms)?;
                 dir.to_path_buf()
             }
         };
@@ -632,7 +634,7 @@ mod tests {
             &self,
             _repo_root: &Path,
             name: &str,
-            _skill_tools: &[String],
+            _perms: &crate::runtime::SkillPermissions,
             _branch: Option<&str>,
             _hooks_source: &Path,
         ) -> anyhow::Result<PathBuf> {
@@ -656,7 +658,7 @@ mod tests {
             &self,
             _hooks_source: &Path,
             work_dir: &Path,
-            _skill_tools: &[String],
+            _perms: &crate::runtime::SkillPermissions,
         ) -> anyhow::Result<()> {
             self.calls.borrow_mut().push(Call::SetupDirConfig {
                 work_dir: work_dir.to_path_buf(),
