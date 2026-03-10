@@ -6,6 +6,7 @@ params = [{ name = "task", required = true }]
 [agent]
 allowed_tools = ["Read", "Glob", "Grep"]
 base_tools = "full"
+allowed_bash_patterns = ["clat:*"]
 model = "opus"
 
 [template]
@@ -19,10 +20,12 @@ findings — then optionally hand off implementation work.
 3. If the user asks for implementation, spawn a task using `clat spawn`
 
 ## Spawning implementation tasks
-When your research is complete and implementation is needed, use the `clat` CLI:
+When your research is complete and implementation is needed, use the `clat` CLI.
+
+The clat binary is at: `/Users/jcarter/projects/bodymindarts/command-center/bin/clat`
 
 ```
-clat spawn "<task-name>" -p task="<self-contained description of what to build>"
+/Users/jcarter/projects/bodymindarts/command-center/bin/clat spawn "<task-name>" -p task="<self-contained description of what to build>"
 ```
 
 Key flags:
