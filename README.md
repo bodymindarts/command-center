@@ -33,10 +33,10 @@ clat dash                               # open the TUI dashboard
 The TUI dashboard is a split-pane interface: chat on the left (65%), task list on the right (35%). Launch it standalone or as part of the ExO workspace:
 
 ```sh
-clat dash                        # standalone dashboard (use this from within a running tmux)
 clat start                       # ExO workspace (tmux session + dashboard)
 clat start --caffeinate          # same, but prevent macOS sleep while running
-clat dash --resume <session-id>  # resume a previous Claude session
+clat dash                        # standalone dashboard (use this from within a running tmux)
+clat dash --caffeinate           # same, but prevent macOS sleep while running
 ```
 
 The `--caffeinate` flag spawns `caffeinate -s` in the background so long-running agent sessions aren't interrupted by system sleep.
@@ -114,10 +114,10 @@ The TUI dashboard can optionally forward permission requests and ExO messages to
    ```
    Your chat ID is in `result[0].message.chat.id`.
 
-3. **Set environment variables** before launching `clat start`:
+3. **Set environment variables** — add them to `.env` in the project root (already gitignored):
    ```sh
-   export TELEGRAM_BOT_TOKEN="<your-bot-token>"
-   export TELEGRAM_CHAT_ID="<your-chat-id>"
+   TELEGRAM_BOT_TOKEN="<your-bot-token>"
+   TELEGRAM_CHAT_ID="<your-chat-id>"
    ```
 
 When both variables are set, the bot activates automatically on `clat start`. If they are absent, the feature is completely dormant.
