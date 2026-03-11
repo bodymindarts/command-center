@@ -28,6 +28,63 @@ clat list                               # list active tasks
 clat dash                               # open the TUI dashboard
 ```
 
+### Dashboard
+
+The TUI dashboard is a split-pane interface: chat on the left (65%), task list on the right (35%). Launch it standalone or as part of the ExO workspace:
+
+```sh
+clat dash                        # standalone dashboard (use this from within a running tmux)
+clat start                       # ExO workspace (tmux session + dashboard)
+clat start --caffeinate          # same, but prevent macOS sleep while running
+clat dash --resume <session-id>  # resume a previous Claude session
+```
+
+The `--caffeinate` flag spawns `caffeinate -s` in the background so long-running agent sessions aren't interrupted by system sleep.
+
+**Global shortcuts** (work everywhere):
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+C` | Quit |
+| `Ctrl+Z` | Suspend (fg to resume) |
+| `Ctrl+O` | Switch to ExO chat |
+| `Ctrl+R` | Switch to project PM (cycles projects) |
+| `Ctrl+P` | Cycle to next task with pending permissions |
+
+**Task list** (right panel focused):
+
+| Key | Action |
+|-----|--------|
+| `j`/`k` or `↑`/`↓` | Navigate tasks |
+| `Enter` | Open task detail |
+| `Esc` | Close detail |
+| `x` | Close task |
+| `r` | Reopen task |
+| `Backspace` | Delete task |
+| `/` | Search tasks |
+| `p` | Show project list |
+| `Tab` | Focus chat panel |
+| `Ctrl+G` | Jump to task's tmux window |
+
+**Permission prompts** (shown in task detail):
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+Y` | Approve (one-time) |
+| `Ctrl+T` | Trust (always-allow) |
+| `Ctrl+N` | Deny |
+| `1`–`4` | Answer an AskUser prompt |
+
+**Chat input**:
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Send message |
+| `Esc` | Cancel streaming |
+| `Ctrl+K` | Focus chat history |
+| `Ctrl+L` | Focus task list |
+| `Tab`/`Shift+Tab` | Navigate between tasks |
+
 ### Skills
 
 Tasks run with a skill that determines the agent's role. Pass `-s <skill>` to `clat spawn`:
