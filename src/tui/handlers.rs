@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::os::unix::net::UnixStream;
-use std::sync::mpsc;
 
 use crossterm::event::KeyEvent;
 use crossterm::event::{KeyCode, KeyModifiers};
+use tokio::sync::mpsc;
 
 use crate::app::ClatApp;
+use crate::assistant::{AssistantEvent, AssistantSession, SessionKey};
 use crate::permission::{HookEvent, PermissionRequest};
 use crate::primitives::{ChatId, MessageRole, ProjectId, TaskName};
 use crate::runtime::Runtime;
@@ -14,7 +15,6 @@ use super::ProjectContext;
 use super::permissions::ActivePermission;
 use super::state::{Focus, ScreenState};
 use super::telegram;
-use crate::assistant::{AssistantEvent, AssistantSession};
 
 const EXO_PERM_KEY: &str = "exo";
 
@@ -86,7 +86,7 @@ fn resolve_permission(
 
 /// Notify Telegram that a permission was resolved (if the bot is active).
 pub(super) fn notify_tg_resolved(
-    tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
+    tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
     perm_id: u64,
     outcome: &str,
 ) {
@@ -166,7 +166,7 @@ pub(super) fn handle_global_keys<R: Runtime>(
     state: &mut ScreenState,
     key: KeyEvent,
     app: &ClatApp<R>,
-    tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
+    tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
 ) -> bool {
     let kb = &state.keybindings.global;
 
@@ -304,7 +304,7 @@ fn handle_cycle_permissions<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R
 fn handle_askuser_select(
     state: &mut ScreenState,
     key: KeyEvent,
-    tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
+    tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
 ) {
     let digit = match key.code {
         KeyCode::Char(c) => c.to_digit(10).unwrap_or(1) as usize,
@@ -769,35 +769,45 @@ fn reopen_task<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
 
 // ── Channel draining ────────────────────────────────────────────────
 
-pub(super) fn drain_events<R: Runtime>(
+/// Dispatch a single assistant event (from the shared channel) to the
+/// appropriate session handler based on the session key.
+pub(super) fn dispatch_assistant_event<R: Runtime>(
+    key: &SessionKey,
+    event: AssistantEvent,
+    state: &mut ScreenState,
     exo_session: &mut AssistantSession,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
     app: &ClatApp<R>,
-    state: &mut ScreenState,
-    tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
+    tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
 ) {
-    // Drain ExO session
-    let is_exo_viewing = state.active_project_id.is_none();
-    while let Ok(ev) = exo_session.try_recv() {
-        handle_session_event(
-            app,
-            &mut state.exo,
-            is_exo_viewing,
-            exo_session,
-            None,
-            tg_tx,
-            ev,
-        );
-    }
-
-    // Drain each project session
-    for (pid, ctx) in project_contexts.iter_mut() {
-        let is_viewing = state.active_project_id.as_ref() == Some(pid);
-        let Some(ps) = state.projects.get_mut(pid) else {
-            continue;
-        };
-        while let Ok(ev) = ctx.session.try_recv() {
-            handle_session_event(app, ps, is_viewing, &mut ctx.session, Some(pid), tg_tx, ev);
+    match key {
+        SessionKey::Exo => {
+            let is_exo_viewing = state.active_project_id.is_none();
+            handle_session_event(
+                app,
+                &mut state.exo,
+                is_exo_viewing,
+                exo_session,
+                None,
+                tg_tx,
+                event,
+            );
+        }
+        SessionKey::Project(pid) => {
+            let is_viewing = state.active_project_id.as_ref() == Some(pid);
+            if let Some(ctx) = project_contexts.get_mut(pid)
+                && let Some(ps) = state.projects.get_mut(pid)
+            {
+                handle_session_event(
+                    app,
+                    ps,
+                    is_viewing,
+                    &mut ctx.session,
+                    Some(pid),
+                    tg_tx,
+                    event,
+                );
+            }
         }
     }
 }
@@ -808,7 +818,7 @@ fn handle_session_event<R: Runtime>(
     is_viewing: bool,
     session: &mut AssistantSession,
     project_id: Option<&ProjectId>,
-    tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
+    tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
     ev: AssistantEvent,
 ) {
     match ev {
@@ -883,53 +893,65 @@ fn handle_session_event<R: Runtime>(
     }
 }
 
-/// Drain all hook events from the unified socket channel.
-pub(super) fn drain_hooks<R: Runtime>(
+/// Mutable state for tracking Telegram permission IDs.
+pub(super) struct TgPermState {
+    pub ids: HashSet<u64>,
+    pub counter: u64,
+}
+
+/// Handle a single hook event from the permission socket.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn dispatch_hook_event<R: Runtime>(
     state: &mut ScreenState,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
     app: &ClatApp<R>,
-    hook_rx: &mpsc::Receiver<(HookEvent, UnixStream)>,
-    tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
-    tg_perm_ids: &mut HashSet<u64>,
-    perm_id_counter: &mut u64,
+    event: HookEvent,
+    stream: UnixStream,
+    tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
+    tg_perm: &mut TgPermState,
 ) {
-    while let Ok((event, stream)) = hook_rx.try_recv() {
-        match event {
-            HookEvent::Resolved { cwd } => {
-                handle_hook_resolved(state, &cwd, tg_tx, tg_perm_ids);
-            }
-            HookEvent::Idle { cwd } => {
-                handle_hook_idle(state, &cwd, tg_tx);
-            }
-            HookEvent::Active { cwd } => {
-                handle_hook_active(state, &cwd, tg_tx);
-            }
-            HookEvent::Permission(request) => {
-                handle_hook_permission(state, stream, request, tg_tx, tg_perm_ids, perm_id_counter);
-            }
-            // New hook events — received and dropped for now.
-            // No response needed; stream is dropped which closes the connection.
-            HookEvent::PreToolUse { cwd, .. }
-            | HookEvent::UserPromptSubmit { cwd, .. }
-            | HookEvent::SubagentStop { cwd, .. } => {
-                handle_hook_active(state, &cwd, tg_tx);
-            }
-            HookEvent::Stop { cwd, .. } => {
-                handle_hook_idle(state, &cwd, tg_tx);
-                drop(stream);
-            }
-            HookEvent::PmMessage { project, message } => {
-                handle_hook_pm_message(state, project_contexts, app, stream, &project, &message);
-            }
-            HookEvent::Unknown(_) => {}
+    match event {
+        HookEvent::Resolved { cwd } => {
+            handle_hook_resolved(state, &cwd, tg_tx, &mut tg_perm.ids);
         }
+        HookEvent::Idle { cwd } => {
+            handle_hook_idle(state, &cwd, tg_tx);
+        }
+        HookEvent::Active { cwd } => {
+            handle_hook_active(state, &cwd, tg_tx);
+        }
+        HookEvent::Permission(request) => {
+            handle_hook_permission(
+                state,
+                stream,
+                request,
+                tg_tx,
+                &mut tg_perm.ids,
+                &mut tg_perm.counter,
+            );
+        }
+        // New hook events — received and dropped for now.
+        // No response needed; stream is dropped which closes the connection.
+        HookEvent::PreToolUse { cwd, .. }
+        | HookEvent::UserPromptSubmit { cwd, .. }
+        | HookEvent::SubagentStop { cwd, .. } => {
+            handle_hook_active(state, &cwd, tg_tx);
+        }
+        HookEvent::Stop { cwd, .. } => {
+            handle_hook_idle(state, &cwd, tg_tx);
+            drop(stream);
+        }
+        HookEvent::PmMessage { project, message } => {
+            handle_hook_pm_message(state, project_contexts, app, stream, &project, &message);
+        }
+        HookEvent::Unknown(_) => {}
     }
 }
 
 fn handle_hook_resolved(
     state: &mut ScreenState,
     cwd: &str,
-    tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
+    tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
     tg_perm_ids: &mut HashSet<u64>,
 ) {
     if let Some(perm) = state.resolve_permission(cwd) {
@@ -943,7 +965,7 @@ fn handle_hook_resolved(
 fn handle_hook_idle(
     state: &mut ScreenState,
     cwd: &str,
-    tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
+    tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
 ) {
     if let Some(task_name) = state.mark_task_idle(cwd)
         && let Some(tx) = tg_tx
@@ -957,7 +979,7 @@ fn handle_hook_idle(
 fn handle_hook_active(
     state: &mut ScreenState,
     cwd: &str,
-    tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
+    tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
 ) {
     if let Some(task_name) = state.mark_task_active(cwd)
         && let Some(tx) = tg_tx
@@ -1026,7 +1048,7 @@ fn handle_hook_permission(
     state: &mut ScreenState,
     stream: UnixStream,
     req: PermissionRequest,
-    tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
+    tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
     tg_perm_ids: &mut HashSet<u64>,
     perm_id_counter: &mut u64,
 ) {
@@ -1074,74 +1096,72 @@ fn handle_hook_permission(
     state.permissions.add(perm);
 }
 
-pub(super) fn drain_telegram<R: Runtime>(
+/// Handle a single telegram inbound event.
+pub(super) fn dispatch_telegram_event<R: Runtime>(
     state: &mut ScreenState,
     exo_session: &mut AssistantSession,
     app: &ClatApp<R>,
-    tg_rx: Option<&mpsc::Receiver<telegram::TgInbound>>,
+    tg_msg: telegram::TgInbound,
 ) {
-    let Some(rx) = tg_rx else { return };
-    while let Ok(tg_msg) = rx.try_recv() {
-        match tg_msg {
-            telegram::TgInbound::PermissionDecision { perm_id, action } => {
-                let task_name = state
+    match tg_msg {
+        telegram::TgInbound::PermissionDecision { perm_id, action } => {
+            let task_name = state
+                .permissions
+                .iter()
+                .find(|(_, queue)| queue.iter().any(|p| p.perm_id == perm_id))
+                .map(|(name, _)| name.clone());
+            if let Some(name) = task_name
+                && state
                     .permissions
-                    .iter()
-                    .find(|(_, queue)| queue.iter().any(|p| p.perm_id == perm_id))
-                    .map(|(name, _)| name.clone());
-                if let Some(name) = task_name
-                    && state
-                        .permissions
-                        .peek(&name)
-                        .is_some_and(|front| front.perm_id == perm_id)
-                    && let Some(perm) = state.permissions.take(&name)
-                {
-                    let (allow, suggestions) = match action {
-                        telegram::PermAction::Approve => (true, None),
-                        telegram::PermAction::Trust => {
-                            (true, Some(perm.permission_suggestions.clone()))
-                        }
-                        telegram::PermAction::Deny => (false, None),
-                    };
-                    let _ = write_response_to_stream(perm.stream, allow, suggestions.as_deref());
-                }
-            }
-            telegram::TgInbound::QuestionAnswer { perm_id, answer } => {
-                let task_name = state
-                    .permissions
-                    .iter()
-                    .find(|(_, queue)| queue.iter().any(|p| p.perm_id == perm_id))
-                    .map(|(name, _)| name.clone());
-                if let Some(name) = task_name
-                    && state
-                        .permissions
-                        .peek(&name)
-                        .is_some_and(|front| front.perm_id == perm_id)
-                    && let Some(perm) = state.permissions.take(&name)
-                {
-                    let _ = write_response_with_message(perm.stream, true, &answer);
-                }
-            }
-            telegram::TgInbound::ExoMessage { text } => {
-                state.exo.chat_view.reset_scroll();
-                let chat = &mut state.exo.chat_view.assistant;
-                if chat.streaming {
-                    chat.finish_streaming();
-                    if let Some(msg) = chat.messages.last()
-                        && matches!(msg.role, MessageRole::Assistant)
-                        && msg.has_text()
-                    {
-                        let _ = app.insert_session_message(
-                            None,
-                            MessageRole::Assistant,
-                            &msg.text_content(),
-                        );
+                    .peek(&name)
+                    .is_some_and(|front| front.perm_id == perm_id)
+                && let Some(perm) = state.permissions.take(&name)
+            {
+                let (allow, suggestions) = match action {
+                    telegram::PermAction::Approve => (true, None),
+                    telegram::PermAction::Trust => {
+                        (true, Some(perm.permission_suggestions.clone()))
                     }
-                }
-                let _ = app.insert_session_message(None, MessageRole::User, &text);
-                chat.add_user_message(text.clone());
-                exo_session.send_message(&text, chat.session_id.as_deref());
+                    telegram::PermAction::Deny => (false, None),
+                };
+                let _ = write_response_to_stream(perm.stream, allow, suggestions.as_deref());
             }
+        }
+        telegram::TgInbound::QuestionAnswer { perm_id, answer } => {
+            let task_name = state
+                .permissions
+                .iter()
+                .find(|(_, queue)| queue.iter().any(|p| p.perm_id == perm_id))
+                .map(|(name, _)| name.clone());
+            if let Some(name) = task_name
+                && state
+                    .permissions
+                    .peek(&name)
+                    .is_some_and(|front| front.perm_id == perm_id)
+                && let Some(perm) = state.permissions.take(&name)
+            {
+                let _ = write_response_with_message(perm.stream, true, &answer);
+            }
+        }
+        telegram::TgInbound::ExoMessage { text } => {
+            state.exo.chat_view.reset_scroll();
+            let chat = &mut state.exo.chat_view.assistant;
+            if chat.streaming {
+                chat.finish_streaming();
+                if let Some(msg) = chat.messages.last()
+                    && matches!(msg.role, MessageRole::Assistant)
+                    && msg.has_text()
+                {
+                    let _ = app.insert_session_message(
+                        None,
+                        MessageRole::Assistant,
+                        &msg.text_content(),
+                    );
+                }
+            }
+            let _ = app.insert_session_message(None, MessageRole::User, &text);
+            chat.add_user_message(text.clone());
+            exo_session.send_message(&text, chat.session_id.as_deref());
         }
     }
 }
@@ -1149,7 +1169,7 @@ pub(super) fn drain_telegram<R: Runtime>(
 pub(super) fn tick_refresh<R: Runtime>(
     state: &mut ScreenState,
     app: &ClatApp<R>,
-    tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
+    tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
 ) {
     if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()) {
         state.refresh_tasks(tasks);
@@ -1197,7 +1217,7 @@ pub(super) fn tick_refresh<R: Runtime>(
 
 pub(super) fn detect_vanished_perms(
     state: &ScreenState,
-    tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
+    tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
     tg_perm_ids: &mut HashSet<u64>,
 ) {
     if tg_perm_ids.is_empty() {

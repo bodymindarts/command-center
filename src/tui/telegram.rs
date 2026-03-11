@@ -9,9 +9,11 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
 use std::time::Duration;
+
+use tokio::sync::mpsc;
 
 use serde_json::Value;
 
@@ -77,9 +79,12 @@ pub fn start(
     token: String,
     chat_id: String,
     cancel: Arc<AtomicBool>,
-) -> (mpsc::Sender<TgOutbound>, mpsc::Receiver<TgInbound>) {
-    let (out_tx, out_rx) = mpsc::channel();
-    let (in_tx, in_rx) = mpsc::channel();
+) -> (
+    mpsc::UnboundedSender<TgOutbound>,
+    mpsc::UnboundedReceiver<TgInbound>,
+) {
+    let (out_tx, out_rx) = mpsc::unbounded_channel();
+    let (in_tx, in_rx) = mpsc::unbounded_channel();
 
     std::thread::spawn(move || {
         run_bot(&token, &chat_id, cancel, out_rx, in_tx);
@@ -113,8 +118,8 @@ fn run_bot(
     token: &str,
     chat_id: &str,
     cancel: Arc<AtomicBool>,
-    out_rx: mpsc::Receiver<TgOutbound>,
-    in_tx: mpsc::Sender<TgInbound>,
+    mut out_rx: mpsc::UnboundedReceiver<TgOutbound>,
+    in_tx: mpsc::UnboundedSender<TgInbound>,
 ) {
     tg_log(&format!(
         "Bot starting (chat_id=***, token_len={})",
@@ -145,7 +150,13 @@ fn run_bot(
 
     while !cancel.load(Ordering::Relaxed) {
         // 1. Drain outbound messages from the TUI (non-blocking).
-        drain_outbound(&ctx, &out_rx, &mut msg_map, &mut exo_buf, &mut questions);
+        drain_outbound(
+            &ctx,
+            &mut out_rx,
+            &mut msg_map,
+            &mut exo_buf,
+            &mut questions,
+        );
 
         // 2. Long-poll Telegram for updates.
         poll_updates(&ctx, &mut offset, &in_tx, &mut msg_map, &mut questions);
@@ -155,7 +166,7 @@ fn run_bot(
 /// Process all queued outbound messages without blocking.
 fn drain_outbound(
     ctx: &BotCtx,
-    out_rx: &mpsc::Receiver<TgOutbound>,
+    out_rx: &mut mpsc::UnboundedReceiver<TgOutbound>,
     msg_map: &mut HashMap<u64, i64>,
     exo_buf: &mut String,
     questions: &mut QuestionState,
@@ -258,7 +269,7 @@ fn drain_outbound(
 fn poll_updates(
     ctx: &BotCtx,
     offset: &mut i64,
-    in_tx: &mpsc::Sender<TgInbound>,
+    in_tx: &mpsc::UnboundedSender<TgInbound>,
     msg_map: &mut HashMap<u64, i64>,
     questions: &mut QuestionState,
 ) {
@@ -405,7 +416,7 @@ fn tg_log(msg: &str) {
 // ---------------------------------------------------------------------------
 
 /// Process an incoming voice message: download, transcribe locally, forward to ExO.
-fn handle_voice(ctx: &BotCtx, file_id: &str, in_tx: &mpsc::Sender<TgInbound>) {
+fn handle_voice(ctx: &BotCtx, file_id: &str, in_tx: &mpsc::UnboundedSender<TgInbound>) {
     let Some(audio_data) = download_voice(&ctx.agent, &ctx.base, &ctx.file_base, file_id) else {
         tg_send(ctx, "⚠️ Failed to download voice message.");
         return;

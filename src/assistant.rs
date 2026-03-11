@@ -1,8 +1,11 @@
 use std::io::{BufRead, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
-use std::thread;
+
+use tokio::sync::mpsc;
+
+use crate::primitives::ProjectId;
 
 pub const EXO_SYSTEM_PROMPT: &str = "\
 You are ExO, the executive orchestrator of a multi-agent command center. \
@@ -82,6 +85,13 @@ and help the user make decisions about priorities and approach.
     )
 }
 
+/// Identifies which session an event belongs to.
+#[derive(Clone, Debug)]
+pub enum SessionKey {
+    Exo,
+    Project(ProjectId),
+}
+
 pub enum AssistantEvent {
     TextDelta(String),
     ToolStart(String),
@@ -97,11 +107,11 @@ pub enum AssistantEvent {
 pub struct AssistantSession {
     stdin: Option<ChildStdin>,
     cancel: Arc<AtomicBool>,
-    /// When true, the reader thread forwards content events. Set to false
+    /// When true, the reader task forwards content events. Set to false
     /// during --resume startup so replayed history is ignored.
     active: Arc<AtomicBool>,
-    tx: mpsc::Sender<AssistantEvent>,
-    rx: mpsc::Receiver<AssistantEvent>,
+    event_tx: mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
+    session_key: SessionKey,
     session_id: Option<String>,
     system_prompt: String,
 }
@@ -110,14 +120,19 @@ impl AssistantSession {
     /// Create a new session and eagerly spawn the claude process so it
     /// warms up in the background. `Command::spawn` returns immediately
     /// (fork+exec) so this does not block the caller.
-    pub fn new(session_id: Option<&str>, cancel: Arc<AtomicBool>, system_prompt: &str) -> Self {
-        let (tx, rx) = mpsc::channel();
+    pub fn new(
+        session_key: SessionKey,
+        session_id: Option<&str>,
+        cancel: Arc<AtomicBool>,
+        system_prompt: &str,
+        event_tx: mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
+    ) -> Self {
         let mut session = AssistantSession {
             stdin: None,
             cancel,
             active: Arc::new(AtomicBool::new(false)),
-            tx,
-            rx,
+            event_tx,
+            session_key,
             session_id: session_id.map(|s| s.to_string()),
             system_prompt: system_prompt.to_string(),
         };
@@ -155,18 +170,20 @@ impl AssistantSession {
         {
             Ok(c) => c,
             Err(e) => {
-                let _ = self.tx.send(AssistantEvent::Error(format!(
-                    "Failed to spawn claude: {e}"
-                )));
+                let _ = self.event_tx.send((
+                    self.session_key.clone(),
+                    AssistantEvent::Error(format!("Failed to spawn claude: {e}")),
+                ));
                 return;
             }
         };
 
         self.stdin = child.stdin.take();
         if self.stdin.is_none() {
-            let _ = self
-                .tx
-                .send(AssistantEvent::Error("Failed to open stdin pipe".into()));
+            let _ = self.event_tx.send((
+                self.session_key.clone(),
+                AssistantEvent::Error("Failed to open stdin pipe".into()),
+            ));
             let _ = child.kill();
             return;
         }
@@ -174,20 +191,22 @@ impl AssistantSession {
         let stdout = match child.stdout.take() {
             Some(s) => s,
             None => {
-                let _ = self
-                    .tx
-                    .send(AssistantEvent::Error("Failed to open stdout pipe".into()));
+                let _ = self.event_tx.send((
+                    self.session_key.clone(),
+                    AssistantEvent::Error("Failed to open stdout pipe".into()),
+                ));
                 let _ = child.kill();
                 self.stdin = None;
                 return;
             }
         };
 
-        let tx = self.tx.clone();
+        let tx = self.event_tx.clone();
         let cancel = Arc::clone(&self.cancel);
         let active = Arc::clone(&self.active);
-        thread::spawn(move || {
-            read_stdout(child, stdout, tx, cancel, active);
+        let key = self.session_key.clone();
+        tokio::task::spawn_blocking(move || {
+            read_stdout(child, stdout, tx, cancel, active, key);
         });
     }
 
@@ -204,7 +223,7 @@ impl AssistantSession {
             self.spawn_process(true);
         }
 
-        // Mark active so the reader thread forwards events for this turn
+        // Mark active so the reader task forwards events for this turn
         self.active.store(true, Ordering::Relaxed);
 
         let stdin = match self.stdin.as_mut() {
@@ -227,23 +246,20 @@ impl AssistantSession {
         });
 
         if let Err(e) = writeln!(stdin, "{}", msg_json) {
-            let _ = self.tx.send(AssistantEvent::Error(format!(
-                "Failed to write to claude stdin: {e}"
-            )));
+            let _ = self.event_tx.send((
+                self.session_key.clone(),
+                AssistantEvent::Error(format!("Failed to write to claude stdin: {e}")),
+            ));
             self.stdin = None;
             return;
         }
         if let Err(e) = stdin.flush() {
-            let _ = self.tx.send(AssistantEvent::Error(format!(
-                "Failed to flush claude stdin: {e}"
-            )));
+            let _ = self.event_tx.send((
+                self.session_key.clone(),
+                AssistantEvent::Error(format!("Failed to flush claude stdin: {e}")),
+            ));
             self.stdin = None;
         }
-    }
-
-    /// Try to receive the next pending event from this session's channel.
-    pub fn try_recv(&self) -> Result<AssistantEvent, mpsc::TryRecvError> {
-        self.rx.try_recv()
     }
 
     /// Update the session_id (called when we receive one from the process).
@@ -271,9 +287,10 @@ impl AssistantSession {
 fn read_stdout(
     mut child: Child,
     stdout: std::process::ChildStdout,
-    tx: mpsc::Sender<AssistantEvent>,
+    tx: mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
     cancel: Arc<AtomicBool>,
     active: Arc<AtomicBool>,
+    key: SessionKey,
 ) {
     let reader = std::io::BufReader::new(stdout);
 
@@ -286,9 +303,10 @@ fn read_stdout(
         let line = match line {
             Ok(l) => l,
             Err(e) => {
-                let _ = tx.send(AssistantEvent::Error(format!(
-                    "Error reading claude output: {e}"
-                )));
+                let _ = tx.send((
+                    key.clone(),
+                    AssistantEvent::Error(format!("Error reading claude output: {e}")),
+                ));
                 break;
             }
         };
@@ -310,7 +328,7 @@ fn read_stdout(
             // Session metadata — always forwarded (even during startup replay)
             "system" => {
                 if let Some(sid) = parsed.get("session_id").and_then(|s| s.as_str()) {
-                    let _ = tx.send(AssistantEvent::SessionId(sid.to_string()));
+                    let _ = tx.send((key.clone(), AssistantEvent::SessionId(sid.to_string())));
                 }
             }
 
@@ -318,16 +336,16 @@ fn read_stdout(
             // Wrapped as: {"type": "stream_event", "event": {<API event>}}
             "stream_event" if is_active => {
                 if let Some(inner) = parsed.get("event") {
-                    handle_stream_event(inner, &tx);
+                    handle_stream_event(inner, &tx, &key);
                 }
             }
 
             // Result event — signals turn completion
             "result" if is_active => {
                 if let Some(sid) = parsed.get("session_id").and_then(|s| s.as_str()) {
-                    let _ = tx.send(AssistantEvent::SessionId(sid.to_string()));
+                    let _ = tx.send((key.clone(), AssistantEvent::SessionId(sid.to_string())));
                 }
-                let _ = tx.send(AssistantEvent::TurnDone);
+                let _ = tx.send((key.clone(), AssistantEvent::TurnDone));
             }
 
             // During --resume replay: silently ignore content events
@@ -343,23 +361,29 @@ fn read_stdout(
 
     match child.wait() {
         Ok(status) if !status.success() => {
-            let _ = tx.send(AssistantEvent::Error(format!(
-                "Claude process exited with {status}"
-            )));
+            let _ = tx.send((
+                key.clone(),
+                AssistantEvent::Error(format!("Claude process exited with {status}")),
+            ));
         }
         Err(e) => {
-            let _ = tx.send(AssistantEvent::Error(format!(
-                "Failed to wait on claude process: {e}"
-            )));
+            let _ = tx.send((
+                key.clone(),
+                AssistantEvent::Error(format!("Failed to wait on claude process: {e}")),
+            ));
         }
         _ => {}
     }
-    let _ = tx.send(AssistantEvent::ProcessExited);
+    let _ = tx.send((key, AssistantEvent::ProcessExited));
 }
 
 /// Handle an inner streaming event (unwrapped from the stream_event wrapper).
 /// Matches content_block_delta for text and content_block_start for tool_use.
-fn handle_stream_event(event: &serde_json::Value, tx: &mpsc::Sender<AssistantEvent>) {
+fn handle_stream_event(
+    event: &serde_json::Value,
+    tx: &mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
+    key: &SessionKey,
+) {
     let inner_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
     match inner_type {
         "content_block_delta" => {
@@ -367,7 +391,7 @@ fn handle_stream_event(event: &serde_json::Value, tx: &mpsc::Sender<AssistantEve
                 && delta.get("type").and_then(|t| t.as_str()) == Some("text_delta")
                 && let Some(text) = delta.get("text").and_then(|t| t.as_str())
             {
-                let _ = tx.send(AssistantEvent::TextDelta(text.to_string()));
+                let _ = tx.send((key.clone(), AssistantEvent::TextDelta(text.to_string())));
             }
         }
         "content_block_start" => {
@@ -379,7 +403,7 @@ fn handle_stream_event(event: &serde_json::Value, tx: &mpsc::Sender<AssistantEve
                     .and_then(|n| n.as_str())
                     .unwrap_or("tool")
                     .to_string();
-                let _ = tx.send(AssistantEvent::ToolStart(name));
+                let _ = tx.send((key.clone(), AssistantEvent::ToolStart(name)));
             }
         }
         _ => {}

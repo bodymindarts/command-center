@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
 use anyhow::Context;
@@ -370,17 +370,6 @@ pub fn prompt_request(tool: &str, input_summary: &str, response_file: &str) -> a
         .with_context(|| format!("failed to write response to {response_file}"))?;
 
     Ok(())
-}
-
-pub fn start_socket_listener() -> anyhow::Result<(UnixListener, PathBuf)> {
-    let sock = session_socket_path();
-    let _ = std::fs::remove_file(&sock);
-    let listener =
-        UnixListener::bind(&sock).with_context(|| format!("failed to bind {}", sock.display()))?;
-    listener
-        .set_nonblocking(true)
-        .context("failed to set socket non-blocking")?;
-    Ok((listener, sock))
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -774,7 +763,7 @@ mod tests {
 
     #[test]
     fn socket_listener_roundtrip() {
-        use std::os::unix::net::UnixStream;
+        use std::os::unix::net::{UnixListener, UnixStream};
 
         let dir = TempDir::new().unwrap();
         let sock_path = dir.path().join("test.sock");

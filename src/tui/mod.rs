@@ -10,17 +10,19 @@ mod widgets;
 use std::collections::HashMap;
 use std::io;
 use std::os::unix::net::UnixStream;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind};
+use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
+use futures::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use tokio::sync::mpsc;
 
 use crate::app::ClatApp;
-use crate::assistant::{AssistantSession, EXO_SYSTEM_PROMPT};
+use crate::assistant::{AssistantEvent, AssistantSession, EXO_SYSTEM_PROMPT, SessionKey};
 use crate::permission::HookEvent;
 use crate::primitives::ProjectId;
 use crate::runtime::Runtime;
@@ -34,9 +36,20 @@ struct ProjectContext {
 }
 
 impl ProjectContext {
-    fn new(session_id: Option<&str>, system_prompt: &str) -> Self {
+    fn new(
+        session_key: SessionKey,
+        session_id: Option<&str>,
+        system_prompt: &str,
+        event_tx: mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
+    ) -> Self {
         let cancel = Arc::new(AtomicBool::new(false));
-        let session = AssistantSession::new(session_id, Arc::clone(&cancel), system_prompt);
+        let session = AssistantSession::new(
+            session_key,
+            session_id,
+            Arc::clone(&cancel),
+            system_prompt,
+            event_tx,
+        );
         ProjectContext { session, cancel }
     }
 }
@@ -70,12 +83,14 @@ fn init_project_context<R: Runtime>(
     app: &ClatApp<R>,
     project_id: &ProjectId,
     project_name: &str,
+    event_tx: mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
 ) -> ProjectContext {
     let project_state = build_project_state(app, project_id);
     let session_id = project_state.chat_view.assistant.session_id.clone();
     state.add_project(project_id.clone(), project_state);
     let prompt = crate::assistant::project_system_prompt(project_name);
-    ProjectContext::new(session_id.as_deref(), &prompt)
+    let session_key = SessionKey::Project(project_id.clone());
+    ProjectContext::new(session_key, session_id.as_deref(), &prompt, event_tx)
 }
 
 /// Spawn `caffeinate -s` to prevent system sleep (macOS only).
@@ -95,7 +110,7 @@ fn spawn_caffeinate() -> Option<std::process::Child> {
     }
 }
 
-pub fn run<R: Runtime>(
+pub async fn run<R: Runtime>(
     app: ClatApp<R>,
     resume_session: Option<&str>,
     caffeinate: bool,
@@ -126,10 +141,17 @@ pub fn run<R: Runtime>(
     let keybindings = keybindings::Keybindings::load(&app.project_root().join("keybindings.toml"));
     let mut state = ScreenState::new(exo, keybindings);
     let cancel = Arc::new(AtomicBool::new(false));
+
+    // Shared channel for all assistant session events (ExO + PM sessions).
+    let (assistant_tx, mut assistant_rx) =
+        mpsc::unbounded_channel::<(SessionKey, AssistantEvent)>();
+
     let mut exo_session = AssistantSession::new(
+        SessionKey::Exo,
         state.exo.chat_view.assistant.session_id.as_deref(),
         Arc::clone(&cancel),
         EXO_SYSTEM_PROMPT,
+        assistant_tx.clone(),
     );
 
     // Project contexts: one per project, keyed by project ID
@@ -140,16 +162,24 @@ pub fn run<R: Runtime>(
         for project in &projects {
             project_contexts.insert(
                 project.id.clone(),
-                init_project_context(&mut state, &app, &project.id, project.name.as_str()),
+                init_project_context(
+                    &mut state,
+                    &app,
+                    &project.id,
+                    project.name.as_str(),
+                    assistant_tx.clone(),
+                ),
             );
         }
     }
 
-    // Hook event socket listener — single channel for all hook types
-    let (hook_tx, hook_rx) = mpsc::channel::<(HookEvent, UnixStream)>();
+    // Hook event socket listener — async via tokio::net::UnixListener
+    let (hook_tx, mut hook_rx) = mpsc::unbounded_channel::<(HookEvent, UnixStream)>();
     let perm_cancel = Arc::clone(&cancel);
-    let (listener, socket_path) = crate::permission::start_socket_listener()?;
-    // SAFETY: called once at startup before spawning threads that read env vars.
+    let socket_path = crate::permission::session_socket_path();
+    let _ = std::fs::remove_file(&socket_path);
+    let listener = tokio::net::UnixListener::bind(&socket_path)?;
+    // SAFETY: called once at startup before spawning tasks that read env vars.
     unsafe {
         std::env::set_var(crate::permission::SOCKET_ENV, &socket_path);
     }
@@ -163,43 +193,60 @@ pub fn run<R: Runtime>(
             .filter_map(|t| t.work_dir.clone())
             .collect();
         let sock_str = socket_path.to_string_lossy().to_string();
-        std::thread::spawn(move || {
+        tokio::task::spawn_blocking(move || {
             crate::runtime::reembed_socket_in_worktrees(&work_dirs, &sock_str);
         });
     }
-    std::thread::spawn(move || {
+    // Spawn async hook listener task
+    tokio::spawn(async move {
         while !perm_cancel.load(Ordering::Relaxed) {
-            match listener.accept() {
-                Ok((mut stream, _)) => {
-                    let mut buf = String::new();
-                    if std::io::Read::read_to_string(&mut stream, &mut buf).is_ok() {
-                        // Log every incoming hook message to data/hooks.log
-                        if let Ok(mut log) = std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open("data/hooks.log")
-                        {
-                            use std::io::Write;
-                            let ts = chrono::Local::now().format("%H:%M:%S%.3f");
-                            let _ = writeln!(log, "[{ts}] {}", buf.trim());
-                        }
+            let (stream, _) = match listener.accept().await {
+                Ok(s) => s,
+                Err(_) => break,
+            };
 
-                        let event: HookEvent = serde_json::from_str(&buf).unwrap_or_else(|_| {
-                            HookEvent::Unknown(serde_json::Value::String(buf.clone()))
-                        });
-                        let _ = hook_tx.send((event, stream));
+            let hook_tx = hook_tx.clone();
+            let perm_cancel = perm_cancel.clone();
+
+            // Handle each connection in its own task so slow reads don't
+            // block accepting new connections.
+            tokio::spawn(async move {
+                if perm_cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+                let mut buf = String::new();
+                let mut reader = stream;
+                if tokio::io::AsyncReadExt::read_to_string(&mut reader, &mut buf)
+                    .await
+                    .is_ok()
+                {
+                    // Log every incoming hook message to data/hooks.log
+                    if let Ok(mut log) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("data/hooks.log")
+                    {
+                        use std::io::Write;
+                        let ts = chrono::Local::now().format("%H:%M:%S%.3f");
+                        let _ = writeln!(log, "[{ts}] {}", buf.trim());
+                    }
+
+                    let event: HookEvent = serde_json::from_str(&buf).unwrap_or_else(|_| {
+                        HookEvent::Unknown(serde_json::Value::String(buf.clone()))
+                    });
+
+                    // Convert tokio stream to std for later synchronous response writes.
+                    if let Ok(std_stream) = reader.into_std() {
+                        let _ = std_stream.set_nonblocking(false);
+                        let _ = hook_tx.send((event, std_stream));
                     }
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(_) => break,
-            }
+            });
         }
     });
 
     // Optional Telegram bot for remote permission approval.
-    let (tg_tx, tg_rx) = if let (Ok(token), Ok(chat_id)) = (
+    let (tg_tx, mut tg_rx) = if let (Ok(token), Ok(chat_id)) = (
         std::env::var("TELEGRAM_BOT_TOKEN"),
         std::env::var("TELEGRAM_CHAT_ID"),
     ) {
@@ -215,10 +262,12 @@ pub fn run<R: Runtime>(
         &mut exo_session,
         &mut project_contexts,
         &app,
-        &hook_rx,
+        &mut assistant_rx,
+        &mut hook_rx,
         tg_tx.as_ref(),
-        tg_rx.as_ref(),
-    );
+        &mut tg_rx,
+    )
+    .await;
 
     cancel.store(true, Ordering::Relaxed);
     for ctx in project_contexts.values() {
@@ -257,19 +306,23 @@ pub fn run<R: Runtime>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_loop<R: Runtime>(
+async fn run_loop<R: Runtime>(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     state: &mut ScreenState,
     exo_session: &mut AssistantSession,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
-    app: &ClatApp<R>, // borrowed from run() which owns it
-    hook_rx: &mpsc::Receiver<(HookEvent, UnixStream)>,
-    tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
-    tg_rx: Option<&mpsc::Receiver<telegram::TgInbound>>,
+    app: &ClatApp<R>,
+    assistant_rx: &mut mpsc::UnboundedReceiver<(SessionKey, AssistantEvent)>,
+    hook_rx: &mut mpsc::UnboundedReceiver<(HookEvent, UnixStream)>,
+    tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
+    tg_rx: &mut Option<mpsc::UnboundedReceiver<telegram::TgInbound>>,
 ) -> anyhow::Result<()> {
+    let mut event_stream = crossterm::event::EventStream::new();
     let mut last_tick = Instant::now();
-    let mut perm_id_counter: u64 = 0;
-    let mut tg_perm_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut tg_perm = handlers::TgPermState {
+        ids: std::collections::HashSet::new(),
+        counter: 0,
+    };
 
     state.render_loop_starting();
 
@@ -282,65 +335,98 @@ fn run_loop<R: Runtime>(
 
         terminal.draw(|frame| widgets::ui(frame, state))?;
 
-        // Drain channel events
-        handlers::drain_events(exo_session, project_contexts, app, state, tg_tx);
-
-        // Poll terminal input
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
-        if event::poll(timeout)? {
-            match event::read()? {
-                Event::Paste(text) => handlers::handle_paste(state, text),
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    state.clear_status_error();
-                    // Suspend — needs terminal access, handled inline
-                    if state.keybindings.global.suspend.matches(&key) {
-                        terminal::disable_raw_mode()?;
-                        crossterm::execute!(
-                            terminal.backend_mut(),
-                            DisableBracketedPaste,
-                            LeaveAlternateScreen
-                        )?;
-                        terminal.show_cursor()?;
-                        unsafe {
-                            libc::raise(libc::SIGTSTP);
+
+        tokio::select! {
+            // Terminal input events (crossterm EventStream)
+            event = event_stream.next() => {
+                if let Some(event) = event {
+                    let event = event?;
+                    match event {
+                        Event::Paste(text) => handlers::handle_paste(state, text),
+                        Event::Key(key) if key.kind == KeyEventKind::Press => {
+                            state.clear_status_error();
+                            // Suspend — needs terminal access, handled inline
+                            if state.keybindings.global.suspend.matches(&key) {
+                                terminal::disable_raw_mode()?;
+                                crossterm::execute!(
+                                    terminal.backend_mut(),
+                                    DisableBracketedPaste,
+                                    LeaveAlternateScreen
+                                )?;
+                                terminal.show_cursor()?;
+                                unsafe {
+                                    libc::raise(libc::SIGTSTP);
+                                }
+                                terminal::enable_raw_mode()?;
+                                crossterm::execute!(
+                                    terminal.backend_mut(),
+                                    EnterAlternateScreen,
+                                    EnableBracketedPaste
+                                )?;
+                                terminal.hide_cursor()?;
+                                terminal.clear()?;
+                            } else if !handlers::handle_global_keys(state, key, app, tg_tx) {
+                                handlers::handle_focus_key(state, key, app, exo_session, project_contexts);
+                            }
                         }
-                        terminal::enable_raw_mode()?;
-                        crossterm::execute!(
-                            terminal.backend_mut(),
-                            EnterAlternateScreen,
-                            EnableBracketedPaste
-                        )?;
-                        terminal.hide_cursor()?;
-                        terminal.clear()?;
-                    } else if !handlers::handle_global_keys(state, key, app, tg_tx) {
-                        handlers::handle_focus_key(state, key, app, exo_session, project_contexts);
+                        _ => {}
                     }
                 }
-                _ => {}
             }
+
+            // Assistant session events (shared channel for ExO + all PM sessions)
+            event = assistant_rx.recv() => {
+                if let Some((key, ev)) = event {
+                    handlers::dispatch_assistant_event(
+                        &key, ev, state, exo_session, project_contexts, app, tg_tx,
+                    );
+                }
+            }
+
+            // Hook events from the permission socket
+            event = hook_rx.recv() => {
+                if let Some((hook_event, stream)) = event {
+                    handlers::dispatch_hook_event(
+                        state,
+                        project_contexts,
+                        app,
+                        hook_event,
+                        stream,
+                        tg_tx,
+                        &mut tg_perm,
+                    );
+                }
+            }
+
+            // Telegram inbound events (optional)
+            event = recv_optional(tg_rx) => {
+                if let Some(tg_msg) = event {
+                    handlers::dispatch_telegram_event(state, exo_session, app, tg_msg);
+                }
+            }
+
+            // Periodic tick (timeout-based)
+            _ = tokio::time::sleep(timeout) => {}
         }
 
         // Periodic refresh
         if last_tick.elapsed() >= tick_rate {
             handlers::tick_refresh(state, app, tg_tx);
+            handlers::detect_vanished_perms(state, tg_tx, &mut tg_perm.ids);
             last_tick = Instant::now();
         }
-
-        // Drain hook events from the socket listener
-        handlers::drain_hooks(
-            state,
-            project_contexts,
-            app,
-            hook_rx,
-            tg_tx,
-            &mut tg_perm_ids,
-            &mut perm_id_counter,
-        );
-        handlers::drain_telegram(state, exo_session, app, tg_rx);
-        handlers::detect_vanished_perms(state, tg_tx, &mut tg_perm_ids);
 
         if state.should_quit() {
             return Ok(());
         }
+    }
+}
+
+/// Receive from an optional channel. Returns `pending` when the channel is `None`.
+async fn recv_optional<T>(rx: &mut Option<mpsc::UnboundedReceiver<T>>) -> Option<T> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending::<Option<T>>().await,
     }
 }
