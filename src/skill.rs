@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, bail};
+use minijinja::context;
 use serde::Deserialize;
 
 /// Controls which set of base Bash permissions an agent inherits.
@@ -83,14 +84,25 @@ impl SkillFile {
         Ok(())
     }
 
-    pub fn render_system(&self) -> anyhow::Result<Option<String>> {
+    pub fn render_system(&self, repo_root: &Path) -> anyhow::Result<Option<String>> {
         match &self.template.system {
-            Some(system) => Ok(Some(system.trim().to_string())),
+            Some(system) => {
+                let clat_bin = repo_root.join("bin/clat").display().to_string();
+                let env = minijinja::Environment::new();
+                let rendered = env
+                    .render_str(system, context! { clat_bin })
+                    .context("failed to render system template")?;
+                Ok(Some(rendered.trim().to_string()))
+            }
             None => Ok(None),
         }
     }
 
-    pub fn render_prompt(&self, params: &HashMap<String, String>) -> anyhow::Result<String> {
+    pub fn render_prompt(
+        &self,
+        params: &HashMap<String, String>,
+        repo_root: &Path,
+    ) -> anyhow::Result<String> {
         let mut merged = HashMap::new();
         for p in &self.skill.params {
             if let Some(default) = &p.default {
@@ -98,10 +110,14 @@ impl SkillFile {
             }
         }
         merged.extend(params.clone());
+        merged.insert(
+            "clat_bin".to_string(),
+            repo_root.join("bin/clat").display().to_string(),
+        );
 
         let env = minijinja::Environment::new();
         let rendered = env
-            .render_str(&self.template.prompt, minijinja::context! { ..merged })
+            .render_str(&self.template.prompt, context! { ..merged })
             .context("failed to render prompt template")?;
         Ok(rendered)
     }

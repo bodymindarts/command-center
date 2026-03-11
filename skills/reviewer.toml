@@ -80,10 +80,10 @@ When your review surfaces work that goes beyond small local fixes:
 - **Small/local fixes** in the current repo → do them directly (e.g. when addressing `@@` comments)
 - **Larger work or cross-repo fixes** → spawn a task using the `clat` CLI
 
-The clat binary is at: `/Users/jcarter/projects/bodymindarts/command-center/bin/clat`
+The clat binary is at: `{{ clat_bin }}`
 
 ```
-/Users/jcarter/projects/bodymindarts/command-center/bin/clat spawn "<task-name>" -p task="<self-contained description>"
+{{ clat_bin }} spawn "<task-name>" -p task="<self-contained description>"
 ```
 
 Key flags:

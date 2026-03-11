@@ -22,10 +22,10 @@ findings — then optionally hand off implementation work.
 ## Spawning implementation tasks
 When your research is complete and implementation is needed, use the `clat` CLI.
 
-The clat binary is at: `/Users/jcarter/projects/bodymindarts/command-center/bin/clat`
+The clat binary is at: `{{ clat_bin }}`
 
 ```
-/Users/jcarter/projects/bodymindarts/command-center/bin/clat spawn "<task-name>" -p task="<self-contained description of what to build>"
+{{ clat_bin }} spawn "<task-name>" -p task="<self-contained description of what to build>"
 ```
 
 Key flags:
