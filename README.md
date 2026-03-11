@@ -122,6 +122,6 @@ The TUI dashboard can optionally forward permission requests and ExO messages to
 
 When both variables are set, the bot activates automatically on `clat start`. If they are absent, the feature is completely dormant.
 
-### Voice Messages (Optional)
+### Voice Messages
 
-The bot can transcribe voice messages and route them to ExO. This requires `ffmpeg` and `whisper-cli` on `PATH`. The whisper GGML model is auto-downloaded on first use to `data/ggml-base.bin` (override with `WHISPER_MODEL`).
+The bot can transcribe Telegram voice messages and route them to ExO. The required tools (`ffmpeg`, `whisper-cli`) are provided by the dev shell. The whisper GGML model is auto-downloaded on first use to `data/ggml-base.bin` (override with `WHISPER_MODEL`).
