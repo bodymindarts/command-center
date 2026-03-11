@@ -964,7 +964,7 @@ pub(super) fn drain_hooks<R: Runtime>(
                 handle_hook_resolved(state, &cwd, tg_tx, tg_perm_ids);
             }
             HookEvent::Idle { cwd } => {
-                handle_hook_idle(state, &cwd, tg_tx);
+                handle_hook_idle(state, app, &cwd, tg_tx);
             }
             HookEvent::Active { cwd } => {
                 handle_hook_active(state, &cwd, tg_tx);
@@ -980,7 +980,7 @@ pub(super) fn drain_hooks<R: Runtime>(
                 handle_hook_active(state, &cwd, tg_tx);
             }
             HookEvent::Stop { cwd, .. } => {
-                handle_hook_idle(state, &cwd, tg_tx);
+                handle_hook_idle(state, app, &cwd, tg_tx);
                 drop(stream);
             }
             HookEvent::PmMessage { project, message } => {
@@ -1005,17 +1005,28 @@ fn handle_hook_resolved(
     }
 }
 
-fn handle_hook_idle(
+fn handle_hook_idle<R: Runtime>(
     state: &mut ScreenState,
+    app: &ClatApp<R>,
     cwd: &str,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
 ) {
-    if let Some(task_name) = state.mark_task_idle(cwd)
-        && let Some(tx) = tg_tx
-    {
-        let _ = tx.send(telegram::TgOutbound::Notify {
-            text: format!("💤 Task idle: {task_name}"),
-        });
+    if let Some(task_name) = state.mark_task_idle(cwd) {
+        if let Some(tx) = tg_tx {
+            let _ = tx.send(telegram::TgOutbound::Notify {
+                text: format!("💤 Task idle: {task_name}"),
+            });
+        }
+        // Fire on-idle trigger if configured and not yet fired
+        match app.fire_idle_trigger(task_name.as_str()) {
+            Ok(true) => {
+                tracing::info!(task = %task_name, "fired on-idle trigger");
+            }
+            Err(e) => {
+                tracing::warn!(task = %task_name, "on-idle trigger failed: {e}");
+            }
+            _ => {}
+        }
     }
 }
 

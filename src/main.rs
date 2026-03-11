@@ -39,8 +39,9 @@ fn main() -> anyhow::Result<()> {
             no_worktree,
             scratch,
             project,
-            on_complete_success,
-            on_complete_failure,
+            on_complete,
+            on_fail,
+            on_idle,
         } => cmd_spawn(
             app,
             SpawnOpts {
@@ -52,8 +53,9 @@ fn main() -> anyhow::Result<()> {
                 no_worktree,
                 scratch,
                 project,
-                on_complete_success,
-                on_complete_failure,
+                on_complete,
+                on_fail,
+                on_idle,
             },
         )?,
         Command::List { all, project } => cmd_list(app, all, project)?,
@@ -69,6 +71,14 @@ fn main() -> anyhow::Result<()> {
         Command::Skill { action } => cmd_skill(action, app)?,
         Command::Project { action } => cmd_project(action, app)?,
         Command::Schedule { action } => cmd_schedule(action, app)?,
+        Command::Watch {
+            name,
+            check,
+            diff,
+            every,
+            action,
+            max_runs,
+        } => cmd_watch(app, &name, &check, &diff, &every, &action, max_runs)?,
         Command::Agent { action } => match action {
             AgentCommand::PermissionGate => permission::gate_request()?,
             AgentCommand::PermissionPrompt {
@@ -96,8 +106,9 @@ struct SpawnOpts {
     no_worktree: bool,
     scratch: bool,
     project: Option<String>,
-    on_complete_success: Option<String>,
-    on_complete_failure: Option<String>,
+    on_complete: Option<String>,
+    on_fail: Option<String>,
+    on_idle: Option<String>,
 }
 
 fn cmd_spawn(app: ClatApp<impl Runtime>, opts: SpawnOpts) -> anyhow::Result<()> {
@@ -137,8 +148,9 @@ fn cmd_spawn(app: ClatApp<impl Runtime>, opts: SpawnOpts) -> anyhow::Result<()> 
         work_dir_mode,
         prompt_mode,
         project,
-        on_complete_success: opts.on_complete_success,
-        on_complete_failure: opts.on_complete_failure,
+        on_complete_success: opts.on_complete,
+        on_complete_failure: opts.on_fail,
+        on_idle: opts.on_idle,
     })?;
     println!(
         "Spawned task {} ({})",
@@ -409,6 +421,8 @@ fn cmd_schedule(action: ScheduleAction, app: ClatApp<impl Runtime>) -> anyhow::R
             once,
             action,
             max_runs,
+            check,
+            diff,
         } => {
             let (schedule_type, schedule_expr) = if let Some(expr) = every {
                 (schedule::ScheduleType::Interval, expr)
@@ -420,8 +434,16 @@ fn cmd_schedule(action: ScheduleAction, app: ClatApp<impl Runtime>) -> anyhow::R
                 bail!("specify one of --every, --cron, or --once");
             };
 
-            let schedule =
-                app.create_schedule(&name, schedule_type, &schedule_expr, &action, max_runs)?;
+            let diff_mode = schedule::DiffMode::from(diff);
+            let schedule = app.create_schedule(
+                &name,
+                schedule_type,
+                &schedule_expr,
+                &action,
+                max_runs,
+                check.as_deref(),
+                diff_mode,
+            )?;
             println!("Created schedule '{}'", schedule.name);
             if let Some(next) = schedule.next_run_at {
                 println!("  next run: {}", next.format("%Y-%m-%d %H:%M:%S UTC"));
@@ -488,6 +510,33 @@ fn cmd_schedule(action: ScheduleAction, app: ClatApp<impl Runtime>) -> anyhow::R
             let name = app.set_schedule_enabled(&name_or_id, false)?;
             println!("Disabled schedule '{name}'");
         }
+    }
+    Ok(())
+}
+
+fn cmd_watch(
+    app: ClatApp<impl Runtime>,
+    name: &str,
+    check: &str,
+    diff: &str,
+    every: &str,
+    action: &str,
+    max_runs: Option<i64>,
+) -> anyhow::Result<()> {
+    let diff_mode = schedule::DiffMode::from(diff.to_string());
+    let schedule = app.create_schedule(
+        name,
+        schedule::ScheduleType::Interval,
+        every,
+        action,
+        max_runs,
+        Some(check),
+        diff_mode,
+    )?;
+    println!("Created watch '{}'", schedule.name);
+    println!("  check: {check}");
+    if let Some(next) = schedule.next_run_at {
+        println!("  next check: {}", next.format("%Y-%m-%d %H:%M:%S UTC"));
     }
     Ok(())
 }

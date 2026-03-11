@@ -44,13 +44,17 @@ pub enum Command {
         #[arg(long)]
         project: Option<String>,
 
-        /// Command to run when the task completes successfully
+        /// Command to run when the task completes successfully (exit 0)
         #[arg(long)]
-        on_complete_success: Option<String>,
+        on_complete: Option<String>,
 
-        /// Command to run when the task fails
+        /// Command to run when the task fails (exit ≠ 0)
         #[arg(long)]
-        on_complete_failure: Option<String>,
+        on_fail: Option<String>,
+
+        /// Command to run when the task goes idle (agent waiting at prompt)
+        #[arg(long)]
+        on_idle: Option<String>,
     },
 
     /// List tasks and their status
@@ -144,6 +148,32 @@ pub enum Command {
     Schedule {
         #[command(subcommand)]
         action: ScheduleAction,
+    },
+
+    /// Create a watch schedule (sugar for `schedule create --check`)
+    Watch {
+        /// Human-friendly name (unique)
+        name: String,
+
+        /// Shell command to monitor for changes
+        #[arg(long)]
+        check: String,
+
+        /// How to compare outputs: "string" (default) or "exit_code"
+        #[arg(long, default_value = "string")]
+        diff: String,
+
+        /// How often to run the check (e.g. "30s", "5m", "1h")
+        #[arg(long, default_value = "5m")]
+        every: String,
+
+        /// The clat command to execute when the check output changes
+        #[arg(long)]
+        action: String,
+
+        /// Maximum number of times to fire
+        #[arg(long)]
+        max_runs: Option<i64>,
     },
 
     /// Commands called by spawned agents (hooks, lifecycle)
@@ -245,6 +275,15 @@ pub enum ScheduleAction {
         /// Maximum number of runs (schedule disables itself after this many)
         #[arg(long)]
         max_runs: Option<i64>,
+
+        /// Shell command to run before firing the action (watch mode).
+        /// The action only fires when this command's output changes.
+        #[arg(long)]
+        check: Option<String>,
+
+        /// How to compare check outputs: "string" (default) or "exit_code"
+        #[arg(long, default_value = "string")]
+        diff: String,
     },
 
     /// List all schedules

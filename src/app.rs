@@ -4,7 +4,7 @@ use std::path::Path;
 use crate::config::Paths;
 use crate::primitives::{ChatId, MessageRole, ProjectId, ScheduleId, TaskId, TaskName, WindowId};
 use crate::runtime::{LaunchConfig, Runtime};
-use crate::schedule::{Schedule, ScheduleType, compute_next_run};
+use crate::schedule::{DiffMode, Schedule, ScheduleType, compute_next_run, render_action_template};
 use crate::skill::SkillFile;
 use crate::store::Store;
 use crate::task::{Project, Task, TaskMessage};
@@ -35,6 +35,7 @@ pub struct SpawnRequest<'a> {
     pub project: Option<String>,
     pub on_complete_success: Option<String>,
     pub on_complete_failure: Option<String>,
+    pub on_idle: Option<String>,
 }
 
 #[derive(Debug)]
@@ -224,6 +225,7 @@ impl<R: Runtime> ClatApp<R> {
         );
         task.on_complete_success = req.on_complete_success;
         task.on_complete_failure = req.on_complete_failure;
+        task.on_idle = req.on_idle;
         self.store.insert_task(&task)?;
 
         // Store user prompt message only if Full mode
@@ -574,6 +576,7 @@ impl<R: Runtime> ClatApp<R> {
 
     // -- Schedule management --
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create_schedule(
         &self,
         name: &str,
@@ -581,6 +584,8 @@ impl<R: Runtime> ClatApp<R> {
         schedule_expr: &str,
         action: &str,
         max_runs: Option<i64>,
+        check_command: Option<&str>,
+        diff_mode: DiffMode,
     ) -> anyhow::Result<Schedule> {
         // Validate expression by computing first next_run
         let now = chrono::Utc::now();
@@ -598,6 +603,9 @@ impl<R: Runtime> ClatApp<R> {
             created_at: now,
             run_count: 0,
             max_runs,
+            check_command: check_command.map(|s| s.to_string()),
+            diff_mode,
+            last_check_output: None,
         };
         self.store.insert_schedule(&schedule)?;
         Ok(schedule)
@@ -628,38 +636,159 @@ impl<R: Runtime> ClatApp<R> {
         let due = self.store.list_due_schedules(&now)?;
         let mut executed = 0;
 
-        for schedule in due {
-            // Execute the action
-            if let Err(e) = self.execute_clat_action(&schedule.action) {
-                tracing::warn!(
-                    schedule = schedule.name,
-                    action = schedule.action,
-                    "schedule execution failed: {e}"
-                );
-            }
+        for sched in due {
+            let next_run = compute_next_run(&sched.schedule_type, &sched.schedule_expr, now)?;
 
-            // Update run count and compute next run
-            let new_count = schedule.run_count + 1;
-            let max_reached = schedule.max_runs.is_some_and(|max| new_count >= max);
-            let enabled = if max_reached { false } else { schedule.enabled };
+            if let Some(ref check_cmd) = sched.check_command {
+                // Watch-type schedule: run check command, compare output
+                let (changed, current_output, exit_code) =
+                    self.run_check_command(check_cmd, &sched);
 
-            let next = if enabled {
-                compute_next_run(&schedule.schedule_type, &schedule.schedule_expr, now)?
+                if changed {
+                    // Render action template with variables
+                    let action = self.render_schedule_action(&sched, &current_output, exit_code)?;
+                    if let Err(e) = self.execute_clat_action(&action) {
+                        tracing::warn!(schedule = sched.name, action, "watch action failed: {e}");
+                    }
+
+                    let new_count = sched.run_count + 1;
+                    let max_reached = sched.max_runs.is_some_and(|max| new_count >= max);
+                    let enabled = if max_reached { false } else { sched.enabled };
+                    let next = if enabled { next_run } else { None };
+
+                    self.store.update_schedule_after_run(
+                        &sched.id,
+                        &now,
+                        next.as_ref(),
+                        new_count,
+                        enabled,
+                        Some(&current_output),
+                    )?;
+                    executed += 1;
+                } else {
+                    // No change — just advance the timer
+                    self.store.update_schedule_check_output(
+                        &sched.id,
+                        &now,
+                        next_run.as_ref(),
+                        Some(&current_output),
+                    )?;
+                }
             } else {
-                None
-            };
+                // Plain timer schedule: execute unconditionally
+                if let Err(e) = self.execute_clat_action(&sched.action) {
+                    tracing::warn!(
+                        schedule = sched.name,
+                        action = sched.action,
+                        "schedule execution failed: {e}"
+                    );
+                }
 
-            self.store.update_schedule_after_run(
-                &schedule.id,
-                &now,
-                next.as_ref(),
-                new_count,
-                enabled,
-            )?;
-            executed += 1;
+                let new_count = sched.run_count + 1;
+                let max_reached = sched.max_runs.is_some_and(|max| new_count >= max);
+                let enabled = if max_reached { false } else { sched.enabled };
+                let next = if enabled { next_run } else { None };
+
+                self.store.update_schedule_after_run(
+                    &sched.id,
+                    &now,
+                    next.as_ref(),
+                    new_count,
+                    enabled,
+                    sched.last_check_output.as_deref(),
+                )?;
+                executed += 1;
+            }
         }
 
         Ok(executed)
+    }
+
+    /// Run a check command and determine if the output changed.
+    fn run_check_command(&self, check_cmd: &str, schedule: &Schedule) -> (bool, String, i32) {
+        let result = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(check_cmd)
+            .current_dir(&self.paths.root)
+            .output();
+
+        let (stdout, exit_code) = match result {
+            Ok(output) => (
+                String::from_utf8_lossy(&output.stdout).trim().to_string(),
+                output.status.code().unwrap_or(-1),
+            ),
+            Err(e) => {
+                tracing::warn!(
+                    schedule = schedule.name,
+                    check_cmd,
+                    "check command failed to execute: {e}"
+                );
+                return (false, String::new(), -1);
+            }
+        };
+
+        let changed = match schedule.diff_mode {
+            DiffMode::String => schedule.last_check_output.as_deref() != Some(stdout.as_str()),
+            DiffMode::ExitCode => {
+                // Compare exit code as string against stored value
+                let exit_str = exit_code.to_string();
+                schedule.last_check_output.as_deref() != Some(exit_str.as_str())
+            }
+        };
+
+        let stored_output = match schedule.diff_mode {
+            DiffMode::String => stdout.clone(),
+            DiffMode::ExitCode => exit_code.to_string(),
+        };
+
+        (changed, stored_output, exit_code)
+    }
+
+    /// Render a schedule action template with watch variables.
+    fn render_schedule_action(
+        &self,
+        schedule: &Schedule,
+        current_output: &str,
+        exit_code: i32,
+    ) -> anyhow::Result<String> {
+        use std::collections::HashMap;
+
+        let mut vars = HashMap::new();
+        vars.insert(
+            "prev".to_string(),
+            schedule.last_check_output.clone().unwrap_or_default(),
+        );
+        vars.insert("curr".to_string(), current_output.to_string());
+        vars.insert("output".to_string(), current_output.to_string());
+        vars.insert("exit_code".to_string(), exit_code.to_string());
+        vars.insert("schedule_name".to_string(), schedule.name.clone());
+        vars.insert(
+            "fire_count".to_string(),
+            (schedule.run_count + 1).to_string(),
+        );
+
+        render_action_template(&schedule.action, &vars)
+    }
+
+    /// Fire a task's on-idle trigger. Returns true if a trigger was fired.
+    pub fn fire_idle_trigger(&self, task_name: &str) -> anyhow::Result<bool> {
+        let task = match self.store.find_task_with_idle_trigger(task_name)? {
+            Some(t) => t,
+            None => return Ok(false),
+        };
+
+        let action = task.on_idle.as_deref().unwrap();
+        if let Err(e) = self.execute_clat_action(action) {
+            tracing::warn!(
+                task = task.name.as_str(),
+                action,
+                "on-idle trigger failed: {e}"
+            );
+        }
+
+        // Mark as fired (fire_once semantics)
+        self.store.mark_on_idle_fired(&task.id)?;
+        Ok(true)
     }
 
     /// Execute a clat action string by running it as a subprocess.
@@ -944,6 +1073,7 @@ prompt = "noop prompt"
                 project: None,
                 on_complete_success: None,
                 on_complete_failure: None,
+                on_idle: None,
             })
             .expect("spawn should succeed")
     }
@@ -1140,6 +1270,8 @@ prompt = "noop prompt"
             project_id: None,
             on_complete_success: None,
             on_complete_failure: None,
+            on_idle: None,
+            on_idle_fired: false,
         };
         service.store().insert_task(&task).unwrap();
 
@@ -1355,6 +1487,7 @@ prompt = "deploy to {{ env }}"
                 project: None,
                 on_complete_success: None,
                 on_complete_failure: None,
+                on_idle: None,
             })
             .unwrap();
 
@@ -1410,6 +1543,7 @@ prompt = "deploy to {{ env }}"
                 project: None,
                 on_complete_success: None,
                 on_complete_failure: None,
+                on_idle: None,
             })
             .unwrap();
         assert_eq!(output.task_name, "nw-task");
@@ -1456,6 +1590,7 @@ prompt = "deploy to {{ env }}"
                 project: None,
                 on_complete_success: None,
                 on_complete_failure: None,
+                on_idle: None,
             })
             .unwrap();
 
@@ -1568,6 +1703,7 @@ prompt = "deploy to {{ env }}"
                 project: Some("test-proj".to_string()),
                 on_complete_success: None,
                 on_complete_failure: None,
+                on_idle: None,
             })
             .unwrap();
         let out2 = spawn_test_task(&service); // no project

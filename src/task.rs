@@ -56,6 +56,8 @@ pub struct Task {
     pub project_id: Option<ProjectId>,
     pub on_complete_success: Option<String>,
     pub on_complete_failure: Option<String>,
+    pub on_idle: Option<String>,
+    pub on_idle_fired: bool,
 }
 
 impl Task {
@@ -84,6 +86,8 @@ impl Task {
             project_id,
             on_complete_success: None,
             on_complete_failure: None,
+            on_idle: None,
+            on_idle_fired: false,
         }
     }
 

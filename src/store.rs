@@ -9,10 +9,10 @@ use crate::primitives::{
     ChatId, ClaudeSessionId, MessageRole, PaneId, ProjectId, ProjectName, ScheduleId, TaskId,
     TaskName, TaskStatus, WindowId,
 };
-use crate::schedule::{Schedule, ScheduleType};
+use crate::schedule::{DiffMode, Schedule, ScheduleType};
 use crate::task::{Project, Task, TaskMessage};
 
-static MIGRATION_STEPS: [M<'static>; 5] = [
+static MIGRATION_STEPS: [M<'static>; 7] = [
     M::up(
         "CREATE TABLE IF NOT EXISTS tasks (
             id           TEXT PRIMARY KEY,
@@ -67,6 +67,17 @@ static MIGRATION_STEPS: [M<'static>; 5] = [
         "ALTER TABLE tasks ADD COLUMN on_complete_success TEXT;
          ALTER TABLE tasks ADD COLUMN on_complete_failure TEXT;",
     ),
+    // Migration 5: Watch support — add check_command, diff_mode, last_check_output to schedules
+    M::up(
+        "ALTER TABLE schedules ADD COLUMN check_command TEXT;
+         ALTER TABLE schedules ADD COLUMN diff_mode TEXT NOT NULL DEFAULT 'string';
+         ALTER TABLE schedules ADD COLUMN last_check_output TEXT;",
+    ),
+    // Migration 6: On-idle trigger for tasks
+    M::up(
+        "ALTER TABLE tasks ADD COLUMN on_idle TEXT;
+         ALTER TABLE tasks ADD COLUMN on_idle_fired INTEGER NOT NULL DEFAULT 0;",
+    ),
 ];
 static MIGRATIONS: Migrations<'static> = Migrations::from_slice(&MIGRATION_STEPS);
 
@@ -96,8 +107,14 @@ fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
         project_id: row.get::<_, Option<String>>(12)?.map(ProjectId::from),
         on_complete_success: row.get(14)?,
         on_complete_failure: row.get(15)?,
+        on_idle: row.get(16)?,
+        on_idle_fired: row.get::<_, bool>(17).unwrap_or(false),
     })
 }
+
+const SCHEDULE_COLUMNS: &str = "id, name, schedule_type, schedule_expr, action, enabled,
+     last_run_at, next_run_at, created_at, run_count, max_runs,
+     check_command, diff_mode, last_check_output";
 
 fn row_to_schedule(row: &Row) -> rusqlite::Result<Schedule> {
     let created_at: String = row.get(8)?;
@@ -125,13 +142,19 @@ fn row_to_schedule(row: &Row) -> rusqlite::Result<Schedule> {
             .with_timezone(&Utc),
         run_count: row.get(9)?,
         max_runs: row.get(10)?,
+        check_command: row.get(11)?,
+        diff_mode: DiffMode::from(
+            row.get::<_, String>(12)
+                .unwrap_or_else(|_| "string".to_string()),
+        ),
+        last_check_output: row.get(13)?,
     })
 }
 
 const TASK_COLUMNS: &str =
     "id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir,
      started_at, completed_at, exit_code, output, project_id, session_id,
-     on_complete_success, on_complete_failure";
+     on_complete_success, on_complete_failure, on_idle, on_idle_fired";
 
 pub struct Store {
     conn: Connection,
@@ -161,8 +184,8 @@ impl Store {
 
     pub fn insert_task(&self, task: &Task) -> anyhow::Result<()> {
         self.conn.execute(
-            "INSERT INTO tasks (id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir, started_at, project_id, session_id, on_complete_success, on_complete_failure)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            "INSERT INTO tasks (id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir, started_at, project_id, session_id, on_complete_success, on_complete_failure, on_idle)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             (
                 task.id.as_str(),
                 task.name.as_str(),
@@ -177,6 +200,7 @@ impl Store {
                 task.session_id.as_ref().map(|s| s.as_str()),
                 task.on_complete_success.as_deref(),
                 task.on_complete_failure.as_deref(),
+                task.on_idle.as_deref(),
             ),
         )?;
         Ok(())
@@ -400,8 +424,8 @@ impl Store {
 
     pub fn insert_schedule(&self, schedule: &Schedule) -> anyhow::Result<()> {
         self.conn.execute(
-            "INSERT INTO schedules (id, name, schedule_type, schedule_expr, action, enabled, next_run_at, created_at, run_count, max_runs)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO schedules (id, name, schedule_type, schedule_expr, action, enabled, next_run_at, created_at, run_count, max_runs, check_command, diff_mode, last_check_output)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             (
                 schedule.id.as_str(),
                 &schedule.name,
@@ -413,17 +437,18 @@ impl Store {
                 schedule.created_at.to_rfc3339(),
                 schedule.run_count,
                 schedule.max_runs,
+                schedule.check_command.as_deref(),
+                schedule.diff_mode.as_str(),
+                schedule.last_check_output.as_deref(),
             ),
         )?;
         Ok(())
     }
 
     pub fn list_schedules(&self) -> anyhow::Result<Vec<Schedule>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, schedule_type, schedule_expr, action, enabled,
-                    last_run_at, next_run_at, created_at, run_count, max_runs
-             FROM schedules ORDER BY created_at ASC",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {SCHEDULE_COLUMNS} FROM schedules ORDER BY created_at ASC"
+        ))?;
         let schedules = stmt
             .query_map([], row_to_schedule)?
             .collect::<Result<Vec<_>, _>>()?;
@@ -432,12 +457,10 @@ impl Store {
 
     pub fn list_due_schedules(&self, now: &DateTime<Utc>) -> anyhow::Result<Vec<Schedule>> {
         let now_str = now.to_rfc3339();
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, schedule_type, schedule_expr, action, enabled,
-                    last_run_at, next_run_at, created_at, run_count, max_runs
-             FROM schedules
-             WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?1",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {SCHEDULE_COLUMNS} FROM schedules \
+                 WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?1"
+        ))?;
         let schedules = stmt
             .query_map([&now_str], row_to_schedule)?
             .collect::<Result<Vec<_>, _>>()?;
@@ -451,27 +474,69 @@ impl Store {
         next_run_at: Option<&DateTime<Utc>>,
         run_count: i64,
         enabled: bool,
+        last_check_output: Option<&str>,
     ) -> anyhow::Result<()> {
         self.conn.execute(
-            "UPDATE schedules SET last_run_at = ?1, next_run_at = ?2, run_count = ?3, enabled = ?4
-             WHERE id = ?5",
+            "UPDATE schedules SET last_run_at = ?1, next_run_at = ?2, run_count = ?3, enabled = ?4, last_check_output = ?5
+             WHERE id = ?6",
             (
                 last_run_at.to_rfc3339(),
                 next_run_at.map(|dt| dt.to_rfc3339()),
                 run_count,
                 enabled,
+                last_check_output,
                 id.as_str(),
             ),
         )?;
         Ok(())
     }
 
-    pub fn get_schedule_by_name(&self, name: &str) -> anyhow::Result<Option<Schedule>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, schedule_type, schedule_expr, action, enabled,
-                    last_run_at, next_run_at, created_at, run_count, max_runs
-             FROM schedules WHERE name = ?1",
+    /// Update only the last_check_output without firing (for watch schedules that didn't change).
+    pub fn update_schedule_check_output(
+        &self,
+        id: &ScheduleId,
+        last_run_at: &DateTime<Utc>,
+        next_run_at: Option<&DateTime<Utc>>,
+        last_check_output: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE schedules SET last_run_at = ?1, next_run_at = ?2, last_check_output = ?3
+             WHERE id = ?4",
+            (
+                last_run_at.to_rfc3339(),
+                next_run_at.map(|dt| dt.to_rfc3339()),
+                last_check_output,
+                id.as_str(),
+            ),
         )?;
+        Ok(())
+    }
+
+    /// Mark a task's on-idle trigger as fired.
+    pub fn mark_on_idle_fired(&self, id: &TaskId) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE tasks SET on_idle_fired = 1 WHERE id = ?1",
+            [id.as_str()],
+        )?;
+        Ok(())
+    }
+
+    /// Find a running task by name that has an unfired on-idle trigger.
+    pub fn find_task_with_idle_trigger(&self, name: &str) -> anyhow::Result<Option<Task>> {
+        let sql = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks WHERE name = ?1 AND status = 'running' AND on_idle IS NOT NULL AND on_idle_fired = 0"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut tasks: Vec<Task> = stmt
+            .query_map([name], row_to_task)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(tasks.pop())
+    }
+
+    pub fn get_schedule_by_name(&self, name: &str) -> anyhow::Result<Option<Schedule>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {SCHEDULE_COLUMNS} FROM schedules WHERE name = ?1"
+        ))?;
         let mut rows = stmt.query_map([name], row_to_schedule)?;
         match rows.next() {
             Some(row) => Ok(Some(row?)),
@@ -481,11 +546,9 @@ impl Store {
 
     pub fn get_schedule_by_prefix(&self, prefix: &str) -> anyhow::Result<Option<Schedule>> {
         let pattern = format!("{prefix}%");
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, schedule_type, schedule_expr, action, enabled,
-                    last_run_at, next_run_at, created_at, run_count, max_runs
-             FROM schedules WHERE id LIKE ?1",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {SCHEDULE_COLUMNS} FROM schedules WHERE id LIKE ?1"
+        ))?;
         let mut schedules: Vec<Schedule> = stmt
             .query_map([&pattern], row_to_schedule)?
             .collect::<Result<Vec<_>, _>>()?;
@@ -569,6 +632,8 @@ mod tests {
             project_id: None,
             on_complete_success: None,
             on_complete_failure: None,
+            on_idle: None,
+            on_idle_fired: false,
         };
         store.insert_task(&task).unwrap();
         id
@@ -765,6 +830,8 @@ mod tests {
             project_id: project_id.cloned(),
             on_complete_success: None,
             on_complete_failure: None,
+            on_idle: None,
+            on_idle_fired: false,
         };
         store.insert_task(&task).unwrap();
         id

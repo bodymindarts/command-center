@@ -42,6 +42,36 @@ impl From<String> for ScheduleType {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffMode {
+    String,
+    ExitCode,
+}
+
+impl DiffMode {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::String => "string",
+            Self::ExitCode => "exit_code",
+        }
+    }
+}
+
+impl fmt::Display for DiffMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<String> for DiffMode {
+    fn from(s: String) -> Self {
+        match s.as_str() {
+            "exit_code" => Self::ExitCode,
+            _ => Self::String,
+        }
+    }
+}
+
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct Schedule {
@@ -56,6 +86,25 @@ pub struct Schedule {
     pub created_at: DateTime<Utc>,
     pub run_count: i64,
     pub max_runs: Option<i64>,
+    /// Shell command to run for watch-type schedules. If set, the action only
+    /// fires when the check output changes compared to `last_check_output`.
+    pub check_command: Option<String>,
+    /// How to compare check outputs: "string" (default) or "exit_code".
+    pub diff_mode: DiffMode,
+    /// Last captured check output for delta detection.
+    pub last_check_output: Option<String>,
+}
+
+/// Render an action string with template variables using minijinja.
+pub fn render_action_template(
+    action: &str,
+    vars: &std::collections::HashMap<String, String>,
+) -> anyhow::Result<String> {
+    let env = minijinja::Environment::new();
+    let rendered = env
+        .render_str(action, minijinja::Value::from_serialize(vars))
+        .map_err(|e| anyhow::anyhow!("failed to render action template: {e}"))?;
+    Ok(rendered)
 }
 
 /// Parse a human-friendly interval string like "5m", "1h", "30s", "2d" into a Duration.
