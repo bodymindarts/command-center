@@ -8,6 +8,14 @@ use crate::primitives::{
     TaskStatus, WindowId,
 };
 
+/// Lifecycle triggers that fire clat actions on task state changes.
+#[derive(Debug, Default)]
+pub struct TaskTriggers {
+    pub on_complete_success: Option<ClatAction>,
+    pub on_complete_failure: Option<ClatAction>,
+    pub on_idle: Option<ClatAction>,
+}
+
 /// Visual status of a task, combining persisted `TaskStatus` with runtime
 /// idle-detection state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +76,7 @@ impl Task {
         params: &HashMap<String, String>,
         work_dir: &Path,
         project_id: Option<ProjectId>,
+        triggers: TaskTriggers,
     ) -> Self {
         Self {
             id,
@@ -84,9 +93,9 @@ impl Task {
             exit_code: None,
             output: None,
             project_id,
-            on_complete_success: None,
-            on_complete_failure: None,
-            on_idle: None,
+            on_complete_success: triggers.on_complete_success,
+            on_complete_failure: triggers.on_complete_failure,
+            on_idle: triggers.on_idle,
             on_idle_fired: false,
         }
     }

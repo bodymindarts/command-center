@@ -692,6 +692,7 @@ mod tests {
             &HashMap::new(),
             Path::new("/tmp"),
             None,
+            Default::default(),
         )
     }
 

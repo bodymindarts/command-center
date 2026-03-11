@@ -224,10 +224,12 @@ impl<R: Runtime> ClatApp<R> {
             &params_map,
             &work_dir,
             project_id,
+            crate::task::TaskTriggers {
+                on_complete_success: req.on_complete_success,
+                on_complete_failure: req.on_complete_failure,
+                on_idle: req.on_idle,
+            },
         );
-        task.on_complete_success = req.on_complete_success;
-        task.on_complete_failure = req.on_complete_failure;
-        task.on_idle = req.on_idle;
         self.store.insert_task(&task)?;
 
         // Store user prompt message only if Full mode
