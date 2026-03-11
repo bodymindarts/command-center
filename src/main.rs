@@ -5,6 +5,7 @@ mod config;
 mod permission;
 mod primitives;
 mod runtime;
+mod schedule;
 mod skill;
 mod store;
 mod task;
@@ -15,7 +16,7 @@ use clap::Parser;
 use tabled::{Table, Tabled};
 
 use crate::app::{ClatApp, PromptMode, SpawnRequest, WorkDirMode};
-use crate::cli::{AgentCommand, Cli, Command, ProjectAction, SkillAction};
+use crate::cli::{AgentCommand, Cli, Command, ProjectAction, ScheduleAction, SkillAction};
 use crate::primitives::MessageRole;
 use crate::runtime::{Runtime, TmuxRuntime};
 
@@ -38,6 +39,8 @@ fn main() -> anyhow::Result<()> {
             no_worktree,
             scratch,
             project,
+            on_complete_success,
+            on_complete_failure,
         } => cmd_spawn(
             app,
             SpawnOpts {
@@ -49,6 +52,8 @@ fn main() -> anyhow::Result<()> {
                 no_worktree,
                 scratch,
                 project,
+                on_complete_success,
+                on_complete_failure,
             },
         )?,
         Command::List { all, project } => cmd_list(app, all, project)?,
@@ -63,6 +68,7 @@ fn main() -> anyhow::Result<()> {
         Command::Send { id, message } => cmd_send(app, &id, &message)?,
         Command::Skill { action } => cmd_skill(action, app)?,
         Command::Project { action } => cmd_project(action, app)?,
+        Command::Schedule { action } => cmd_schedule(action, app)?,
         Command::Agent { action } => match action {
             AgentCommand::PermissionGate => permission::gate_request()?,
             AgentCommand::PermissionPrompt {
@@ -90,6 +96,8 @@ struct SpawnOpts {
     no_worktree: bool,
     scratch: bool,
     project: Option<String>,
+    on_complete_success: Option<String>,
+    on_complete_failure: Option<String>,
 }
 
 fn cmd_spawn(app: ClatApp<impl Runtime>, opts: SpawnOpts) -> anyhow::Result<()> {
@@ -129,6 +137,8 @@ fn cmd_spawn(app: ClatApp<impl Runtime>, opts: SpawnOpts) -> anyhow::Result<()> 
         work_dir_mode,
         prompt_mode,
         project,
+        on_complete_success: opts.on_complete_success,
+        on_complete_failure: opts.on_complete_failure,
     })?;
     println!(
         "Spawned task {} ({})",
@@ -385,6 +395,98 @@ fn cmd_skill(action: SkillAction, app: ClatApp<impl Runtime>) -> anyhow::Result<
                 .collect();
 
             println!("{}", Table::new(rows));
+        }
+    }
+    Ok(())
+}
+
+fn cmd_schedule(action: ScheduleAction, app: ClatApp<impl Runtime>) -> anyhow::Result<()> {
+    match action {
+        ScheduleAction::Create {
+            name,
+            every,
+            cron,
+            once,
+            action,
+            max_runs,
+        } => {
+            let (schedule_type, schedule_expr) = if let Some(expr) = every {
+                (schedule::ScheduleType::Interval, expr)
+            } else if let Some(expr) = cron {
+                (schedule::ScheduleType::Cron, expr)
+            } else if let Some(expr) = once {
+                (schedule::ScheduleType::Once, expr)
+            } else {
+                bail!("specify one of --every, --cron, or --once");
+            };
+
+            let schedule =
+                app.create_schedule(&name, schedule_type, &schedule_expr, &action, max_runs)?;
+            println!("Created schedule '{}'", schedule.name);
+            if let Some(next) = schedule.next_run_at {
+                println!("  next run: {}", next.format("%Y-%m-%d %H:%M:%S UTC"));
+            }
+        }
+        ScheduleAction::List => {
+            let schedules = app.list_schedules()?;
+            if schedules.is_empty() {
+                println!("No schedules.");
+                return Ok(());
+            }
+
+            #[derive(Tabled)]
+            struct Row {
+                #[tabled(rename = "ID")]
+                id: String,
+                #[tabled(rename = "Name")]
+                name: String,
+                #[tabled(rename = "Type")]
+                schedule_type: String,
+                #[tabled(rename = "Expression")]
+                expr: String,
+                #[tabled(rename = "Enabled")]
+                enabled: String,
+                #[tabled(rename = "Runs")]
+                runs: String,
+                #[tabled(rename = "Next Run")]
+                next_run: String,
+                #[tabled(rename = "Action")]
+                action: String,
+            }
+
+            let rows: Vec<Row> = schedules
+                .iter()
+                .map(|s| Row {
+                    id: s.id.short().to_string(),
+                    name: s.name.clone(),
+                    schedule_type: s.schedule_type.to_string(),
+                    expr: s.schedule_expr.clone(),
+                    enabled: if s.enabled { "yes" } else { "no" }.to_string(),
+                    runs: match s.max_runs {
+                        Some(max) => format!("{}/{}", s.run_count, max),
+                        None => s.run_count.to_string(),
+                    },
+                    next_run: s
+                        .next_run_at
+                        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    action: s.action.clone(),
+                })
+                .collect();
+
+            println!("{}", Table::new(rows));
+        }
+        ScheduleAction::Delete { name_or_id } => {
+            let name = app.delete_schedule(&name_or_id)?;
+            println!("Deleted schedule '{name}'");
+        }
+        ScheduleAction::Enable { name_or_id } => {
+            let name = app.set_schedule_enabled(&name_or_id, true)?;
+            println!("Enabled schedule '{name}'");
+        }
+        ScheduleAction::Disable { name_or_id } => {
+            let name = app.set_schedule_enabled(&name_or_id, false)?;
+            println!("Disabled schedule '{name}'");
         }
     }
     Ok(())

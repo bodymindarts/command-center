@@ -136,6 +136,7 @@ string_newtype!(TaskName);
 id_newtype!(ProjectId);
 string_newtype!(ProjectName);
 id_newtype!(ClaudeSessionId);
+id_newtype!(ScheduleId);
 string_newtype!(PaneId);
 string_newtype!(WindowId);
 

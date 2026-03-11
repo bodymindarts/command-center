@@ -54,6 +54,8 @@ pub struct Task {
     pub exit_code: Option<i32>,
     pub output: Option<String>,
     pub project_id: Option<ProjectId>,
+    pub on_complete_success: Option<String>,
+    pub on_complete_failure: Option<String>,
 }
 
 impl Task {
@@ -80,6 +82,8 @@ impl Task {
             exit_code: None,
             output: None,
             project_id,
+            on_complete_success: None,
+            on_complete_failure: None,
         }
     }
 

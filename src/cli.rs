@@ -43,6 +43,14 @@ pub enum Command {
         /// Assign task to a project
         #[arg(long)]
         project: Option<String>,
+
+        /// Command to run when the task completes successfully
+        #[arg(long)]
+        on_complete_success: Option<String>,
+
+        /// Command to run when the task fails
+        #[arg(long)]
+        on_complete_failure: Option<String>,
     },
 
     /// List tasks and their status
@@ -132,6 +140,12 @@ pub enum Command {
         action: ProjectAction,
     },
 
+    /// Manage scheduled actions
+    Schedule {
+        #[command(subcommand)]
+        action: ScheduleAction,
+    },
+
     /// Commands called by spawned agents (hooks, lifecycle)
     #[command(hide = true)]
     Agent {
@@ -202,6 +216,56 @@ pub enum AgentCommand {
 
         /// Path to output file
         output_file: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ScheduleAction {
+    /// Create a new schedule
+    Create {
+        /// Human-friendly name (unique)
+        name: String,
+
+        /// Run on an interval (e.g. "5m", "1h", "30s")
+        #[arg(long, group = "schedule_spec")]
+        every: Option<String>,
+
+        /// Run on a cron expression (e.g. "0 9 * * *")
+        #[arg(long, group = "schedule_spec")]
+        cron: Option<String>,
+
+        /// Run once at an ISO timestamp (e.g. "2026-03-12T09:00:00Z")
+        #[arg(long, group = "schedule_spec")]
+        once: Option<String>,
+
+        /// The clat command to execute (e.g. "spawn \"check\" -s reporter -p task=\"...\"")
+        #[arg(long)]
+        action: String,
+
+        /// Maximum number of runs (schedule disables itself after this many)
+        #[arg(long)]
+        max_runs: Option<i64>,
+    },
+
+    /// List all schedules
+    List,
+
+    /// Delete a schedule
+    Delete {
+        /// Schedule name or ID prefix
+        name_or_id: String,
+    },
+
+    /// Enable a schedule
+    Enable {
+        /// Schedule name or ID prefix
+        name_or_id: String,
+    },
+
+    /// Disable a schedule
+    Disable {
+        /// Schedule name or ID prefix
+        name_or_id: String,
     },
 }
 

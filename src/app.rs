@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::config::Paths;
-use crate::primitives::{ChatId, MessageRole, ProjectId, TaskId, TaskName, WindowId};
+use crate::primitives::{ChatId, MessageRole, ProjectId, ScheduleId, TaskId, TaskName, WindowId};
 use crate::runtime::{LaunchConfig, Runtime};
+use crate::schedule::{Schedule, ScheduleType, compute_next_run};
 use crate::skill::SkillFile;
 use crate::store::Store;
 use crate::task::{Project, Task, TaskMessage};
@@ -32,6 +33,8 @@ pub struct SpawnRequest<'a> {
     pub work_dir_mode: WorkDirMode<'a>,
     pub prompt_mode: PromptMode,
     pub project: Option<String>,
+    pub on_complete_success: Option<String>,
+    pub on_complete_failure: Option<String>,
 }
 
 #[derive(Debug)]
@@ -219,6 +222,8 @@ impl<R: Runtime> ClatApp<R> {
             &work_dir,
             project_id,
         );
+        task.on_complete_success = req.on_complete_success;
+        task.on_complete_failure = req.on_complete_failure;
         self.store.insert_task(&task)?;
 
         // Store user prompt message only if Full mode
@@ -544,10 +549,146 @@ impl<R: Runtime> ClatApp<R> {
     ) -> anyhow::Result<CompleteOutput> {
         let task = self.resolve_task(id_prefix)?;
         self.store.complete_task(&task.id, exit_code, output)?;
+
+        // Fire on-complete triggers
+        let trigger = if exit_code == 0 {
+            task.on_complete_success.as_deref()
+        } else {
+            task.on_complete_failure.as_deref()
+        };
+        if let Some(action) = trigger
+            && let Err(e) = self.execute_clat_action(action)
+        {
+            tracing::warn!(
+                task = task.name.as_str(),
+                action,
+                "on-complete trigger failed: {e}"
+            );
+        }
+
         Ok(CompleteOutput {
             task_id: task.id,
             task_name: task.name,
         })
+    }
+
+    // -- Schedule management --
+
+    pub fn create_schedule(
+        &self,
+        name: &str,
+        schedule_type: ScheduleType,
+        schedule_expr: &str,
+        action: &str,
+        max_runs: Option<i64>,
+    ) -> anyhow::Result<Schedule> {
+        // Validate expression by computing first next_run
+        let now = chrono::Utc::now();
+        let next_run_at = compute_next_run(&schedule_type, schedule_expr, now)?;
+
+        let schedule = Schedule {
+            id: ScheduleId::generate(),
+            name: name.to_string(),
+            schedule_type,
+            schedule_expr: schedule_expr.to_string(),
+            action: action.to_string(),
+            enabled: true,
+            last_run_at: None,
+            next_run_at,
+            created_at: now,
+            run_count: 0,
+            max_runs,
+        };
+        self.store.insert_schedule(&schedule)?;
+        Ok(schedule)
+    }
+
+    pub fn list_schedules(&self) -> anyhow::Result<Vec<Schedule>> {
+        self.store.list_schedules()
+    }
+
+    pub fn delete_schedule(&self, name_or_id: &str) -> anyhow::Result<String> {
+        let schedule = self.resolve_schedule(name_or_id)?;
+        let name = schedule.name.clone();
+        self.store.delete_schedule(&schedule.id)?;
+        Ok(name)
+    }
+
+    pub fn set_schedule_enabled(&self, name_or_id: &str, enabled: bool) -> anyhow::Result<String> {
+        let schedule = self.resolve_schedule(name_or_id)?;
+        let name = schedule.name.clone();
+        self.store.set_schedule_enabled(&schedule.id, enabled)?;
+        Ok(name)
+    }
+
+    /// Tick the scheduler: find and execute all due schedules.
+    /// Returns the number of schedules executed.
+    pub fn tick_schedules(&self) -> anyhow::Result<u32> {
+        let now = chrono::Utc::now();
+        let due = self.store.list_due_schedules(&now)?;
+        let mut executed = 0;
+
+        for schedule in due {
+            // Execute the action
+            if let Err(e) = self.execute_clat_action(&schedule.action) {
+                tracing::warn!(
+                    schedule = schedule.name,
+                    action = schedule.action,
+                    "schedule execution failed: {e}"
+                );
+            }
+
+            // Update run count and compute next run
+            let new_count = schedule.run_count + 1;
+            let max_reached = schedule.max_runs.is_some_and(|max| new_count >= max);
+            let enabled = if max_reached { false } else { schedule.enabled };
+
+            let next = if enabled {
+                compute_next_run(&schedule.schedule_type, &schedule.schedule_expr, now)?
+            } else {
+                None
+            };
+
+            self.store.update_schedule_after_run(
+                &schedule.id,
+                &now,
+                next.as_ref(),
+                new_count,
+                enabled,
+            )?;
+            executed += 1;
+        }
+
+        Ok(executed)
+    }
+
+    /// Execute a clat action string by running it as a subprocess.
+    /// The action is prefixed with the current executable path.
+    fn execute_clat_action(&self, action: &str) -> anyhow::Result<()> {
+        let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("clat"));
+
+        let full_cmd = format!("{} {}", exe.display(), action);
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&full_cmd)
+            .current_dir(&self.paths.root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+
+        // Fire and forget — we don't wait for the child
+        drop(status);
+        Ok(())
+    }
+
+    fn resolve_schedule(&self, name_or_id: &str) -> anyhow::Result<Schedule> {
+        // Try name first, then ID prefix
+        if let Some(schedule) = self.store.get_schedule_by_name(name_or_id)? {
+            return Ok(schedule);
+        }
+        self.store
+            .get_schedule_by_prefix(name_or_id)?
+            .ok_or_else(|| anyhow::anyhow!("no schedule found matching '{name_or_id}'"))
     }
 
     fn resolve_task(&self, id_prefix: &str) -> anyhow::Result<Task> {
@@ -801,6 +942,8 @@ prompt = "noop prompt"
                 },
                 prompt_mode: PromptMode::Full,
                 project: None,
+                on_complete_success: None,
+                on_complete_failure: None,
             })
             .expect("spawn should succeed")
     }
@@ -995,6 +1138,8 @@ prompt = "noop prompt"
             exit_code: None,
             output: None,
             project_id: None,
+            on_complete_success: None,
+            on_complete_failure: None,
         };
         service.store().insert_task(&task).unwrap();
 
@@ -1208,6 +1353,8 @@ prompt = "deploy to {{ env }}"
                 },
                 prompt_mode: PromptMode::Interactive,
                 project: None,
+                on_complete_success: None,
+                on_complete_failure: None,
             })
             .unwrap();
 
@@ -1261,6 +1408,8 @@ prompt = "deploy to {{ env }}"
                 work_dir_mode: WorkDirMode::Existing { dir: &custom_repo },
                 prompt_mode: PromptMode::Interactive,
                 project: None,
+                on_complete_success: None,
+                on_complete_failure: None,
             })
             .unwrap();
         assert_eq!(output.task_name, "nw-task");
@@ -1305,6 +1454,8 @@ prompt = "deploy to {{ env }}"
                 work_dir_mode: WorkDirMode::Scratch,
                 prompt_mode: PromptMode::Full,
                 project: None,
+                on_complete_success: None,
+                on_complete_failure: None,
             })
             .unwrap();
 
@@ -1415,6 +1566,8 @@ prompt = "deploy to {{ env }}"
                 },
                 prompt_mode: PromptMode::Full,
                 project: Some("test-proj".to_string()),
+                on_complete_success: None,
+                on_complete_failure: None,
             })
             .unwrap();
         let out2 = spawn_test_task(&service); // no project

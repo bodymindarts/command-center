@@ -268,6 +268,8 @@ fn run_loop<R: Runtime>(
     tg_rx: Option<&mpsc::Receiver<telegram::TgInbound>>,
 ) -> anyhow::Result<()> {
     let mut last_tick = Instant::now();
+    let mut last_scheduler_tick = Instant::now();
+    let scheduler_interval = Duration::from_secs(10);
     let mut perm_id_counter: u64 = 0;
     let mut tg_perm_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
 
@@ -326,6 +328,14 @@ fn run_loop<R: Runtime>(
         if last_tick.elapsed() >= tick_rate {
             handlers::tick_refresh(state, app, tg_tx);
             last_tick = Instant::now();
+        }
+
+        // Scheduler tick — check for due schedules every ~10 seconds
+        if last_scheduler_tick.elapsed() >= scheduler_interval {
+            if let Err(e) = app.tick_schedules() {
+                tracing::warn!("scheduler tick failed: {e}");
+            }
+            last_scheduler_tick = Instant::now();
         }
 
         // Drain hook events from the socket listener

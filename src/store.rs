@@ -6,12 +6,13 @@ use rusqlite::{Connection, Row};
 use rusqlite_migration::{M, Migrations};
 
 use crate::primitives::{
-    ChatId, ClaudeSessionId, MessageRole, PaneId, ProjectId, ProjectName, TaskId, TaskName,
-    TaskStatus, WindowId,
+    ChatId, ClaudeSessionId, MessageRole, PaneId, ProjectId, ProjectName, ScheduleId, TaskId,
+    TaskName, TaskStatus, WindowId,
 };
+use crate::schedule::{Schedule, ScheduleType};
 use crate::task::{Project, Task, TaskMessage};
 
-static MIGRATION_STEPS: [M<'static>; 3] = [
+static MIGRATION_STEPS: [M<'static>; 5] = [
     M::up(
         "CREATE TABLE IF NOT EXISTS tasks (
             id           TEXT PRIMARY KEY,
@@ -45,6 +46,27 @@ static MIGRATION_STEPS: [M<'static>; 3] = [
         ALTER TABLE tasks ADD COLUMN project_id TEXT;",
     ),
     M::up("ALTER TABLE tasks ADD COLUMN session_id TEXT;"),
+    // Migration 3: Schedules table
+    M::up(
+        "CREATE TABLE IF NOT EXISTS schedules (
+            id            TEXT PRIMARY KEY,
+            name          TEXT NOT NULL UNIQUE,
+            schedule_type TEXT NOT NULL,
+            schedule_expr TEXT NOT NULL,
+            action        TEXT NOT NULL,
+            enabled       INTEGER NOT NULL DEFAULT 1,
+            last_run_at   TEXT,
+            next_run_at   TEXT,
+            created_at    TEXT NOT NULL,
+            run_count     INTEGER NOT NULL DEFAULT 0,
+            max_runs      INTEGER
+        );",
+    ),
+    // Migration 4: Task completion triggers
+    M::up(
+        "ALTER TABLE tasks ADD COLUMN on_complete_success TEXT;
+         ALTER TABLE tasks ADD COLUMN on_complete_failure TEXT;",
+    ),
 ];
 static MIGRATIONS: Migrations<'static> = Migrations::from_slice(&MIGRATION_STEPS);
 
@@ -72,12 +94,44 @@ fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
         exit_code: row.get(10)?,
         output: row.get(11)?,
         project_id: row.get::<_, Option<String>>(12)?.map(ProjectId::from),
+        on_complete_success: row.get(14)?,
+        on_complete_failure: row.get(15)?,
+    })
+}
+
+fn row_to_schedule(row: &Row) -> rusqlite::Result<Schedule> {
+    let created_at: String = row.get(8)?;
+    let last_run_at: Option<String> = row.get(6)?;
+    let next_run_at: Option<String> = row.get(7)?;
+    Ok(Schedule {
+        id: ScheduleId::from(row.get::<_, String>(0)?),
+        name: row.get(1)?,
+        schedule_type: ScheduleType::from(row.get::<_, String>(2)?),
+        schedule_expr: row.get(3)?,
+        action: row.get(4)?,
+        enabled: row.get(5)?,
+        last_run_at: last_run_at.and_then(|s| {
+            DateTime::parse_from_rfc3339(&s)
+                .ok()
+                .map(|dt| dt.with_timezone(&Utc))
+        }),
+        next_run_at: next_run_at.and_then(|s| {
+            DateTime::parse_from_rfc3339(&s)
+                .ok()
+                .map(|dt| dt.with_timezone(&Utc))
+        }),
+        created_at: DateTime::parse_from_rfc3339(&created_at)
+            .unwrap_or_default()
+            .with_timezone(&Utc),
+        run_count: row.get(9)?,
+        max_runs: row.get(10)?,
     })
 }
 
 const TASK_COLUMNS: &str =
     "id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir,
-     started_at, completed_at, exit_code, output, project_id, session_id";
+     started_at, completed_at, exit_code, output, project_id, session_id,
+     on_complete_success, on_complete_failure";
 
 pub struct Store {
     conn: Connection,
@@ -107,8 +161,8 @@ impl Store {
 
     pub fn insert_task(&self, task: &Task) -> anyhow::Result<()> {
         self.conn.execute(
-            "INSERT INTO tasks (id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir, started_at, project_id, session_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO tasks (id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir, started_at, project_id, session_id, on_complete_success, on_complete_failure)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             (
                 task.id.as_str(),
                 task.name.as_str(),
@@ -121,6 +175,8 @@ impl Store {
                 task.started_at.to_rfc3339(),
                 task.project_id.as_ref().map(|p| p.as_str()),
                 task.session_id.as_ref().map(|s| s.as_str()),
+                task.on_complete_success.as_deref(),
+                task.on_complete_failure.as_deref(),
             ),
         )?;
         Ok(())
@@ -340,6 +396,122 @@ impl Store {
         Ok(())
     }
 
+    // -- Schedule CRUD --
+
+    pub fn insert_schedule(&self, schedule: &Schedule) -> anyhow::Result<()> {
+        self.conn.execute(
+            "INSERT INTO schedules (id, name, schedule_type, schedule_expr, action, enabled, next_run_at, created_at, run_count, max_runs)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            (
+                schedule.id.as_str(),
+                &schedule.name,
+                schedule.schedule_type.as_str(),
+                &schedule.schedule_expr,
+                &schedule.action,
+                schedule.enabled,
+                schedule.next_run_at.as_ref().map(|dt| dt.to_rfc3339()),
+                schedule.created_at.to_rfc3339(),
+                schedule.run_count,
+                schedule.max_runs,
+            ),
+        )?;
+        Ok(())
+    }
+
+    pub fn list_schedules(&self) -> anyhow::Result<Vec<Schedule>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, schedule_type, schedule_expr, action, enabled,
+                    last_run_at, next_run_at, created_at, run_count, max_runs
+             FROM schedules ORDER BY created_at ASC",
+        )?;
+        let schedules = stmt
+            .query_map([], row_to_schedule)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(schedules)
+    }
+
+    pub fn list_due_schedules(&self, now: &DateTime<Utc>) -> anyhow::Result<Vec<Schedule>> {
+        let now_str = now.to_rfc3339();
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, schedule_type, schedule_expr, action, enabled,
+                    last_run_at, next_run_at, created_at, run_count, max_runs
+             FROM schedules
+             WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?1",
+        )?;
+        let schedules = stmt
+            .query_map([&now_str], row_to_schedule)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(schedules)
+    }
+
+    pub fn update_schedule_after_run(
+        &self,
+        id: &ScheduleId,
+        last_run_at: &DateTime<Utc>,
+        next_run_at: Option<&DateTime<Utc>>,
+        run_count: i64,
+        enabled: bool,
+    ) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE schedules SET last_run_at = ?1, next_run_at = ?2, run_count = ?3, enabled = ?4
+             WHERE id = ?5",
+            (
+                last_run_at.to_rfc3339(),
+                next_run_at.map(|dt| dt.to_rfc3339()),
+                run_count,
+                enabled,
+                id.as_str(),
+            ),
+        )?;
+        Ok(())
+    }
+
+    pub fn get_schedule_by_name(&self, name: &str) -> anyhow::Result<Option<Schedule>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, schedule_type, schedule_expr, action, enabled,
+                    last_run_at, next_run_at, created_at, run_count, max_runs
+             FROM schedules WHERE name = ?1",
+        )?;
+        let mut rows = stmt.query_map([name], row_to_schedule)?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn get_schedule_by_prefix(&self, prefix: &str) -> anyhow::Result<Option<Schedule>> {
+        let pattern = format!("{prefix}%");
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, schedule_type, schedule_expr, action, enabled,
+                    last_run_at, next_run_at, created_at, run_count, max_runs
+             FROM schedules WHERE id LIKE ?1",
+        )?;
+        let mut schedules: Vec<Schedule> = stmt
+            .query_map([&pattern], row_to_schedule)?
+            .collect::<Result<Vec<_>, _>>()?;
+        if schedules.len() > 1 {
+            anyhow::bail!(
+                "ambiguous prefix '{prefix}': matches {} schedules",
+                schedules.len()
+            );
+        }
+        Ok(schedules.pop())
+    }
+
+    pub fn delete_schedule(&self, id: &ScheduleId) -> anyhow::Result<()> {
+        self.conn
+            .execute("DELETE FROM schedules WHERE id = ?1", [id.as_str()])?;
+        Ok(())
+    }
+
+    pub fn set_schedule_enabled(&self, id: &ScheduleId, enabled: bool) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE schedules SET enabled = ?1 WHERE id = ?2",
+            (enabled, id.as_str()),
+        )?;
+        Ok(())
+    }
+
     /// Returns visible tasks scoped to a project.
     /// When project_id is None, returns tasks with no project (default/ExO scope).
     /// When Some, returns tasks belonging to that project.
@@ -395,6 +567,8 @@ mod tests {
             exit_code: None,
             output: None,
             project_id: None,
+            on_complete_success: None,
+            on_complete_failure: None,
         };
         store.insert_task(&task).unwrap();
         id
@@ -589,6 +763,8 @@ mod tests {
             exit_code: None,
             output: None,
             project_id: project_id.cloned(),
+            on_complete_success: None,
+            on_complete_failure: None,
         };
         store.insert_task(&task).unwrap();
         id

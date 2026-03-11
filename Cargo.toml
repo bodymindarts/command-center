@@ -25,6 +25,7 @@ shell-escape = "0.1"
 libc = "0.2"
 tracing = "0.1"
 ureq = { version = "2", features = ["json"] }
+croner = "2"
 
 [dev-dependencies]
 tempfile = "3"
