@@ -17,7 +17,15 @@ impl KeyCombo {
     }
 
     fn matches(&self, key: &KeyEvent) -> bool {
-        key.code == self.code && key.modifiers == self.modifiers
+        if key.code != self.code {
+            return false;
+        }
+        // BackTab is inherently Shift+Tab — crossterm always sets the SHIFT
+        // modifier for it, so ignore SHIFT when matching BackTab.
+        if self.code == KeyCode::BackTab {
+            return key.modifiers & !KeyModifiers::SHIFT == self.modifiers;
+        }
+        key.modifiers == self.modifiers
     }
 
     /// Parse a string like `"Ctrl+C"`, `"Enter"`, `"j"` into a KeyCombo.
