@@ -58,7 +58,15 @@ fn main() -> anyhow::Result<()> {
         Command::Close { id } => cmd_close(app, &id)?,
         Command::Reopen { id } => cmd_reopen(app, &id)?,
         Command::Delete { id } => cmd_delete(app, &id)?,
-        Command::Dash { resume, caffeinate } => tui::run(app, resume.as_deref(), caffeinate)?,
+        Command::Dash { resume, caffeinate } => {
+            let mcp_app = ClatApp::try_new(TmuxRuntime)?;
+            if let Err(e) = mcp::start_mcp_server(mcp::MCP_PORT, mcp_app) {
+                eprintln!("warning: MCP server failed to start: {e}");
+            }
+            let result = tui::run(app, resume.as_deref(), caffeinate);
+            mcp::remove_mcp_breadcrumb();
+            result?
+        }
         Command::Start { resume, caffeinate } => cmd_start(resume.as_deref(), caffeinate)?,
         Command::Goto { id } => cmd_goto(app, &id)?,
         Command::Send { id, message } => cmd_send(app, &id, &message)?,

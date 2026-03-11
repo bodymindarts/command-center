@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -13,6 +13,9 @@ use serde::Deserialize;
 
 use crate::app::{ClatApp, PromptMode, SpawnRequest, WorkDirMode};
 use crate::runtime::TmuxRuntime;
+
+/// Default port for the MCP HTTP server.
+pub const MCP_PORT: u16 = 9111;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SpawnParams {
@@ -40,13 +43,15 @@ pub struct SpawnParams {
 
 #[derive(Clone)]
 pub struct McpServer {
+    app: Arc<Mutex<ClatApp<TmuxRuntime>>>,
     tool_router: ToolRouter<Self>,
 }
 
 #[tool_router]
 impl McpServer {
-    pub fn new() -> Self {
+    pub fn new(app: Arc<Mutex<ClatApp<TmuxRuntime>>>) -> Self {
         Self {
+            app,
             tool_router: Self::tool_router(),
         }
     }
@@ -56,6 +61,8 @@ impl McpServer {
         &self,
         Parameters(params): Parameters<SpawnParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let app = Arc::clone(&self.app);
+
         let inner = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
             let SpawnParams {
                 name,
@@ -70,8 +77,7 @@ impl McpServer {
             let skill_name = skill.unwrap_or_else(|| "engineer".to_string());
             let scratch = scratch.unwrap_or(false);
 
-            let app = ClatApp::try_new(TmuxRuntime)
-                .map_err(|e| format!("Failed to initialize app: {e}"))?;
+            let app = app.lock().map_err(|e| format!("Lock error: {e}"))?;
 
             let repo_pathbuf = repo
                 .map(PathBuf::from)
@@ -163,12 +169,12 @@ pub fn read_mcp_url() -> Option<String> {
 /// can inject the MCP server URL into spawned agents' settings.
 ///
 /// Returns the URL the server is listening on.
-pub fn start_mcp_server(port: u16) -> anyhow::Result<String> {
+pub fn start_mcp_server(port: u16, app: ClatApp<TmuxRuntime>) -> anyhow::Result<String> {
     let url = format!("http://127.0.0.1:{port}/mcp");
+    let app = Arc::new(Mutex::new(app));
 
     let (tx, rx) = std::sync::mpsc::sync_channel::<Result<(), String>>(1);
 
-    let url_for_thread = url.clone();
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
@@ -183,7 +189,7 @@ pub fn start_mcp_server(port: u16) -> anyhow::Result<String> {
             };
 
             let service = StreamableHttpService::new(
-                || Ok(McpServer::new()),
+                move || Ok(McpServer::new(Arc::clone(&app))),
                 Arc::new(LocalSessionManager::default()),
                 Default::default(),
             );
@@ -200,7 +206,6 @@ pub fn start_mcp_server(port: u16) -> anyhow::Result<String> {
                 }
             }
         });
-        drop(url_for_thread);
     });
 
     // Wait for the server to start or fail
