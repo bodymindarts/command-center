@@ -198,6 +198,14 @@ pub fn run<R: Runtime>(
         }
     });
 
+    // MCP server for spawned agents to call tools natively.
+    match crate::mcp::start_mcp_server(9111) {
+        Ok(_url) => {}
+        Err(e) => {
+            tracing::warn!("MCP server failed to start: {e}");
+        }
+    }
+
     // Optional Telegram bot for remote permission approval.
     let (tg_tx, tg_rx) = if let (Ok(token), Ok(chat_id)) = (
         std::env::var("TELEGRAM_BOT_TOKEN"),
@@ -239,6 +247,7 @@ pub fn run<R: Runtime>(
     }
     let _ = std::fs::remove_file(&socket_path);
     crate::permission::remove_socket_breadcrumb(app.project_root());
+    crate::mcp::remove_mcp_breadcrumb();
 
     if let Some(ref mut child) = caffeinate_child {
         let _ = child.kill();

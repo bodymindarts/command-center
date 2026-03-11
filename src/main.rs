@@ -2,6 +2,7 @@ mod app;
 mod assistant;
 mod cli;
 mod config;
+mod mcp;
 mod permission;
 mod primitives;
 mod runtime;
