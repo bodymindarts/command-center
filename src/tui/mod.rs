@@ -1,6 +1,7 @@
 mod chat;
 mod handlers;
 mod input;
+mod keybindings;
 mod permissions;
 mod state;
 mod telegram;
@@ -13,9 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
-};
+use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -124,7 +123,8 @@ pub fn run<R: Runtime>(
         }
         ProjectState::new(assistant, tasks)
     };
-    let mut state = ScreenState::new(exo);
+    let keybindings = keybindings::Keybindings::load(&app.project_root().join("keybindings.toml"));
+    let mut state = ScreenState::new(exo, keybindings);
     let cancel = Arc::new(AtomicBool::new(false));
     let mut exo_session = AssistantSession::new(
         state.exo.chat_view.assistant.session_id.as_deref(),
@@ -292,10 +292,8 @@ fn run_loop<R: Runtime>(
                 Event::Paste(text) => handlers::handle_paste(state, text),
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     state.clear_status_error();
-                    // Ctrl+Z suspends — needs terminal access, handled inline
-                    if key.modifiers.contains(KeyModifiers::CONTROL)
-                        && key.code == KeyCode::Char('z')
-                    {
+                    // Suspend — needs terminal access, handled inline
+                    if state.keybindings.global.suspend.matches(&key) {
                         terminal::disable_raw_mode()?;
                         crossterm::execute!(
                             terminal.backend_mut(),

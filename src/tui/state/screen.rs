@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use crate::primitives::{ProjectId, ProjectName, TaskName};
 use crate::task::{Project, Task};
+use crate::tui::keybindings::Keybindings;
 
 use super::TaskListState;
 use super::project_list::ProjectListState;
@@ -37,10 +38,12 @@ pub struct ScreenState {
     /// Used for CWD→task matching in permission/resolved/idle handlers
     /// so lookups work regardless of which project is currently displayed.
     global_task_work_dirs: Vec<(TaskName, String)>,
+    /// User-configurable keybindings.
+    pub keybindings: Keybindings,
 }
 
 impl ScreenState {
-    pub fn new(exo: ProjectState) -> Self {
+    pub fn new(exo: ProjectState, keybindings: Keybindings) -> Self {
         Self {
             exo,
             projects: HashMap::new(),
@@ -55,6 +58,7 @@ impl ScreenState {
             search_input: InputState::new(),
             global_task_projects: HashMap::new(),
             global_task_work_dirs: Vec::new(),
+            keybindings,
         }
     }
 
@@ -707,7 +711,7 @@ mod tests {
     fn state_with_tasks(n: usize) -> ScreenState {
         let tasks: Vec<Task> = (0..n).map(|i| make_task(&format!("task-{i}"))).collect();
         let exo = ProjectState::new(crate::tui::chat::AssistantChat::new(), tasks);
-        ScreenState::new(exo)
+        ScreenState::new(exo, Keybindings::default())
     }
 
     // ── scroll_up_tasks / scroll_down_tasks ───────────────────────

@@ -161,33 +161,29 @@ pub(super) fn handle_paste(state: &mut ScreenState, text: String) {
 
 // ── Global key handler ──────────────────────────────────────────────
 
-/// Handle global key shortcuts (Ctrl+C, Ctrl+P, Ctrl+Y/T/N, number keys, Ctrl+O, Ctrl+R).
-/// Returns true if the key was consumed.
+/// Handle global key shortcuts. Returns true if the key was consumed.
 pub(super) fn handle_global_keys<R: Runtime>(
     state: &mut ScreenState,
     key: KeyEvent,
     app: &ClatApp<R>,
     tg_tx: Option<&mpsc::Sender<telegram::TgOutbound>>,
 ) -> bool {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let kb = &state.keybindings.global;
 
-    // Ctrl+C quits
-    if ctrl && key.code == KeyCode::Char('c') {
+    if kb.quit.matches(&key) {
         state.request_quit();
         return true;
     }
 
-    // Ctrl+P cycles to next task with pending permissions
-    if ctrl && key.code == KeyCode::Char('p') {
+    if kb.cycle_permissions.matches(&key) {
         return handle_cycle_permissions(state, app);
     }
 
     // Permission keys — global so they work regardless of focus (ChatInput, ChatHistory, TaskList)
     // while a task detail is showing. Guarded by show_detail + permissions.peek().
     let show_detail = state.active_state().task_list.is_detail_visible();
-    // Ctrl+Y one-time allow
-    if ctrl
-        && key.code == KeyCode::Char('y')
+
+    if kb.perm_approve.matches(&key)
         && show_detail
         && state.permissions.peek(&state.focused_perm_key()).is_some()
     {
@@ -198,9 +194,7 @@ pub(super) fn handle_global_keys<R: Runtime>(
         return true;
     }
 
-    // Ctrl+T trust / always-allow
-    if ctrl
-        && key.code == KeyCode::Char('t')
+    if kb.perm_trust.matches(&key)
         && show_detail
         && state.permissions.peek(&state.focused_perm_key()).is_some()
     {
@@ -211,9 +205,7 @@ pub(super) fn handle_global_keys<R: Runtime>(
         return true;
     }
 
-    // Ctrl+N denies permission
-    if ctrl
-        && key.code == KeyCode::Char('n')
+    if kb.perm_deny.matches(&key)
         && show_detail
         && state.permissions.peek(&state.focused_perm_key()).is_some()
     {
@@ -224,7 +216,7 @@ pub(super) fn handle_global_keys<R: Runtime>(
         return true;
     }
 
-    // Number keys 1-4 answer an AskUser prompt
+    // Number keys 1-4 answer an AskUser prompt (hardcoded — dynamic by nature)
     if matches!(key.code, KeyCode::Char('1'..='4'))
         && key.modifiers.is_empty()
         && show_detail
@@ -237,16 +229,14 @@ pub(super) fn handle_global_keys<R: Runtime>(
         return true;
     }
 
-    // Ctrl+O returns to ExO chat
-    if ctrl && key.code == KeyCode::Char('o') {
+    if kb.focus_exo.matches(&key) {
         if let Ok(tasks) = app.list_visible(None) {
             state.switch_to_project(None, tasks, None);
         }
         return true;
     }
 
-    // Ctrl+R returns to PM (or last active project from ExO)
-    if ctrl && key.code == KeyCode::Char('r') {
+    if kb.cycle_projects.matches(&key) {
         handle_goto_project(state, app);
         return true;
     }
@@ -420,104 +410,74 @@ pub(super) fn handle_focus_key<R: Runtime>(
 }
 
 fn handle_task_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app: &ClatApp<R>) {
-    match key.code {
-        KeyCode::Esc => {
-            state.close_task_detail();
-        }
-        KeyCode::Char('j') | KeyCode::Down => {
-            state.next_task_with_detail();
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            state.previous_task_with_detail();
-        }
-        KeyCode::PageDown => {
-            state.scroll_down_tasks();
-        }
-        KeyCode::PageUp => {
-            state.scroll_up_tasks();
-        }
-        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            state.scroll_down_tasks();
-        }
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            state.scroll_up_tasks();
-        }
-        KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            goto_task_window(state, app);
-        }
-        KeyCode::Enter => {
-            state.open_selected_task();
-        }
-        KeyCode::Char('x') => {
-            state.confirm_close_selected_task();
-        }
-        KeyCode::Char('r') => {
-            reopen_task(state, app);
-        }
-        KeyCode::Backspace => {
-            state.confirm_delete_selected_task();
-        }
-        KeyCode::Char('/') => {
-            state.enter_search_mode();
-        }
-        KeyCode::Tab => {
-            state.focus_left();
-        }
-        KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            state.focus_left();
-        }
-        KeyCode::Char('p') => {
-            state.show_project_list(app.list_projects().unwrap_or_default());
-        }
-        _ => {}
+    let kb = &state.keybindings.task_list;
+    if kb.close_detail.matches(&key) {
+        state.close_task_detail();
+    } else if kb.navigate_down.matches(&key) {
+        state.next_task_with_detail();
+    } else if kb.navigate_up.matches(&key) {
+        state.previous_task_with_detail();
+    } else if kb.scroll_down.matches(&key) {
+        state.scroll_down_tasks();
+    } else if kb.scroll_up.matches(&key) {
+        state.scroll_up_tasks();
+    } else if kb.goto_window.matches(&key) {
+        goto_task_window(state, app);
+    } else if kb.open_detail.matches(&key) {
+        state.open_selected_task();
+    } else if kb.close_task.matches(&key) {
+        state.confirm_close_selected_task();
+    } else if kb.reopen_task.matches(&key) {
+        reopen_task(state, app);
+    } else if kb.delete_task.matches(&key) {
+        state.confirm_delete_selected_task();
+    } else if kb.search.matches(&key) {
+        state.enter_search_mode();
+    } else if kb.focus_chat.matches(&key) {
+        state.focus_left();
+    } else if kb.show_projects.matches(&key) {
+        state.show_project_list(app.list_projects().unwrap_or_default());
     }
 }
 
 fn handle_task_search_key(state: &mut ScreenState, key: KeyEvent) {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    match key.code {
-        KeyCode::Esc => state.exit_search(),
-        KeyCode::Enter => {
-            state.confirm_search_selection();
-        }
-        KeyCode::Down | KeyCode::Tab => state.search_next(),
-        KeyCode::Up | KeyCode::BackTab => state.search_prev(),
-        KeyCode::Char('n') if ctrl => state.search_next(),
-        KeyCode::Char('p') if ctrl => state.search_prev(),
-        _ => {
-            if handle_input_editing(&mut state.search_input, &key) {
-                state.update_search_filter();
-            }
-        }
+    let kb = &state.keybindings.task_search;
+    if kb.cancel.matches(&key) {
+        state.exit_search();
+    } else if kb.confirm.matches(&key) {
+        state.confirm_search_selection();
+    } else if kb.next.matches(&key) {
+        state.search_next();
+    } else if kb.prev.matches(&key) {
+        state.search_prev();
+    } else if handle_input_editing(&mut state.search_input, &key) {
+        state.update_search_filter();
     }
 }
 
 fn handle_project_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app: &ClatApp<R>) {
-    match key.code {
-        KeyCode::Char('j') | KeyCode::Down => state.next_project(),
-        KeyCode::Char('k') | KeyCode::Up => state.previous_project(),
-        KeyCode::Char('/') => {
-            state.enter_search_mode();
-        }
-        KeyCode::Enter => {
-            if let Some(project) = state.selected_project() {
-                let project_id = project.id.clone();
-                let project_name = project.name.clone();
-                if let Ok(tasks) = app.list_visible(Some(&project_id)) {
-                    state.switch_to_project(Some((project_name, project_id.clone())), tasks, None);
-                }
+    let kb = &state.keybindings.project_list;
+    if kb.navigate_down.matches(&key) {
+        state.next_project();
+    } else if kb.navigate_up.matches(&key) {
+        state.previous_project();
+    } else if kb.search.matches(&key) {
+        state.enter_search_mode();
+    } else if kb.select.matches(&key) {
+        if let Some(project) = state.selected_project() {
+            let project_id = project.id.clone();
+            let project_name = project.name.clone();
+            if let Ok(tasks) = app.list_visible(Some(&project_id)) {
+                state.switch_to_project(Some((project_name, project_id.clone())), tasks, None);
             }
         }
-        KeyCode::Backspace => {
-            if let Some(project) = state.selected_project() {
-                let name = project.name.clone();
-                state.set_focus(Focus::ConfirmDeleteProject(name));
-            }
+    } else if kb.delete.matches(&key) {
+        if let Some(project) = state.selected_project() {
+            let name = project.name.clone();
+            state.set_focus(Focus::ConfirmDeleteProject(name));
         }
-        KeyCode::Char('p') | KeyCode::Esc => {
-            state.focus_on_tasks();
-        }
-        _ => {}
+    } else if kb.back.matches(&key) {
+        state.focus_on_tasks();
     }
 }
 
@@ -526,57 +486,47 @@ fn handle_task_chat_input_key<R: Runtime>(
     key: KeyEvent,
     app: &ClatApp<R>,
 ) {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    match key.code {
-        KeyCode::Esc => {
-            state.close_task_detail();
+    let kb = &state.keybindings.task_chat;
+    if kb.close_detail.matches(&key) {
+        state.close_task_detail();
+    } else if kb.next_task.matches(&key) {
+        state.navigate_to_adjacent_task(true);
+    } else if kb.prev_task.matches(&key) {
+        state.navigate_to_adjacent_task(false);
+    } else if kb.focus_history.matches(&key) {
+        state.set_focus(Focus::ChatHistory);
+    } else if kb.close_task.matches(&key) {
+        if let Some(task) = state.selected_task()
+            && task.status.is_running()
+        {
+            let id = task.id.clone();
+            state.set_focus(Focus::ConfirmCloseTask(id));
         }
-        KeyCode::Tab => {
-            state.navigate_to_adjacent_task(true);
-        }
-        KeyCode::BackTab => {
-            state.navigate_to_adjacent_task(false);
-        }
-        KeyCode::Char('k') if ctrl => {
-            state.set_focus(Focus::ChatHistory);
-        }
-        KeyCode::Char('x') if ctrl => {
-            if let Some(task) = state.selected_task()
-                && task.status.is_running()
-            {
-                let id = task.id.clone();
-                state.set_focus(Focus::ConfirmCloseTask(id));
-            }
-        }
-        KeyCode::Char('l') if ctrl => {
-            state.focus_on_tasks();
-        }
-        KeyCode::Char('g') if ctrl => {
-            goto_task_window(state, app);
-        }
-        KeyCode::Enter => {
-            let active = state.active_state_mut();
-            if !active.input.is_empty() {
-                let msg = active.input.take();
-                if let Some(task) = active.task_list.selected_task() {
-                    let task_id = task.id.as_str().to_string();
-                    let pane = task.tmux_pane.clone();
-                    match app.send(&task_id, &msg) {
-                        Ok(_) => {
-                            if let Some(pane) = pane {
-                                active.task_list.mark_pane_active(pane);
-                            }
+    } else if kb.focus_tasks.matches(&key) {
+        state.focus_on_tasks();
+    } else if kb.goto_window.matches(&key) {
+        goto_task_window(state, app);
+    } else if kb.send.matches(&key) {
+        let active = state.active_state_mut();
+        if !active.input.is_empty() {
+            let msg = active.input.take();
+            if let Some(task) = active.task_list.selected_task() {
+                let task_id = task.id.as_str().to_string();
+                let pane = task.tmux_pane.clone();
+                match app.send(&task_id, &msg) {
+                    Ok(_) => {
+                        if let Some(pane) = pane {
+                            active.task_list.mark_pane_active(pane);
                         }
-                        Err(e) => {
-                            state.set_status_error(format!("send: {e}"));
-                        }
+                    }
+                    Err(e) => {
+                        state.set_status_error(format!("send: {e}"));
                     }
                 }
             }
         }
-        _ => {
-            handle_input_editing(&mut state.active_state_mut().input, &key);
-        }
+    } else {
+        handle_input_editing(&mut state.active_state_mut().input, &key);
     }
 }
 
@@ -587,32 +537,23 @@ fn handle_chat_input_key<R: Runtime>(
     exo_session: &mut AssistantSession,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
 ) {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    match key.code {
-        KeyCode::Esc => {
-            state.cancel_streaming();
-        }
-        KeyCode::Tab => {
-            state.open_first_task_detail();
-        }
-        KeyCode::BackTab => {
-            state.open_last_task_detail();
-        }
-        KeyCode::Char('k') if ctrl => {
-            state.move_focus_up();
-        }
-        KeyCode::Char('x') if ctrl && state.is_project_selected() => {
-            state.confirm_close_project();
-        }
-        KeyCode::Char('l') if ctrl => {
-            state.focus_task_list_with_detail();
-        }
-        KeyCode::Enter => {
-            handle_chat_enter(state, app, exo_session, project_contexts);
-        }
-        _ => {
-            handle_input_editing(&mut state.active_state_mut().input, &key);
-        }
+    let kb = &state.keybindings.chat_input;
+    if kb.cancel_streaming.matches(&key) {
+        state.cancel_streaming();
+    } else if kb.open_first_task.matches(&key) {
+        state.open_first_task_detail();
+    } else if kb.open_last_task.matches(&key) {
+        state.open_last_task_detail();
+    } else if kb.focus_up.matches(&key) {
+        state.move_focus_up();
+    } else if kb.close_project.matches(&key) && state.is_project_selected() {
+        state.confirm_close_project();
+    } else if kb.focus_task_list.matches(&key) {
+        state.focus_task_list_with_detail();
+    } else if kb.send.matches(&key) {
+        handle_chat_enter(state, app, exo_session, project_contexts);
+    } else {
+        handle_input_editing(&mut state.active_state_mut().input, &key);
     }
 }
 
@@ -674,21 +615,15 @@ fn handle_chat_enter<R: Runtime>(
 }
 
 fn handle_chat_history_key(state: &mut ScreenState, key: KeyEvent) {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    match key.code {
-        KeyCode::Char('j') if ctrl => {
-            state.navigate_focus_down();
-        }
-        KeyCode::Char('u') if ctrl => {
-            state.scroll_chat_up();
-        }
-        KeyCode::Char('d') if ctrl => {
-            state.scroll_chat_down();
-        }
-        KeyCode::Char('l') if ctrl => {
-            state.navigate_focus_right();
-        }
-        _ => {}
+    let kb = &state.keybindings.chat_history;
+    if kb.navigate_down.matches(&key) {
+        state.navigate_focus_down();
+    } else if kb.scroll_up.matches(&key) {
+        state.scroll_chat_up();
+    } else if kb.scroll_down.matches(&key) {
+        state.scroll_chat_down();
+    } else if kb.navigate_right.matches(&key) {
+        state.navigate_focus_right();
     }
 }
 
