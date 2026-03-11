@@ -139,6 +139,9 @@ id_newtype!(ClaudeSessionId);
 id_newtype!(ScheduleId);
 string_newtype!(PaneId);
 string_newtype!(WindowId);
+// A clat subcommand string, e.g. `spawn "follow-up" -p task="..."`.
+// Executed by prefixing the clat binary path and running via `sh -c`.
+string_newtype!(ClatAction);
 
 /// Identifies the chat channel a message belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

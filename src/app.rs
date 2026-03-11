@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::config::Paths;
-use crate::primitives::{ChatId, MessageRole, ProjectId, ScheduleId, TaskId, TaskName, WindowId};
+use crate::primitives::{
+    ChatId, ClatAction, MessageRole, ProjectId, ScheduleId, TaskId, TaskName, WindowId,
+};
 use crate::runtime::{LaunchConfig, Runtime};
 use crate::schedule::{DiffMode, Schedule, ScheduleType, compute_next_run, render_action_template};
 use crate::skill::SkillFile;
@@ -33,9 +35,9 @@ pub struct SpawnRequest<'a> {
     pub work_dir_mode: WorkDirMode<'a>,
     pub prompt_mode: PromptMode,
     pub project: Option<String>,
-    pub on_complete_success: Option<String>,
-    pub on_complete_failure: Option<String>,
-    pub on_idle: Option<String>,
+    pub on_complete_success: Option<ClatAction>,
+    pub on_complete_failure: Option<ClatAction>,
+    pub on_idle: Option<ClatAction>,
 }
 
 #[derive(Debug)]
@@ -554,16 +556,16 @@ impl<R: Runtime> ClatApp<R> {
 
         // Fire on-complete triggers
         let trigger = if exit_code == 0 {
-            task.on_complete_success.as_deref()
+            task.on_complete_success.as_ref()
         } else {
-            task.on_complete_failure.as_deref()
+            task.on_complete_failure.as_ref()
         };
         if let Some(action) = trigger
             && let Err(e) = self.execute_clat_action(action)
         {
             tracing::warn!(
                 task = task.name.as_str(),
-                action,
+                %action,
                 "on-complete trigger failed: {e}"
             );
         }
@@ -646,9 +648,13 @@ impl<R: Runtime> ClatApp<R> {
 
                 if changed {
                     // Render action template with variables
-                    let action = self.render_schedule_action(&sched, &current_output, exit_code)?;
+                    let action = ClatAction::from(self.render_schedule_action(
+                        &sched,
+                        &current_output,
+                        exit_code,
+                    )?);
                     if let Err(e) = self.execute_clat_action(&action) {
-                        tracing::warn!(schedule = sched.name, action, "watch action failed: {e}");
+                        tracing::warn!(schedule = sched.name, %action, "watch action failed: {e}");
                     }
 
                     let new_count = sched.run_count + 1;
@@ -676,10 +682,11 @@ impl<R: Runtime> ClatApp<R> {
                 }
             } else {
                 // Plain timer schedule: execute unconditionally
-                if let Err(e) = self.execute_clat_action(&sched.action) {
+                let action = ClatAction::from(sched.action.clone());
+                if let Err(e) = self.execute_clat_action(&action) {
                     tracing::warn!(
                         schedule = sched.name,
-                        action = sched.action,
+                        %action,
                         "schedule execution failed: {e}"
                     );
                 }
@@ -777,11 +784,11 @@ impl<R: Runtime> ClatApp<R> {
             None => return Ok(false),
         };
 
-        let action = task.on_idle.as_deref().unwrap();
+        let action = task.on_idle.as_ref().unwrap();
         if let Err(e) = self.execute_clat_action(action) {
             tracing::warn!(
                 task = task.name.as_str(),
-                action,
+                %action,
                 "on-idle trigger failed: {e}"
             );
         }
@@ -791,12 +798,12 @@ impl<R: Runtime> ClatApp<R> {
         Ok(true)
     }
 
-    /// Execute a clat action string by running it as a subprocess.
+    /// Execute a clat action by running it as a subprocess.
     /// The action is prefixed with the current executable path.
-    fn execute_clat_action(&self, action: &str) -> anyhow::Result<()> {
+    fn execute_clat_action(&self, action: &ClatAction) -> anyhow::Result<()> {
         let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("clat"));
 
-        let full_cmd = format!("{} {}", exe.display(), action);
+        let full_cmd = format!("{} {}", exe.display(), action.as_str());
         let status = std::process::Command::new("sh")
             .arg("-c")
             .arg(&full_cmd)

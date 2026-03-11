@@ -4,8 +4,8 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 
 use crate::primitives::{
-    ClaudeSessionId, MessageRole, PaneId, ProjectId, ProjectName, TaskId, TaskName, TaskStatus,
-    WindowId,
+    ClatAction, ClaudeSessionId, MessageRole, PaneId, ProjectId, ProjectName, TaskId, TaskName,
+    TaskStatus, WindowId,
 };
 
 /// Visual status of a task, combining persisted `TaskStatus` with runtime
@@ -54,9 +54,9 @@ pub struct Task {
     pub exit_code: Option<i32>,
     pub output: Option<String>,
     pub project_id: Option<ProjectId>,
-    pub on_complete_success: Option<String>,
-    pub on_complete_failure: Option<String>,
-    pub on_idle: Option<String>,
+    pub on_complete_success: Option<ClatAction>,
+    pub on_complete_failure: Option<ClatAction>,
+    pub on_idle: Option<ClatAction>,
     pub on_idle_fired: bool,
 }
 

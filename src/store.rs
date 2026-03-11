@@ -6,8 +6,8 @@ use rusqlite::{Connection, Row};
 use rusqlite_migration::{M, Migrations};
 
 use crate::primitives::{
-    ChatId, ClaudeSessionId, MessageRole, PaneId, ProjectId, ProjectName, ScheduleId, TaskId,
-    TaskName, TaskStatus, WindowId,
+    ChatId, ClatAction, ClaudeSessionId, MessageRole, PaneId, ProjectId, ProjectName, ScheduleId,
+    TaskId, TaskName, TaskStatus, WindowId,
 };
 use crate::schedule::{DiffMode, Schedule, ScheduleType};
 use crate::task::{Project, Task, TaskMessage};
@@ -105,9 +105,9 @@ fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
         exit_code: row.get(10)?,
         output: row.get(11)?,
         project_id: row.get::<_, Option<String>>(12)?.map(ProjectId::from),
-        on_complete_success: row.get(14)?,
-        on_complete_failure: row.get(15)?,
-        on_idle: row.get(16)?,
+        on_complete_success: row.get::<_, Option<String>>(14)?.map(ClatAction::from),
+        on_complete_failure: row.get::<_, Option<String>>(15)?.map(ClatAction::from),
+        on_idle: row.get::<_, Option<String>>(16)?.map(ClatAction::from),
         on_idle_fired: row.get::<_, bool>(17).unwrap_or(false),
     })
 }
@@ -198,9 +198,9 @@ impl Store {
                 task.started_at.to_rfc3339(),
                 task.project_id.as_ref().map(|p| p.as_str()),
                 task.session_id.as_ref().map(|s| s.as_str()),
-                task.on_complete_success.as_deref(),
-                task.on_complete_failure.as_deref(),
-                task.on_idle.as_deref(),
+                task.on_complete_success.as_ref().map(|a| a.as_str()),
+                task.on_complete_failure.as_ref().map(|a| a.as_str()),
+                task.on_idle.as_ref().map(|a| a.as_str()),
             ),
         )?;
         Ok(())

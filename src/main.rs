@@ -111,6 +111,8 @@ struct SpawnOpts {
     on_idle: Option<String>,
 }
 
+use crate::primitives::ClatAction;
+
 fn cmd_spawn(app: ClatApp<impl Runtime>, opts: SpawnOpts) -> anyhow::Result<()> {
     let (work_dir_mode, prompt_mode) = if opts.scratch {
         (WorkDirMode::Scratch, PromptMode::Full)
@@ -148,9 +150,9 @@ fn cmd_spawn(app: ClatApp<impl Runtime>, opts: SpawnOpts) -> anyhow::Result<()> 
         work_dir_mode,
         prompt_mode,
         project,
-        on_complete_success: opts.on_complete,
-        on_complete_failure: opts.on_fail,
-        on_idle: opts.on_idle,
+        on_complete_success: opts.on_complete.map(ClatAction::from),
+        on_complete_failure: opts.on_fail.map(ClatAction::from),
+        on_idle: opts.on_idle.map(ClatAction::from),
     })?;
     println!(
         "Spawned task {} ({})",
