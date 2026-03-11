@@ -122,6 +122,7 @@ pub(in crate::tui) fn ui(frame: &mut ratatui::Frame, state: &mut ScreenState) {
         &state.permissions,
         &focused_perm_key,
         state.status_error(),
+        &state.keybindings,
         left[3],
     );
 

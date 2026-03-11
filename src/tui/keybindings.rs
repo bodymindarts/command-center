@@ -90,6 +90,63 @@ impl Binding {
     pub fn matches(&self, key: &KeyEvent) -> bool {
         self.0.iter().any(|combo| combo.matches(key))
     }
+
+    /// Format all key combos joined with `/`, e.g. "p/Esc".
+    pub fn hint_all(&self) -> String {
+        self.0
+            .iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+}
+
+impl fmt::Display for KeyCombo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.code == KeyCode::BackTab {
+            return write!(f, "S-Tab");
+        }
+        if self.modifiers.contains(KeyModifiers::CONTROL) {
+            write!(f, "^")?;
+        }
+        if self.modifiers.contains(KeyModifiers::ALT) {
+            write!(f, "Alt+")?;
+        }
+        if self.modifiers.contains(KeyModifiers::SHIFT) {
+            write!(f, "S-")?;
+        }
+        match self.code {
+            KeyCode::Char(' ') => write!(f, "Space"),
+            KeyCode::Char(c) if self.modifiers.contains(KeyModifiers::CONTROL) => {
+                write!(f, "{}", c.to_ascii_uppercase())
+            }
+            KeyCode::Char(c) => write!(f, "{c}"),
+            KeyCode::Enter => write!(f, "Enter"),
+            KeyCode::Esc => write!(f, "Esc"),
+            KeyCode::Tab => write!(f, "Tab"),
+            KeyCode::Backspace => write!(f, "\u{232b}"),
+            KeyCode::Delete => write!(f, "Del"),
+            KeyCode::Up => write!(f, "Up"),
+            KeyCode::Down => write!(f, "Down"),
+            KeyCode::Left => write!(f, "Left"),
+            KeyCode::Right => write!(f, "Right"),
+            KeyCode::PageUp => write!(f, "PgUp"),
+            KeyCode::PageDown => write!(f, "PgDn"),
+            KeyCode::Home => write!(f, "Home"),
+            KeyCode::End => write!(f, "End"),
+            _ => write!(f, "?"),
+        }
+    }
+}
+
+impl fmt::Display for Binding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(combo) = self.0.first() {
+            write!(f, "{combo}")
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for Binding {
@@ -495,6 +552,60 @@ quit = "q"
                 .navigate_down
                 .matches(&press(KeyCode::Char('j'), KeyModifiers::empty()))
         );
+    }
+
+    #[test]
+    fn display_ctrl_char() {
+        let combo = KeyCombo::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(combo.to_string(), "^C");
+    }
+
+    #[test]
+    fn display_plain_char() {
+        let combo = KeyCombo::new(KeyCode::Char('j'), KeyModifiers::empty());
+        assert_eq!(combo.to_string(), "j");
+    }
+
+    #[test]
+    fn display_special_keys() {
+        assert_eq!(
+            KeyCombo::new(KeyCode::Enter, KeyModifiers::empty()).to_string(),
+            "Enter"
+        );
+        assert_eq!(
+            KeyCombo::new(KeyCode::Esc, KeyModifiers::empty()).to_string(),
+            "Esc"
+        );
+        assert_eq!(
+            KeyCombo::new(KeyCode::Tab, KeyModifiers::empty()).to_string(),
+            "Tab"
+        );
+        assert_eq!(
+            KeyCombo::new(KeyCode::BackTab, KeyModifiers::empty()).to_string(),
+            "S-Tab"
+        );
+        assert_eq!(
+            KeyCombo::new(KeyCode::Backspace, KeyModifiers::empty()).to_string(),
+            "\u{232b}"
+        );
+    }
+
+    #[test]
+    fn display_binding_shows_first_combo() {
+        let binding = Binding::keys(vec![
+            KeyCombo::new(KeyCode::Char('j'), KeyModifiers::empty()),
+            KeyCombo::new(KeyCode::Down, KeyModifiers::empty()),
+        ]);
+        assert_eq!(binding.to_string(), "j");
+    }
+
+    #[test]
+    fn hint_all_joins_combos() {
+        let binding = Binding::keys(vec![
+            KeyCombo::new(KeyCode::Char('p'), KeyModifiers::empty()),
+            KeyCombo::new(KeyCode::Esc, KeyModifiers::empty()),
+        ]);
+        assert_eq!(binding.hint_all(), "p/Esc");
     }
 
     #[test]

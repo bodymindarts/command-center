@@ -5,6 +5,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::primitives::TaskName;
 
+use super::super::keybindings::{GlobalBindings, Keybindings};
 use super::super::permissions::PermissionStore;
 use super::super::state::{Focus, InputState, TaskListState};
 
@@ -77,21 +78,22 @@ pub(in crate::tui) fn render_input(
     }
 }
 
-fn perm_hint_spans() -> Vec<Span<'static>> {
+fn perm_hint_spans(global: &GlobalBindings) -> Vec<Span<'static>> {
+    let g = |s: String| Span::styled(s, Style::default().fg(Color::Green));
     vec![
         Span::raw("  "),
-        Span::styled("^Y", Style::default().fg(Color::Green)),
+        g(global.perm_approve.to_string()),
         Span::raw(" ok  "),
-        Span::styled("^T", Style::default().fg(Color::Green)),
+        g(global.perm_trust.to_string()),
         Span::raw(" trust  "),
-        Span::styled("^N", Style::default().fg(Color::Green)),
+        g(global.perm_deny.to_string()),
         Span::raw(" deny  "),
-        Span::styled("^P", Style::default().fg(Color::Green)),
+        g(global.cycle_permissions.to_string()),
         Span::raw(" next"),
     ]
 }
 
-fn askuser_hint_spans(n_opts: usize) -> Vec<Span<'static>> {
+fn askuser_hint_spans(n_opts: usize, global: &GlobalBindings) -> Vec<Span<'static>> {
     let mut spans = vec![Span::raw("  ")];
     let labels = ["1", "2", "3", "4"];
     for (i, label) in labels.iter().enumerate().take(n_opts.min(4)) {
@@ -101,11 +103,15 @@ fn askuser_hint_spans(n_opts: usize) -> Vec<Span<'static>> {
         spans.push(Span::styled(*label, Style::default().fg(Color::Green)));
     }
     spans.push(Span::raw(" select  "));
-    spans.push(Span::styled("^P", Style::default().fg(Color::Green)));
+    spans.push(Span::styled(
+        global.cycle_permissions.to_string(),
+        Style::default().fg(Color::Green),
+    ));
     spans.push(Span::raw(" next"));
     spans
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::tui) fn render_prompt_bar(
     frame: &mut ratatui::Frame,
     focus: &Focus,
@@ -113,6 +119,7 @@ pub(in crate::tui) fn render_prompt_bar(
     permissions: &PermissionStore,
     perm_key: &TaskName,
     status_error: Option<&str>,
+    keybindings: &Keybindings,
     area: Rect,
 ) {
     // Show transient error in red, replacing normal keybinding hints
@@ -127,60 +134,65 @@ pub(in crate::tui) fn render_prompt_bar(
 
     let front_p = permissions.peek(perm_key);
     let has_perms = show_detail && front_p.is_some_and(|p| !p.is_askuser());
+    let kb = keybindings;
+    let key = |s: String| Span::styled(s, Style::default().fg(Color::Yellow));
     let mut spans = match focus {
         Focus::ChatInput if show_detail => {
             vec![
-                Span::styled(" Enter", Style::default().fg(Color::Yellow)),
+                key(format!(" {}", kb.task_chat.send)),
                 Span::raw(" send  "),
-                Span::styled("Tab/S-Tab", Style::default().fg(Color::Yellow)),
+                key(format!(
+                    "{}/{}",
+                    kb.task_chat.next_task, kb.task_chat.prev_task
+                )),
                 Span::raw(" task  "),
-                Span::styled("^K", Style::default().fg(Color::Yellow)),
+                key(kb.task_chat.focus_history.to_string()),
                 Span::raw(" scroll  "),
-                Span::styled("^G", Style::default().fg(Color::Yellow)),
+                key(kb.task_chat.goto_window.to_string()),
                 Span::raw(" goto  "),
-                Span::styled("^X", Style::default().fg(Color::Yellow)),
+                key(kb.task_chat.close_task.to_string()),
                 Span::raw(" close  "),
-                Span::styled("^L", Style::default().fg(Color::Yellow)),
+                key(kb.task_chat.focus_tasks.to_string()),
                 Span::raw(" list  "),
-                Span::styled("^O", Style::default().fg(Color::Yellow)),
+                key(kb.global.focus_exo.to_string()),
                 Span::raw(" ExO  "),
-                Span::styled("^R", Style::default().fg(Color::Yellow)),
+                key(kb.global.cycle_projects.to_string()),
                 Span::raw(" proj  "),
-                Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                key(kb.task_chat.close_detail.to_string()),
                 Span::raw(" back"),
             ]
         }
         Focus::ChatInput => {
             vec![
-                Span::styled(" Enter", Style::default().fg(Color::Yellow)),
+                key(format!(" {}", kb.chat_input.send)),
                 Span::raw(" send  "),
-                Span::styled("Tab", Style::default().fg(Color::Yellow)),
+                key(kb.chat_input.open_first_task.to_string()),
                 Span::raw(" task  "),
-                Span::styled("^K", Style::default().fg(Color::Yellow)),
+                key(kb.chat_input.focus_up.to_string()),
                 Span::raw(" scroll  "),
-                Span::styled("^L", Style::default().fg(Color::Yellow)),
+                key(kb.chat_input.focus_task_list.to_string()),
                 Span::raw(" list  "),
-                Span::styled("^O", Style::default().fg(Color::Yellow)),
+                key(kb.global.focus_exo.to_string()),
                 Span::raw(" ExO  "),
-                Span::styled("^R", Style::default().fg(Color::Yellow)),
+                key(kb.global.cycle_projects.to_string()),
                 Span::raw(" proj  "),
-                Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                key(kb.chat_input.cancel_streaming.to_string()),
                 Span::raw(" stop"),
             ]
         }
         Focus::ChatHistory => {
             vec![
-                Span::styled(" ^J", Style::default().fg(Color::Yellow)),
+                key(format!(" {}", kb.chat_history.navigate_down)),
                 Span::raw(" input  "),
-                Span::styled("^U", Style::default().fg(Color::Yellow)),
+                key(kb.chat_history.scroll_up.to_string()),
                 Span::raw(" up  "),
-                Span::styled("^D", Style::default().fg(Color::Yellow)),
+                key(kb.chat_history.scroll_down.to_string()),
                 Span::raw(" down  "),
-                Span::styled("^L", Style::default().fg(Color::Yellow)),
+                key(kb.chat_history.navigate_right.to_string()),
                 Span::raw(" tasks  "),
-                Span::styled("^O", Style::default().fg(Color::Yellow)),
+                key(kb.global.focus_exo.to_string()),
                 Span::raw(" ExO  "),
-                Span::styled("^R", Style::default().fg(Color::Yellow)),
+                key(kb.global.cycle_projects.to_string()),
                 Span::raw(" proj"),
             ]
         }
@@ -188,81 +200,85 @@ pub(in crate::tui) fn render_prompt_bar(
         | Focus::ConfirmCloseProject
         | Focus::ConfirmDeleteProject(_) => {
             vec![
-                Span::styled(" y", Style::default().fg(Color::Yellow)),
+                key(" y".to_string()),
                 Span::raw(" confirm  "),
-                Span::styled("n/Esc", Style::default().fg(Color::Yellow)),
+                key("n/Esc".to_string()),
                 Span::raw(" cancel"),
             ]
         }
         Focus::ListSearch => {
             vec![
-                Span::styled(" Enter", Style::default().fg(Color::Yellow)),
+                key(format!(" {}", kb.task_search.confirm)),
                 Span::raw(" select  "),
-                Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                key(kb.task_search.cancel.to_string()),
                 Span::raw(" cancel  "),
-                Span::styled("Tab/S-Tab", Style::default().fg(Color::Yellow)),
+                key(format!("{}/{}", kb.task_search.next, kb.task_search.prev)),
                 Span::raw(" navigate"),
             ]
         }
         Focus::ProjectList => {
             vec![
-                Span::styled(" j/k", Style::default().fg(Color::Yellow)),
+                key(format!(
+                    " {}/{}",
+                    kb.project_list.navigate_down, kb.project_list.navigate_up
+                )),
                 Span::raw(" navigate  "),
-                Span::styled("Enter", Style::default().fg(Color::Yellow)),
+                key(kb.project_list.select.to_string()),
                 Span::raw(" select  "),
-                Span::styled("/", Style::default().fg(Color::Yellow)),
+                key(kb.project_list.search.to_string()),
                 Span::raw(" search  "),
-                Span::styled("\u{232b}", Style::default().fg(Color::Yellow)),
+                key(kb.project_list.delete.to_string()),
                 Span::raw(" delete  "),
-                Span::styled("p/Esc", Style::default().fg(Color::Yellow)),
+                key(kb.project_list.back.hint_all()),
                 Span::raw(" back"),
             ]
         }
         Focus::ConfirmDelete(_) => {
             vec![
-                Span::styled(" y", Style::default().fg(Color::Yellow)),
+                key(" y".to_string()),
                 Span::raw(" delete  "),
-                Span::styled("n/Esc", Style::default().fg(Color::Yellow)),
+                key("n/Esc".to_string()),
                 Span::raw(" cancel"),
             ]
         }
         Focus::TaskList => {
             vec![
-                Span::styled(" j/k", Style::default().fg(Color::Yellow)),
+                key(format!(
+                    " {}/{}",
+                    kb.task_list.navigate_down, kb.task_list.navigate_up
+                )),
                 Span::raw(" navigate  "),
-                Span::styled("Enter", Style::default().fg(Color::Yellow)),
+                key(kb.task_list.open_detail.to_string()),
                 Span::raw(" open  "),
-                Span::styled("Tab", Style::default().fg(Color::Yellow)),
+                key(kb.task_list.focus_chat.to_string()),
                 Span::raw(" input  "),
-                Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                key(kb.task_list.close_detail.to_string()),
                 Span::raw(" back  "),
-                Span::styled("^G", Style::default().fg(Color::Yellow)),
+                key(kb.task_list.goto_window.to_string()),
                 Span::raw(" goto  "),
-                Span::styled("/", Style::default().fg(Color::Yellow)),
+                key(kb.task_list.search.to_string()),
                 Span::raw(" search  "),
-                Span::styled("p", Style::default().fg(Color::Yellow)),
+                key(kb.task_list.show_projects.to_string()),
                 Span::raw(" projects  "),
-                Span::styled("r", Style::default().fg(Color::Yellow)),
+                key(kb.task_list.reopen_task.to_string()),
                 Span::raw(" reopen  "),
-                Span::styled("x", Style::default().fg(Color::Yellow)),
+                key(kb.task_list.close_task.to_string()),
                 Span::raw(" close  "),
-                Span::styled("\u{232b}", Style::default().fg(Color::Yellow)),
+                key(kb.task_list.delete_task.to_string()),
                 Span::raw(" delete  "),
-                Span::styled("^O", Style::default().fg(Color::Yellow)),
+                key(kb.global.focus_exo.to_string()),
                 Span::raw(" exo  "),
-                Span::styled("^R", Style::default().fg(Color::Yellow)),
-                Span::raw(" cycle  "),
-                Span::styled("^H", Style::default().fg(Color::Yellow)),
-                Span::raw(" left"),
+                key(kb.global.cycle_projects.to_string()),
+                Span::raw(" cycle"),
             ]
         }
     };
     let has_askuser = show_detail && front_p.is_some_and(|p| p.is_askuser());
     if has_perms {
-        spans.extend(perm_hint_spans());
+        spans.extend(perm_hint_spans(&kb.global));
     } else if has_askuser {
         let n_opts = front_p.map(|p| p.askuser_options.len()).unwrap_or(0);
-        spans.extend(askuser_hint_spans(n_opts));
+        spans.extend(askuser_hint_spans(n_opts, &kb.global));
     }
 
     let bar = Paragraph::new(Line::from(spans)).style(Style::default().fg(Color::DarkGray));
