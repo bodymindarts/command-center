@@ -3,3 +3,5 @@ prompt.txt
 idle-prompt.txt
 system-prompt.txt
 settings.local.json
+worktrees/
+perm-socket
