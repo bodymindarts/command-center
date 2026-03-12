@@ -94,6 +94,11 @@ impl<R: Runtime> ClatApp<R> {
         let paths = Paths::resolve()?;
         paths.ensure_dirs()?;
         let store = Store::open(&paths.db_path).await?;
+        // If the CLI flag wasn't set, check whether the dashboard wrote a
+        // breadcrumb — this lets `clat spawn` from a separate terminal
+        // inherit the dashboard's --dangerously-skip-permissions.
+        let skip_permissions =
+            skip_permissions || crate::permission::read_skip_permissions_breadcrumb(&paths.root);
         Ok(Self {
             store,
             runtime,

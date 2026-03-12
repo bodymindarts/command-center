@@ -197,6 +197,9 @@ pub async fn run<R: Runtime>(
         std::env::set_var(crate::permission::SOCKET_ENV, &socket_path);
     }
     crate::permission::write_socket_breadcrumb(app.project_root(), &socket_path);
+    if skip_permissions {
+        crate::permission::write_skip_permissions_breadcrumb(app.project_root());
+    }
     {
         let work_dirs: Vec<String> = state
             .exo
@@ -301,6 +304,7 @@ pub async fn run<R: Runtime>(
     }
     let _ = std::fs::remove_file(&socket_path);
     crate::permission::remove_socket_breadcrumb(app.project_root());
+    crate::permission::remove_skip_permissions_breadcrumb(app.project_root());
 
     if let Some(ref mut child) = caffeinate_child {
         let _ = child.kill();

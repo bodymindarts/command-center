@@ -446,7 +446,7 @@ fn setup_worktree_config(
         // Ignore all generated files so agents don't commit them.
         std::fs::write(
             target_claude_dir.join(".gitignore"),
-            "launch.sh\nprompt.txt\nidle-prompt.txt\nsystem-prompt.txt\nsettings.local.json\nhooks/\n.gitignore\n",
+            "launch.sh\nprompt.txt\nidle-prompt.txt\nsystem-prompt.txt\nsettings.local.json\nhooks/\n.gitignore\nperm-socket\nskip-permissions\n",
         )?;
     }
     Ok(())

@@ -173,6 +173,26 @@ pub fn read_socket_breadcrumb(project_root: &std::path::Path) -> Option<String> 
     std::fs::read_to_string(project_root.join(SOCKET_BREADCRUMB)).ok()
 }
 
+/// Breadcrumb file written by the dashboard so that CLI-spawned tasks
+/// inherit `--dangerously-skip-permissions` without the user re-passing the flag.
+const SKIP_PERMS_BREADCRUMB: &str = ".claude/skip-permissions";
+
+/// Write the skip-permissions breadcrumb when the dashboard starts with the flag.
+pub fn write_skip_permissions_breadcrumb(project_root: &std::path::Path) {
+    let path = project_root.join(SKIP_PERMS_BREADCRUMB);
+    let _ = std::fs::write(&path, "1");
+}
+
+/// Remove the skip-permissions breadcrumb on shutdown.
+pub fn remove_skip_permissions_breadcrumb(project_root: &std::path::Path) {
+    let _ = std::fs::remove_file(project_root.join(SKIP_PERMS_BREADCRUMB));
+}
+
+/// Check whether the dashboard was started with `--dangerously-skip-permissions`.
+pub fn read_skip_permissions_breadcrumb(project_root: &std::path::Path) -> bool {
+    project_root.join(SKIP_PERMS_BREADCRUMB).exists()
+}
+
 /// Stable socket path for the dashboard (no PID suffix).
 /// Only one dashboard runs at a time, so a fixed name is fine
 /// and survives dashboard restarts without staling worktree hooks.

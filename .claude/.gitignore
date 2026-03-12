@@ -5,3 +5,4 @@ system-prompt.txt
 settings.local.json
 worktrees/
 perm-socket
+skip-permissions
