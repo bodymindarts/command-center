@@ -132,6 +132,9 @@ pub enum Command {
         action: ProjectAction,
     },
 
+    /// Start an MCP server over stdio (JSON-RPC)
+    McpServer,
+
     /// Commands called by spawned agents (hooks, lifecycle)
     #[command(hide = true)]
     Agent {
