@@ -41,6 +41,16 @@ clat dash --caffeinate           # same, but prevent macOS sleep while running
 
 The `--caffeinate` flag spawns `caffeinate -s` in the background so long-running agent sessions aren't interrupted by system sleep.
 
+#### Skipping permissions
+
+```sh
+clat start --dangerously-skip-permissions
+clat dash --dangerously-skip-permissions
+clat spawn "task" -p task="..." --dangerously-skip-permissions
+```
+
+This passes `--dangerously-skip-permissions` to every Claude Code subprocess (ExO, PM sessions, and spawned worker agents). All permission hooks are bypassed and tool restrictions (`--allowedTools`) are lifted — Claude gets unrestricted access to your system. Use this only in trusted, sandboxed environments where you want fully autonomous operation without approval prompts.
+
 **Global shortcuts** (work everywhere):
 
 | Key | Action |
