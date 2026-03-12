@@ -3,7 +3,7 @@ prompt.txt
 idle-prompt.txt
 system-prompt.txt
 settings.local.json
-worktrees/
+hooks/
+.gitignore
 perm-socket
 skip-permissions
-mcp-url

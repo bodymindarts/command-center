@@ -442,14 +442,35 @@ fn setup_worktree_config(
             embed_socket_in_hooks(&mut settings, &sock_path);
         }
 
-        // Inject MCP server config so agents discover clat tools natively.
+        // Write .mcp.json at worktree root so Claude Code discovers the MCP server.
+        // Claude Code reads MCP servers from .mcp.json (project scope), NOT from
+        // the mcpServers key in settings.local.json.
         if let Some(mcp_url) = crate::mcp::read_mcp_url_breadcrumb(repo_root) {
-            settings["mcpServers"] = serde_json::json!({
-                "clat": {
-                    "type": "http",
-                    "url": mcp_url
+            let mcp_json = serde_json::json!({
+                "mcpServers": {
+                    "clat": {
+                        "type": "http",
+                        "url": mcp_url
+                    }
                 }
             });
+            std::fs::write(
+                worktree_path.join(".mcp.json"),
+                serde_json::to_string_pretty(&mcp_json)?,
+            )?;
+            settings["enableAllProjectMcpServers"] = serde_json::json!(true);
+
+            // Ensure .mcp.json is gitignored in the worktree.
+            let gitignore_path = worktree_path.join(".gitignore");
+            let content = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
+            if !content.lines().any(|l| l.trim() == ".mcp.json") {
+                let mut new_content = content;
+                if !new_content.is_empty() && !new_content.ends_with('\n') {
+                    new_content.push('\n');
+                }
+                new_content.push_str(".mcp.json\n");
+                std::fs::write(&gitignore_path, new_content)?;
+            }
         }
 
         std::fs::write(&target_settings, settings.to_string())?;
