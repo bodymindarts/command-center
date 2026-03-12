@@ -114,6 +114,7 @@ pub struct AssistantSession {
     session_key: SessionKey,
     session_id: Option<String>,
     system_prompt: String,
+    skip_permissions: bool,
 }
 
 impl AssistantSession {
@@ -126,6 +127,7 @@ impl AssistantSession {
         cancel: Arc<AtomicBool>,
         system_prompt: &str,
         event_tx: mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
+        skip_permissions: bool,
     ) -> Self {
         let mut session = AssistantSession {
             stdin: None,
@@ -135,6 +137,7 @@ impl AssistantSession {
             session_key,
             session_id: session_id.map(|s| s.to_string()),
             system_prompt: system_prompt.to_string(),
+            skip_permissions,
         };
         session.spawn_process(session_id.is_some());
         session
@@ -149,12 +152,16 @@ impl AssistantSession {
             "stream-json".to_string(),
             "--verbose".to_string(),
             "--include-partial-messages".to_string(),
-            "--dangerously-skip-permissions".to_string(),
+        ];
+        if self.skip_permissions {
+            args.push("--dangerously-skip-permissions".to_string());
+        }
+        args.extend([
             "--allowedTools".to_string(),
             "Read,Grep,Glob,Bash,Edit,Write".to_string(),
             "--append-system-prompt".to_string(),
             self.system_prompt.clone(),
-        ];
+        ]);
 
         if resume && let Some(ref sid) = self.session_id {
             args.push("--resume".to_string());

@@ -22,11 +22,12 @@ use crate::runtime::{Runtime, TmuxRuntime};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let app = ClatApp::try_new(TmuxRuntime).await?;
+    let mut app = ClatApp::try_new(TmuxRuntime).await?;
 
     let command = cli.command.unwrap_or(Command::Dash {
         resume: None,
         caffeinate: false,
+        dangerously_skip_permissions: false,
     });
 
     match command {
@@ -61,10 +62,25 @@ async fn main() -> anyhow::Result<()> {
         Command::Close { id } => cmd_close(app, &id).await?,
         Command::Reopen { id } => cmd_reopen(app, &id).await?,
         Command::Delete { id } => cmd_delete(app, &id).await?,
-        Command::Dash { resume, caffeinate } => {
-            tui::run(app, resume.as_deref(), caffeinate).await?
+        Command::Dash {
+            resume,
+            caffeinate,
+            dangerously_skip_permissions,
+        } => {
+            app.set_skip_permissions(dangerously_skip_permissions);
+            tui::run(
+                app,
+                resume.as_deref(),
+                caffeinate,
+                dangerously_skip_permissions,
+            )
+            .await?
         }
-        Command::Start { resume, caffeinate } => cmd_start(resume.as_deref(), caffeinate)?,
+        Command::Start {
+            resume,
+            caffeinate,
+            dangerously_skip_permissions,
+        } => cmd_start(resume.as_deref(), caffeinate, dangerously_skip_permissions)?,
         Command::Goto { id } => cmd_goto(app, &id).await?,
         Command::Send { id, message } => cmd_send(app, &id, &message).await?,
         Command::Skill { action } => cmd_skill(action, app)?,
@@ -297,7 +313,11 @@ async fn cmd_goto(app: ClatApp<impl Runtime>, id: &str) -> anyhow::Result<()> {
     app.goto(id).await
 }
 
-fn cmd_start(resume: Option<&str>, caffeinate: bool) -> anyhow::Result<()> {
+fn cmd_start(
+    resume: Option<&str>,
+    caffeinate: bool,
+    dangerously_skip_permissions: bool,
+) -> anyhow::Result<()> {
     let exe = std::env::current_exe()
         .context("failed to resolve current executable")?
         .display()
@@ -309,6 +329,9 @@ fn cmd_start(resume: Option<&str>, caffeinate: bool) -> anyhow::Result<()> {
     }
     if caffeinate {
         dash_cmd.push_str(" --caffeinate");
+    }
+    if dangerously_skip_permissions {
+        dash_cmd.push_str(" --dangerously-skip-permissions");
     }
 
     if std::env::var("TMUX").is_ok() {

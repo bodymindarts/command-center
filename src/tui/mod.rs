@@ -41,6 +41,7 @@ impl ProjectContext {
         session_id: Option<&str>,
         system_prompt: &str,
         event_tx: mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
+        skip_permissions: bool,
     ) -> Self {
         let cancel = Arc::new(AtomicBool::new(false));
         let session = AssistantSession::new(
@@ -49,6 +50,7 @@ impl ProjectContext {
             Arc::clone(&cancel),
             system_prompt,
             event_tx,
+            skip_permissions,
         );
         ProjectContext { session, cancel }
     }
@@ -84,13 +86,20 @@ async fn init_project_context<R: Runtime>(
     project_id: &ProjectId,
     project_name: &str,
     event_tx: mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
+    skip_permissions: bool,
 ) -> ProjectContext {
     let project_state = build_project_state(app, project_id).await;
     let session_id = project_state.chat_view.assistant.session_id.clone();
     state.add_project(project_id.clone(), project_state);
     let prompt = crate::assistant::project_system_prompt(project_name);
     let session_key = SessionKey::Project(project_id.clone());
-    ProjectContext::new(session_key, session_id.as_deref(), &prompt, event_tx)
+    ProjectContext::new(
+        session_key,
+        session_id.as_deref(),
+        &prompt,
+        event_tx,
+        skip_permissions,
+    )
 }
 
 /// Spawn `caffeinate -s` to prevent system sleep (macOS only).
@@ -114,6 +123,7 @@ pub async fn run<R: Runtime>(
     app: ClatApp<R>,
     resume_session: Option<&str>,
     caffeinate: bool,
+    skip_permissions: bool,
 ) -> anyhow::Result<()> {
     let mut caffeinate_child = if caffeinate { spawn_caffeinate() } else { None };
 
@@ -152,6 +162,7 @@ pub async fn run<R: Runtime>(
         Arc::clone(&cancel),
         EXO_SYSTEM_PROMPT,
         assistant_tx.clone(),
+        skip_permissions,
     );
 
     // Project contexts: one per project, keyed by project ID
@@ -168,6 +179,7 @@ pub async fn run<R: Runtime>(
                     &project.id,
                     project.name.as_str(),
                     assistant_tx.clone(),
+                    skip_permissions,
                 )
                 .await,
             );

@@ -19,6 +19,8 @@ pub struct LaunchConfig<'a> {
     pub work_dir: &'a Path,
     /// Some = Full mode (--system-prompt), None = Interactive (--append-system-prompt + idle prompt)
     pub user_prompt: Option<&'a str>,
+    /// When true, pass `--dangerously-skip-permissions` to the claude subprocess.
+    pub skip_permissions: bool,
 }
 
 /// Bundled permission info extracted from a skill's `[agent]` section.
@@ -62,6 +64,7 @@ pub trait Runtime {
         task_name: &str,
         session_id: &str,
         work_dir: &Path,
+        skip_permissions: bool,
     ) -> anyhow::Result<SpawnResult>;
     fn relaunch_agent(&self, task_name: &str, work_dir: &Path) -> anyhow::Result<SpawnResult>;
     fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> anyhow::Result<()>;
@@ -293,7 +296,9 @@ impl Runtime for TmuxRuntime {
         std::fs::create_dir_all(&claude_dir)?;
 
         let mut script = format!("#!/bin/sh\nunset CLAUDECODE\nexec {claude_bin}");
-        script.push_str(" --dangerously-skip-permissions");
+        if config.skip_permissions {
+            script.push_str(" --dangerously-skip-permissions");
+        }
         script.push_str(&format!(" --session-id {}", config.session_id));
 
         if let Some(user_prompt) = config.user_prompt {
@@ -333,11 +338,15 @@ impl Runtime for TmuxRuntime {
         task_name: &str,
         session_id: &str,
         work_dir: &Path,
+        skip_permissions: bool,
     ) -> anyhow::Result<SpawnResult> {
         let claude_bin = self.resolve_binary("claude")?;
-        let claude_cmd = format!(
-            "env -u CLAUDECODE {claude_bin} --dangerously-skip-permissions --resume {session_id}"
-        );
+        let skip_flag = if skip_permissions {
+            " --dangerously-skip-permissions"
+        } else {
+            ""
+        };
+        let claude_cmd = format!("env -u CLAUDECODE {claude_bin}{skip_flag} --resume {session_id}");
 
         self.launch_agent_window(task_name, work_dir, &claude_cmd)
     }
