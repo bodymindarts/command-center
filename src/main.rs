@@ -116,12 +116,13 @@ async fn cmd_dash<R: Runtime + Send + Sync + 'static>(
     caffeinate: bool,
 ) -> anyhow::Result<()> {
     let app = Arc::new(app);
+    let project_root = app.project_root().to_path_buf();
 
     // Start MCP server on localhost.
     const MCP_PORT: u16 = 9111;
     match mcp::start_mcp_server(Arc::clone(&app), MCP_PORT).await {
         Ok(url) => {
-            mcp::write_mcp_url_breadcrumb(&url);
+            mcp::write_mcp_url_breadcrumb(&project_root, &url);
         }
         Err(e) => {
             eprintln!("warning: failed to start MCP server: {e}");
@@ -129,7 +130,7 @@ async fn cmd_dash<R: Runtime + Send + Sync + 'static>(
     }
 
     let result = tui::run(app, resume, caffeinate).await;
-    mcp::remove_mcp_url_breadcrumb();
+    mcp::remove_mcp_url_breadcrumb(&project_root);
     result
 }
 

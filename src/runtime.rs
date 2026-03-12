@@ -443,7 +443,7 @@ fn setup_worktree_config(
         }
 
         // Inject MCP server config so agents discover clat tools natively.
-        if let Some(mcp_url) = crate::mcp::read_mcp_url_breadcrumb() {
+        if let Some(mcp_url) = crate::mcp::read_mcp_url_breadcrumb(repo_root) {
             settings["mcpServers"] = serde_json::json!({
                 "clat": {
                     "type": "http",

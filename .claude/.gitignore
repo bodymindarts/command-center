@@ -6,3 +6,4 @@ settings.local.json
 worktrees/
 perm-socket
 skip-permissions
+mcp-url

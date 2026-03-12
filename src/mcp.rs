@@ -184,28 +184,24 @@ impl ServerHandler for ClatMcpServer {
 // Breadcrumb helpers
 // ---------------------------------------------------------------------------
 
-/// Breadcrumb file name for the MCP server URL.
-const MCP_URL_BREADCRUMB: &str = "cc-mcp-url";
+/// Breadcrumb file written by the dashboard so that CLI-spawned tasks
+/// can discover the MCP server URL.
+const MCP_URL_BREADCRUMB: &str = ".claude/mcp-url";
 
-/// Write the MCP server URL to a breadcrumb file in TMPDIR.
-pub fn write_mcp_url_breadcrumb(url: &str) {
-    let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
-    let path = std::path::Path::new(&tmpdir).join(MCP_URL_BREADCRUMB);
+/// Write the MCP server URL to a breadcrumb file in the project root.
+pub fn write_mcp_url_breadcrumb(project_root: &std::path::Path, url: &str) {
+    let path = project_root.join(MCP_URL_BREADCRUMB);
     let _ = std::fs::write(&path, url);
 }
 
 /// Remove the breadcrumb file on shutdown.
-pub fn remove_mcp_url_breadcrumb() {
-    let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
-    let path = std::path::Path::new(&tmpdir).join(MCP_URL_BREADCRUMB);
-    let _ = std::fs::remove_file(&path);
+pub fn remove_mcp_url_breadcrumb(project_root: &std::path::Path) {
+    let _ = std::fs::remove_file(project_root.join(MCP_URL_BREADCRUMB));
 }
 
 /// Read the MCP server URL from the breadcrumb file.
-pub fn read_mcp_url_breadcrumb() -> Option<String> {
-    let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
-    let path = std::path::Path::new(&tmpdir).join(MCP_URL_BREADCRUMB);
-    std::fs::read_to_string(path)
+pub fn read_mcp_url_breadcrumb(project_root: &std::path::Path) -> Option<String> {
+    std::fs::read_to_string(project_root.join(MCP_URL_BREADCRUMB))
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -223,14 +219,19 @@ pub async fn start_mcp_server<R: Runtime + Send + Sync + 'static>(
     port: u16,
 ) -> anyhow::Result<String> {
     use rmcp::transport::streamable_http_server::{
-        StreamableHttpService, session::local::LocalSessionManager,
+        StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
     };
 
     let app_dyn: Arc<dyn McpApp> = app;
+    let config = StreamableHttpServerConfig {
+        stateful_mode: false,
+        json_response: true,
+        ..Default::default()
+    };
     let service = StreamableHttpService::new(
         move || Ok(ClatMcpServer::new(Arc::clone(&app_dyn))),
         LocalSessionManager::default().into(),
-        Default::default(),
+        config,
     );
 
     let router = axum::Router::new().nest_service("/mcp", service);
