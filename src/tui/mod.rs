@@ -67,10 +67,10 @@ fn cancel_project_context(
 }
 
 /// Build a fully-initialized ProjectState: loads session ID and chat history from the DB.
-fn build_project_state<R: Runtime>(app: &ClatApp<R>, project_id: &ProjectId) -> ProjectState {
+async fn build_project_state<R: Runtime>(app: &ClatApp<R>, project_id: &ProjectId) -> ProjectState {
     let mut assistant = chat::AssistantChat::new();
     assistant.session_id = app.read_project_session_id(project_id);
-    if let Ok(messages) = app.session_messages(Some(project_id)) {
+    if let Ok(messages) = app.session_messages(Some(project_id)).await {
         let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
         assistant.load_history(recent.into_iter().rev().collect());
     }
@@ -78,14 +78,14 @@ fn build_project_state<R: Runtime>(app: &ClatApp<R>, project_id: &ProjectId) -> 
 }
 
 /// Initialize a project: build its ProjectState, add it to ScreenState, return a ProjectContext.
-fn init_project_context<R: Runtime>(
+async fn init_project_context<R: Runtime>(
     state: &mut ScreenState,
     app: &ClatApp<R>,
     project_id: &ProjectId,
     project_name: &str,
     event_tx: mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
 ) -> ProjectContext {
-    let project_state = build_project_state(app, project_id);
+    let project_state = build_project_state(app, project_id).await;
     let session_id = project_state.chat_view.assistant.session_id.clone();
     state.add_project(project_id.clone(), project_state);
     let prompt = crate::assistant::project_system_prompt(project_name);
@@ -123,8 +123,8 @@ pub async fn run<R: Runtime>(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    app.close_stale_tasks();
-    let tasks = app.list_visible(None)?;
+    app.close_stale_tasks().await;
+    let tasks = app.list_visible(None).await?;
     let exo = {
         let mut assistant = chat::AssistantChat::new();
         if let Some(sid) = resume_session {
@@ -132,7 +132,7 @@ pub async fn run<R: Runtime>(
         } else if let Some(sid) = app.read_exo_session_id() {
             assistant.session_id = Some(sid);
         }
-        if let Ok(messages) = app.session_messages(None) {
+        if let Ok(messages) = app.session_messages(None).await {
             let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
             assistant.load_history(recent.into_iter().rev().collect());
         }
@@ -158,7 +158,7 @@ pub async fn run<R: Runtime>(
     let mut project_contexts: HashMap<ProjectId, ProjectContext> = HashMap::new();
 
     // Boot all PM sessions eagerly so they warm up in the background.
-    if let Ok(projects) = app.list_projects() {
+    if let Ok(projects) = app.list_projects().await {
         for project in &projects {
             project_contexts.insert(
                 project.id.clone(),
@@ -168,7 +168,8 @@ pub async fn run<R: Runtime>(
                     &project.id,
                     project.name.as_str(),
                     assistant_tx.clone(),
-                ),
+                )
+                .await,
             );
         }
     }
@@ -366,8 +367,8 @@ async fn run_loop<R: Runtime>(
                                 )?;
                                 terminal.hide_cursor()?;
                                 terminal.clear()?;
-                            } else if !handlers::handle_global_keys(state, key, app, tg_tx) {
-                                handlers::handle_focus_key(state, key, app, exo_session, project_contexts);
+                            } else if !handlers::handle_global_keys(state, key, app, tg_tx).await {
+                                handlers::handle_focus_key(state, key, app, exo_session, project_contexts).await;
                             }
                         }
                         _ => {}
@@ -380,7 +381,7 @@ async fn run_loop<R: Runtime>(
                 if let Some((key, ev)) = event {
                     handlers::dispatch_assistant_event(
                         &key, ev, state, exo_session, project_contexts, app, tg_tx,
-                    );
+                    ).await;
                 }
             }
 
@@ -395,14 +396,14 @@ async fn run_loop<R: Runtime>(
                         stream,
                         tg_tx,
                         &mut tg_perm,
-                    );
+                    ).await;
                 }
             }
 
             // Telegram inbound events (optional)
             event = recv_optional(tg_rx) => {
                 if let Some(tg_msg) = event {
-                    handlers::dispatch_telegram_event(state, exo_session, app, tg_msg);
+                    handlers::dispatch_telegram_event(state, exo_session, app, tg_msg).await;
                 }
             }
 
@@ -412,7 +413,7 @@ async fn run_loop<R: Runtime>(
 
         // Periodic refresh
         if last_tick.elapsed() >= tick_rate {
-            handlers::tick_refresh(state, app, tg_tx);
+            handlers::tick_refresh(state, app, tg_tx).await;
             handlers::detect_vanished_perms(state, tg_tx, &mut tg_perm.ids);
             last_tick = Instant::now();
         }

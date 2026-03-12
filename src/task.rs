@@ -37,7 +37,7 @@ impl DisplayStatus {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct Task {
     pub id: TaskId,
@@ -103,7 +103,7 @@ impl Task {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct TaskMessage {
     pub id: String,
@@ -113,7 +113,7 @@ pub struct TaskMessage {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct Project {
     pub id: ProjectId,

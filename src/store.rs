@@ -2,8 +2,9 @@ use std::path::Path;
 
 use anyhow::Context;
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, Row};
+use rusqlite::Row;
 use rusqlite_migration::{M, Migrations};
+use tokio_rusqlite::Connection;
 
 use crate::primitives::{
     ChatId, ClaudeSessionId, MessageRole, PaneId, ProjectId, ProjectName, TaskId, TaskName,
@@ -85,287 +86,393 @@ pub struct Store {
 
 impl Store {
     #[cfg(test)]
-    pub fn open_in_memory() -> anyhow::Result<Self> {
-        let mut conn = Connection::open_in_memory().context("failed to open in-memory database")?;
-        Self::run_migrations(&mut conn)?;
+    pub async fn open_in_memory() -> anyhow::Result<Self> {
+        let conn = Connection::open_in_memory()
+            .await
+            .context("failed to open in-memory database")?;
+        conn.call(|conn| -> Result<(), rusqlite_migration::Error> {
+            MIGRATIONS.to_latest(conn)?;
+            Ok(())
+        })
+        .await
+        .context("failed to run database migrations")?;
         Ok(Self { conn })
     }
 
-    pub fn open(db_path: &Path) -> anyhow::Result<Self> {
-        let mut conn = Connection::open(db_path)
-            .with_context(|| format!("failed to open database at {}", db_path.display()))?;
-        Self::run_migrations(&mut conn)?;
+    pub async fn open(db_path: &Path) -> anyhow::Result<Self> {
+        let path = db_path.to_path_buf();
+        let conn = Connection::open(&path)
+            .await
+            .with_context(|| format!("failed to open database at {}", path.display()))?;
+        conn.call(|conn| -> Result<(), rusqlite_migration::Error> {
+            MIGRATIONS.to_latest(conn)?;
+            Ok(())
+        })
+        .await
+        .with_context(|| format!("failed to run migrations at {}", path.display()))?;
         Ok(Self { conn })
     }
 
-    fn run_migrations(conn: &mut Connection) -> anyhow::Result<()> {
-        MIGRATIONS
-            .to_latest(conn)
-            .context("failed to run database migrations")?;
+    pub async fn insert_task(&self, task: &Task) -> anyhow::Result<()> {
+        let task = task.clone();
+        self.conn
+            .call(move |conn| -> Result<(), rusqlite::Error> {
+                conn.execute(
+                    "INSERT INTO tasks (id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir, started_at, project_id, session_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    (
+                        task.id.as_str(),
+                        task.name.as_str(),
+                        &task.skill_name,
+                        &task.params_json,
+                        task.status.as_str(),
+                        task.tmux_pane.as_ref().map(|p| p.as_str().to_string()),
+                        task.tmux_window.as_ref().map(|w| w.as_str().to_string()),
+                        &task.work_dir,
+                        task.started_at.to_rfc3339(),
+                        task.project_id.as_ref().map(|p| p.as_str().to_string()),
+                        task.session_id.as_ref().map(|s| s.as_str().to_string()),
+                    ),
+                )?;
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
 
-    pub fn insert_task(&self, task: &Task) -> anyhow::Result<()> {
-        self.conn.execute(
-            "INSERT INTO tasks (id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir, started_at, project_id, session_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            (
-                task.id.as_str(),
-                task.name.as_str(),
-                &task.skill_name,
-                &task.params_json,
-                task.status.as_str(),
-                task.tmux_pane.as_ref().map(|p| p.as_str()),
-                task.tmux_window.as_ref().map(|w| w.as_str()),
-                &task.work_dir,
-                task.started_at.to_rfc3339(),
-                task.project_id.as_ref().map(|p| p.as_str()),
-                task.session_id.as_ref().map(|s| s.as_str()),
-            ),
-        )?;
-        Ok(())
-    }
-
-    pub fn complete_task(
+    pub async fn complete_task(
         &self,
         id: &TaskId,
         exit_code: i32,
         output: Option<&str>,
     ) -> anyhow::Result<()> {
-        let now = Utc::now().to_rfc3339();
-        let status = if exit_code == 0 {
-            "completed"
-        } else {
-            "failed"
-        };
-        self.conn.execute(
-            "UPDATE tasks SET status = ?1, exit_code = ?2, completed_at = ?3, output = ?4
-             WHERE id = ?5",
-            (status, exit_code, &now, output, id.as_str()),
-        )?;
+        let id = id.as_str().to_string();
+        let output = output.map(|s| s.to_string());
+        self.conn
+            .call(move |conn| -> Result<(), rusqlite::Error> {
+                let now = Utc::now().to_rfc3339();
+                let status = if exit_code == 0 {
+                    "completed"
+                } else {
+                    "failed"
+                };
+                conn.execute(
+                    "UPDATE tasks SET status = ?1, exit_code = ?2, completed_at = ?3, output = ?4
+                     WHERE id = ?5",
+                    (status, exit_code, &now, output.as_deref(), &id),
+                )?;
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
 
-    pub fn close_task(&self, id: &TaskId, output: Option<&str>) -> anyhow::Result<bool> {
-        let now = Utc::now().to_rfc3339();
-        let rows = self.conn.execute(
-            "UPDATE tasks SET status = 'closed', completed_at = ?1, output = ?2
-             WHERE id = ?3 AND status = 'running'",
-            (&now, output, id.as_str()),
-        )?;
+    pub async fn close_task(&self, id: &TaskId, output: Option<&str>) -> anyhow::Result<bool> {
+        let id = id.as_str().to_string();
+        let output = output.map(|s| s.to_string());
+        let rows = self
+            .conn
+            .call(move |conn| -> Result<usize, rusqlite::Error> {
+                let now = Utc::now().to_rfc3339();
+                let rows = conn.execute(
+                    "UPDATE tasks SET status = 'closed', completed_at = ?1, output = ?2
+                     WHERE id = ?3 AND status = 'running'",
+                    (&now, output.as_deref(), &id),
+                )?;
+                Ok(rows)
+            })
+            .await?;
         Ok(rows > 0)
     }
 
-    pub fn reopen_task(
+    pub async fn reopen_task(
         &self,
         id: &TaskId,
         pane: &PaneId,
         window: &WindowId,
     ) -> anyhow::Result<bool> {
-        let rows = self.conn.execute(
-            "UPDATE tasks SET status = 'running', tmux_pane = ?1, tmux_window = ?2, completed_at = NULL
-             WHERE id = ?3 AND status != 'running'",
-            (pane.as_str(), window.as_str(), id.as_str()),
-        )?;
+        let id = id.as_str().to_string();
+        let pane = pane.as_str().to_string();
+        let window = window.as_str().to_string();
+        let rows = self
+            .conn
+            .call(move |conn| -> Result<usize, rusqlite::Error> {
+                let rows = conn.execute(
+                    "UPDATE tasks SET status = 'running', tmux_pane = ?1, tmux_window = ?2, completed_at = NULL
+                     WHERE id = ?3 AND status != 'running'",
+                    (&pane, &window, &id),
+                )?;
+                Ok(rows)
+            })
+            .await?;
         Ok(rows > 0)
     }
 
-    pub fn delete_task(&self, id: &TaskId) -> anyhow::Result<()> {
-        self.conn.execute(
-            "DELETE FROM task_messages WHERE task_id = ?1",
-            [id.as_str()],
-        )?;
+    pub async fn delete_task(&self, id: &TaskId) -> anyhow::Result<()> {
+        let id = id.as_str().to_string();
         self.conn
-            .execute("DELETE FROM tasks WHERE id = ?1", [id.as_str()])?;
+            .call(move |conn| -> Result<(), rusqlite::Error> {
+                conn.execute("DELETE FROM task_messages WHERE task_id = ?1", [&id])?;
+                conn.execute("DELETE FROM tasks WHERE id = ?1", [&id])?;
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
 
-    pub fn list_tasks(&self) -> anyhow::Result<Vec<Task>> {
-        let sql = format!("SELECT {TASK_COLUMNS} FROM tasks ORDER BY started_at DESC");
-        let mut stmt = self.conn.prepare(&sql)?;
-        let tasks = stmt
-            .query_map([], row_to_task)?
-            .collect::<Result<Vec<_>, _>>()?;
+    pub async fn list_tasks(&self) -> anyhow::Result<Vec<Task>> {
+        let tasks = self
+            .conn
+            .call(|conn| -> Result<Vec<Task>, rusqlite::Error> {
+                let sql = format!("SELECT {TASK_COLUMNS} FROM tasks ORDER BY started_at DESC");
+                let mut stmt = conn.prepare(&sql)?;
+                let tasks = stmt
+                    .query_map([], row_to_task)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(tasks)
+            })
+            .await?;
         Ok(tasks)
     }
 
-    pub fn list_active_tasks(&self) -> anyhow::Result<Vec<Task>> {
-        let sql = format!(
-            "SELECT {TASK_COLUMNS} FROM tasks WHERE status = 'running' ORDER BY started_at DESC"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let tasks = stmt
-            .query_map([], row_to_task)?
-            .collect::<Result<Vec<_>, _>>()?;
+    pub async fn list_active_tasks(&self) -> anyhow::Result<Vec<Task>> {
+        let tasks = self
+            .conn
+            .call(|conn| -> Result<Vec<Task>, rusqlite::Error> {
+                let sql = format!(
+                    "SELECT {TASK_COLUMNS} FROM tasks WHERE status = 'running' ORDER BY started_at DESC"
+                );
+                let mut stmt = conn.prepare(&sql)?;
+                let tasks = stmt
+                    .query_map([], row_to_task)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(tasks)
+            })
+            .await?;
         Ok(tasks)
     }
 
-    pub fn update_task(&self, task: &Task) -> anyhow::Result<()> {
-        self.conn.execute(
-            "UPDATE tasks SET status = ?1, tmux_pane = ?2, tmux_window = ?3,
-             completed_at = ?4, exit_code = ?5, output = ?6
-             WHERE id = ?7",
-            (
-                task.status.as_str(),
-                task.tmux_pane.as_ref().map(|p| p.as_str()),
-                task.tmux_window.as_ref().map(|w| w.as_str()),
-                task.completed_at.as_ref().map(|dt| dt.to_rfc3339()),
-                task.exit_code,
-                task.output.as_deref(),
-                task.id.as_str(),
-            ),
-        )?;
+    pub async fn update_task(&self, task: &Task) -> anyhow::Result<()> {
+        let task = task.clone();
+        self.conn
+            .call(move |conn| -> Result<(), rusqlite::Error> {
+                conn.execute(
+                    "UPDATE tasks SET status = ?1, tmux_pane = ?2, tmux_window = ?3,
+                     completed_at = ?4, exit_code = ?5, output = ?6
+                     WHERE id = ?7",
+                    (
+                        task.status.as_str(),
+                        task.tmux_pane.as_ref().map(|p| p.as_str().to_string()),
+                        task.tmux_window.as_ref().map(|w| w.as_str().to_string()),
+                        task.completed_at.as_ref().map(|dt| dt.to_rfc3339()),
+                        task.exit_code,
+                        task.output.as_deref(),
+                        task.id.as_str(),
+                    ),
+                )?;
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
 
-    pub fn get_task_by_prefix(&self, prefix: &str) -> anyhow::Result<Option<Task>> {
+    pub async fn get_task_by_prefix(&self, prefix: &str) -> anyhow::Result<Option<Task>> {
         let pattern = format!("{prefix}%");
-        let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id LIKE ?1");
-        let mut stmt = self.conn.prepare(&sql)?;
-
-        let mut tasks: Vec<Task> = stmt
-            .query_map([&pattern], row_to_task)?
-            .collect::<Result<Vec<_>, _>>()?;
+        let tasks = self
+            .conn
+            .call(move |conn| -> Result<Vec<Task>, rusqlite::Error> {
+                let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id LIKE ?1");
+                let mut stmt = conn.prepare(&sql)?;
+                let tasks: Vec<Task> = stmt
+                    .query_map([&pattern], row_to_task)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(tasks)
+            })
+            .await?;
 
         if tasks.len() > 1 {
             anyhow::bail!("ambiguous prefix '{prefix}': matches {} tasks", tasks.len());
         }
 
-        Ok(tasks.pop())
+        Ok(tasks.into_iter().next())
     }
 
-    pub fn insert_message(
+    pub async fn insert_message(
         &self,
         chat_id: &ChatId,
         role: MessageRole,
         content: &str,
     ) -> anyhow::Result<()> {
-        let id = uuid::Uuid::now_v7().to_string();
-        let now = Utc::now().to_rfc3339();
         let key = chat_id.as_db_key();
-        self.conn.execute(
-            "INSERT INTO task_messages (id, task_id, role, content, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            (&id, &key, role.as_str(), content, &now),
-        )?;
+        let role_str = role.as_str().to_string();
+        let content = content.to_string();
+        self.conn
+            .call(move |conn| -> Result<(), rusqlite::Error> {
+                let id = uuid::Uuid::now_v7().to_string();
+                let now = Utc::now().to_rfc3339();
+                conn.execute(
+                    "INSERT INTO task_messages (id, task_id, role, content, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    (&id, &key, &role_str, &content, &now),
+                )?;
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
 
-    pub fn list_messages(&self, chat_id: &ChatId) -> anyhow::Result<Vec<TaskMessage>> {
+    pub async fn list_messages(&self, chat_id: &ChatId) -> anyhow::Result<Vec<TaskMessage>> {
         let key = chat_id.as_db_key();
-        let mut stmt = self.conn.prepare(
-            "SELECT id, task_id, role, content, created_at
-             FROM task_messages WHERE task_id = ?1 ORDER BY created_at ASC",
-        )?;
-
-        let messages = stmt
-            .query_map([&key], |row| {
-                let created_at: String = row.get(4)?;
-                Ok(TaskMessage {
-                    id: row.get(0)?,
-                    chat_id: row.get(1)?,
-                    role: MessageRole::from(row.get::<_, String>(2)?),
-                    content: row.get(3)?,
-                    created_at: DateTime::parse_from_rfc3339(&created_at)
-                        .unwrap_or_default()
-                        .with_timezone(&Utc),
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
+        let messages = self
+            .conn
+            .call(move |conn| -> Result<Vec<TaskMessage>, rusqlite::Error> {
+                let mut stmt = conn.prepare(
+                    "SELECT id, task_id, role, content, created_at
+                     FROM task_messages WHERE task_id = ?1 ORDER BY created_at ASC",
+                )?;
+                let messages = stmt
+                    .query_map([&key], |row| {
+                        let created_at: String = row.get(4)?;
+                        Ok(TaskMessage {
+                            id: row.get(0)?,
+                            chat_id: row.get(1)?,
+                            role: MessageRole::from(row.get::<_, String>(2)?),
+                            content: row.get(3)?,
+                            created_at: DateTime::parse_from_rfc3339(&created_at)
+                                .unwrap_or_default()
+                                .with_timezone(&Utc),
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(messages)
+            })
+            .await?;
         Ok(messages)
     }
 
     // -- Project CRUD --
 
-    pub fn insert_project(
+    pub async fn insert_project(
         &self,
         id: &ProjectId,
         name: &str,
         description: &str,
     ) -> anyhow::Result<()> {
-        let now = Utc::now().to_rfc3339();
-        self.conn.execute(
-            "INSERT INTO projects (id, name, description, created_at)
-             VALUES (?1, ?2, ?3, ?4)",
-            (id.as_str(), name, description, &now),
-        )?;
+        let id = id.as_str().to_string();
+        let name = name.to_string();
+        let description = description.to_string();
+        self.conn
+            .call(move |conn| -> Result<(), rusqlite::Error> {
+                let now = Utc::now().to_rfc3339();
+                conn.execute(
+                    "INSERT INTO projects (id, name, description, created_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    (&id, &name, &description, &now),
+                )?;
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
 
-    pub fn get_project_by_name(&self, name: &str) -> anyhow::Result<Option<Project>> {
-        let mut stmt = self
+    pub async fn get_project_by_name(&self, name: &str) -> anyhow::Result<Option<Project>> {
+        let name = name.to_string();
+        let project = self
             .conn
-            .prepare("SELECT id, name, description, created_at FROM projects WHERE name = ?1")?;
-        let mut rows = stmt.query_map([name], |row| {
-            let created_at: String = row.get(3)?;
-            Ok(Project {
-                id: ProjectId::from(row.get::<_, String>(0)?),
-                name: ProjectName::from(row.get::<_, String>(1)?),
-                description: row.get(2)?,
-                created_at: DateTime::parse_from_rfc3339(&created_at)
-                    .unwrap_or_default()
-                    .with_timezone(&Utc),
+            .call(move |conn| -> Result<Option<Project>, rusqlite::Error> {
+                let mut stmt = conn.prepare(
+                    "SELECT id, name, description, created_at FROM projects WHERE name = ?1",
+                )?;
+                let mut rows = stmt.query_map([&name], |row| {
+                    let created_at: String = row.get(3)?;
+                    Ok(Project {
+                        id: ProjectId::from(row.get::<_, String>(0)?),
+                        name: ProjectName::from(row.get::<_, String>(1)?),
+                        description: row.get(2)?,
+                        created_at: DateTime::parse_from_rfc3339(&created_at)
+                            .unwrap_or_default()
+                            .with_timezone(&Utc),
+                    })
+                })?;
+                match rows.next() {
+                    Some(row) => Ok(Some(row?)),
+                    None => Ok(None),
+                }
             })
-        })?;
-        match rows.next() {
-            Some(row) => Ok(Some(row?)),
-            None => Ok(None),
-        }
+            .await?;
+        Ok(project)
     }
 
-    pub fn list_projects(&self) -> anyhow::Result<Vec<Project>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, description, created_at FROM projects ORDER BY created_at ASC",
-        )?;
-        let projects = stmt
-            .query_map([], |row| {
-                let created_at: String = row.get(3)?;
-                Ok(Project {
-                    id: ProjectId::from(row.get::<_, String>(0)?),
-                    name: ProjectName::from(row.get::<_, String>(1)?),
-                    description: row.get(2)?,
-                    created_at: DateTime::parse_from_rfc3339(&created_at)
-                        .unwrap_or_default()
-                        .with_timezone(&Utc),
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+    pub async fn list_projects(&self) -> anyhow::Result<Vec<Project>> {
+        let projects = self
+            .conn
+            .call(|conn| -> Result<Vec<Project>, rusqlite::Error> {
+                let mut stmt = conn.prepare(
+                    "SELECT id, name, description, created_at FROM projects ORDER BY created_at ASC",
+                )?;
+                let projects = stmt
+                    .query_map([], |row| {
+                        let created_at: String = row.get(3)?;
+                        Ok(Project {
+                            id: ProjectId::from(row.get::<_, String>(0)?),
+                            name: ProjectName::from(row.get::<_, String>(1)?),
+                            description: row.get(2)?,
+                            created_at: DateTime::parse_from_rfc3339(&created_at)
+                                .unwrap_or_default()
+                                .with_timezone(&Utc),
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(projects)
+            })
+            .await?;
         Ok(projects)
     }
 
-    pub fn delete_project(&self, id: &ProjectId) -> anyhow::Result<()> {
+    pub async fn delete_project(&self, id: &ProjectId) -> anyhow::Result<()> {
+        let id = id.as_str().to_string();
         self.conn
-            .execute("DELETE FROM projects WHERE id = ?1", [id.as_str()])?;
+            .call(move |conn| -> Result<(), rusqlite::Error> {
+                conn.execute("DELETE FROM projects WHERE id = ?1", [&id])?;
+                Ok(())
+            })
+            .await?;
         Ok(())
     }
 
     /// Returns visible tasks scoped to a project.
     /// When project_id is None, returns tasks with no project (default/ExO scope).
     /// When Some, returns tasks belonging to that project.
-    pub fn list_visible_tasks_for_project(
+    pub async fn list_visible_tasks_for_project(
         &self,
         project_id: Option<&ProjectId>,
     ) -> anyhow::Result<Vec<Task>> {
-        let sql = match project_id {
-            Some(_) => format!(
-                "SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ?1 \
-                 ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, started_at DESC"
-            ),
-            None => format!(
-                "SELECT {TASK_COLUMNS} FROM tasks WHERE project_id IS NULL \
-                 ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, started_at DESC"
-            ),
-        };
-        let mut stmt = self.conn.prepare(&sql)?;
-        let tasks = match project_id {
-            Some(pid) => stmt
-                .query_map([pid.as_str()], row_to_task)?
-                .collect::<Result<Vec<_>, _>>()?,
-            None => stmt
-                .query_map([], row_to_task)?
-                .collect::<Result<Vec<_>, _>>()?,
-        };
+        let pid = project_id.map(|p| p.as_str().to_string());
+        let tasks = self
+            .conn
+            .call(move |conn| -> Result<Vec<Task>, rusqlite::Error> {
+                let sql = match pid {
+                    Some(_) => format!(
+                        "SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ?1 \
+                         ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, started_at DESC"
+                    ),
+                    None => format!(
+                        "SELECT {TASK_COLUMNS} FROM tasks WHERE project_id IS NULL \
+                         ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, started_at DESC"
+                    ),
+                };
+                let mut stmt = conn.prepare(&sql)?;
+                let tasks = match pid {
+                    Some(ref pid) => stmt
+                        .query_map([pid.as_str()], row_to_task)?
+                        .collect::<Result<Vec<_>, _>>()?,
+                    None => stmt
+                        .query_map([], row_to_task)?
+                        .collect::<Result<Vec<_>, _>>()?,
+                };
+                Ok(tasks)
+            })
+            .await?;
         Ok(tasks)
     }
 }
@@ -374,11 +481,11 @@ impl Store {
 mod tests {
     use super::*;
 
-    fn test_store() -> Store {
-        Store::open_in_memory().unwrap()
+    async fn test_store() -> Store {
+        Store::open_in_memory().await.unwrap()
     }
 
-    fn insert_running_task(store: &Store, name: &str) -> TaskId {
+    async fn insert_running_task(store: &Store, name: &str) -> TaskId {
         let id = TaskId::generate();
         let task = Task {
             id: id.clone(),
@@ -396,68 +503,78 @@ mod tests {
             output: None,
             project_id: None,
         };
-        store.insert_task(&task).unwrap();
+        store.insert_task(&task).await.unwrap();
         id
     }
 
-    #[test]
-    fn close_task_sets_status_and_timestamp() {
-        let store = test_store();
-        let id = insert_running_task(&store, "t1");
+    #[tokio::test]
+    async fn close_task_sets_status_and_timestamp() {
+        let store = test_store().await;
+        let id = insert_running_task(&store, "t1").await;
 
-        let ok = store.close_task(&id, Some("output text")).unwrap();
+        let ok = store.close_task(&id, Some("output text")).await.unwrap();
         assert!(ok);
 
-        let task = store.get_task_by_prefix(id.as_str()).unwrap().unwrap();
+        let task = store
+            .get_task_by_prefix(id.as_str())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(task.status, TaskStatus::Closed);
         assert!(task.completed_at.is_some());
         assert_eq!(task.output.as_deref(), Some("output text"));
     }
 
-    #[test]
-    fn close_task_only_affects_running() {
-        let store = test_store();
-        let id = insert_running_task(&store, "t2");
-        store.complete_task(&id, 0, None).unwrap();
+    #[tokio::test]
+    async fn close_task_only_affects_running() {
+        let store = test_store().await;
+        let id = insert_running_task(&store, "t2").await;
+        store.complete_task(&id, 0, None).await.unwrap();
 
-        let ok = store.close_task(&id, None).unwrap();
+        let ok = store.close_task(&id, None).await.unwrap();
         assert!(!ok);
 
-        let task = store.get_task_by_prefix(id.as_str()).unwrap().unwrap();
+        let task = store
+            .get_task_by_prefix(id.as_str())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(task.status, TaskStatus::Completed);
     }
 
-    #[test]
-    fn list_active_excludes_non_running() {
-        let store = test_store();
-        let _id1 = insert_running_task(&store, "active");
-        let id2 = insert_running_task(&store, "done");
-        store.complete_task(&id2, 0, None).unwrap();
-        let id3 = insert_running_task(&store, "closed");
-        store.close_task(&id3, None).unwrap();
+    #[tokio::test]
+    async fn list_active_excludes_non_running() {
+        let store = test_store().await;
+        let _id1 = insert_running_task(&store, "active").await;
+        let id2 = insert_running_task(&store, "done").await;
+        store.complete_task(&id2, 0, None).await.unwrap();
+        let id3 = insert_running_task(&store, "closed").await;
+        store.close_task(&id3, None).await.unwrap();
 
-        let active = store.list_active_tasks().unwrap();
+        let active = store.list_active_tasks().await.unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].name, "active");
 
-        let all = store.list_tasks().unwrap();
+        let all = store.list_tasks().await.unwrap();
         assert_eq!(all.len(), 3);
     }
 
-    #[test]
-    fn insert_and_list_messages() {
-        let store = test_store();
-        let id = insert_running_task(&store, "t1");
+    #[tokio::test]
+    async fn insert_and_list_messages() {
+        let store = test_store().await;
+        let id = insert_running_task(&store, "t1").await;
         let chat = ChatId::Task(id);
 
         store
             .insert_message(&chat, MessageRole::System, "initial prompt")
+            .await
             .unwrap();
         store
             .insert_message(&chat, MessageRole::User, "hello agent")
+            .await
             .unwrap();
 
-        let messages = store.list_messages(&chat).unwrap();
+        let messages = store.list_messages(&chat).await.unwrap();
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, MessageRole::System);
         assert_eq!(messages[0].content, "initial prompt");
@@ -465,31 +582,34 @@ mod tests {
         assert_eq!(messages[1].content, "hello agent");
     }
 
-    #[test]
-    fn list_messages_empty_for_unknown_task() {
-        let store = test_store();
+    #[tokio::test]
+    async fn list_messages_empty_for_unknown_task() {
+        let store = test_store().await;
         let chat = ChatId::Task(TaskId::generate());
-        let messages = store.list_messages(&chat).unwrap();
+        let messages = store.list_messages(&chat).await.unwrap();
         assert!(messages.is_empty());
     }
 
-    #[test]
-    fn messages_ordered_by_created_at() {
-        let store = test_store();
-        let id = insert_running_task(&store, "t1");
+    #[tokio::test]
+    async fn messages_ordered_by_created_at() {
+        let store = test_store().await;
+        let id = insert_running_task(&store, "t1").await;
         let chat = ChatId::Task(id);
 
         store
             .insert_message(&chat, MessageRole::System, "first")
+            .await
             .unwrap();
         store
             .insert_message(&chat, MessageRole::User, "second")
+            .await
             .unwrap();
         store
             .insert_message(&chat, MessageRole::User, "third")
+            .await
             .unwrap();
 
-        let messages = store.list_messages(&chat).unwrap();
+        let messages = store.list_messages(&chat).await.unwrap();
         assert_eq!(messages.len(), 3);
         assert!(messages[0].created_at <= messages[1].created_at);
         assert!(messages[1].created_at <= messages[2].created_at);
@@ -497,45 +617,50 @@ mod tests {
 
     // -- Project CRUD tests --
 
-    #[test]
-    fn insert_and_get_project_by_name() {
-        let store = test_store();
+    #[tokio::test]
+    async fn insert_and_get_project_by_name() {
+        let store = test_store().await;
         let pid = ProjectId::generate();
         store
             .insert_project(&pid, "my-project", "a description")
+            .await
             .unwrap();
 
-        let project = store.get_project_by_name("my-project").unwrap().unwrap();
+        let project = store
+            .get_project_by_name("my-project")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(project.id, pid);
         assert_eq!(project.name, "my-project");
         assert_eq!(project.description, "a description");
     }
 
-    #[test]
-    fn get_project_by_name_returns_none_for_unknown() {
-        let store = test_store();
-        let project = store.get_project_by_name("nonexistent").unwrap();
+    #[tokio::test]
+    async fn get_project_by_name_returns_none_for_unknown() {
+        let store = test_store().await;
+        let project = store.get_project_by_name("nonexistent").await.unwrap();
         assert!(project.is_none());
     }
 
-    #[test]
-    fn list_projects_empty() {
-        let store = test_store();
-        let projects = store.list_projects().unwrap();
+    #[tokio::test]
+    async fn list_projects_empty() {
+        let store = test_store().await;
+        let projects = store.list_projects().await.unwrap();
         assert!(projects.is_empty());
     }
 
-    #[test]
-    fn list_projects_ordered_by_created_at() {
-        let store = test_store();
+    #[tokio::test]
+    async fn list_projects_ordered_by_created_at() {
+        let store = test_store().await;
         let p1 = ProjectId::generate();
         let p2 = ProjectId::generate();
         let p3 = ProjectId::generate();
-        store.insert_project(&p1, "alpha", "first").unwrap();
-        store.insert_project(&p2, "beta", "second").unwrap();
-        store.insert_project(&p3, "gamma", "third").unwrap();
+        store.insert_project(&p1, "alpha", "first").await.unwrap();
+        store.insert_project(&p2, "beta", "second").await.unwrap();
+        store.insert_project(&p3, "gamma", "third").await.unwrap();
 
-        let projects = store.list_projects().unwrap();
+        let projects = store.list_projects().await.unwrap();
         assert_eq!(projects.len(), 3);
         assert_eq!(projects[0].name, "alpha");
         assert_eq!(projects[1].name, "beta");
@@ -544,31 +669,31 @@ mod tests {
         assert!(projects[1].created_at <= projects[2].created_at);
     }
 
-    #[test]
-    fn insert_project_rejects_duplicate_name() {
-        let store = test_store();
+    #[tokio::test]
+    async fn insert_project_rejects_duplicate_name() {
+        let store = test_store().await;
         let p1 = ProjectId::generate();
         let p2 = ProjectId::generate();
-        store.insert_project(&p1, "dup", "first").unwrap();
-        let err = store.insert_project(&p2, "dup", "second");
+        store.insert_project(&p1, "dup", "first").await.unwrap();
+        let err = store.insert_project(&p2, "dup", "second").await;
         assert!(err.is_err());
     }
 
-    #[test]
-    fn delete_project_removes_it() {
-        let store = test_store();
+    #[tokio::test]
+    async fn delete_project_removes_it() {
+        let store = test_store().await;
         let pid = ProjectId::generate();
-        store.insert_project(&pid, "doomed", "bye").unwrap();
-        assert!(store.get_project_by_name("doomed").unwrap().is_some());
+        store.insert_project(&pid, "doomed", "bye").await.unwrap();
+        assert!(store.get_project_by_name("doomed").await.unwrap().is_some());
 
-        store.delete_project(&pid).unwrap();
-        assert!(store.get_project_by_name("doomed").unwrap().is_none());
-        assert!(store.list_projects().unwrap().is_empty());
+        store.delete_project(&pid).await.unwrap();
+        assert!(store.get_project_by_name("doomed").await.unwrap().is_none());
+        assert!(store.list_projects().await.unwrap().is_empty());
     }
 
     // -- list_visible_tasks_for_project tests --
 
-    fn insert_task_with_project(
+    async fn insert_task_with_project(
         store: &Store,
         name: &str,
         project_id: Option<&ProjectId>,
@@ -590,44 +715,47 @@ mod tests {
             output: None,
             project_id: project_id.cloned(),
         };
-        store.insert_task(&task).unwrap();
+        store.insert_task(&task).await.unwrap();
         id
     }
 
-    #[test]
-    fn visible_tasks_null_project_returns_only_unscoped() {
-        let store = test_store();
+    #[tokio::test]
+    async fn visible_tasks_null_project_returns_only_unscoped() {
+        let store = test_store().await;
         let proj = ProjectId::generate();
-        insert_task_with_project(&store, "no-project", None);
-        insert_task_with_project(&store, "has-project", Some(&proj));
+        insert_task_with_project(&store, "no-project", None).await;
+        insert_task_with_project(&store, "has-project", Some(&proj)).await;
 
-        let visible = store.list_visible_tasks_for_project(None).unwrap();
+        let visible = store.list_visible_tasks_for_project(None).await.unwrap();
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].name, "no-project");
     }
 
-    #[test]
-    fn visible_tasks_with_project_returns_only_matching() {
-        let store = test_store();
+    #[tokio::test]
+    async fn visible_tasks_with_project_returns_only_matching() {
+        let store = test_store().await;
         let proj_a = ProjectId::generate();
         let proj_b = ProjectId::generate();
-        insert_task_with_project(&store, "no-project", None);
-        insert_task_with_project(&store, "proj-a-task", Some(&proj_a));
-        insert_task_with_project(&store, "proj-b-task", Some(&proj_b));
+        insert_task_with_project(&store, "no-project", None).await;
+        insert_task_with_project(&store, "proj-a-task", Some(&proj_a)).await;
+        insert_task_with_project(&store, "proj-b-task", Some(&proj_b)).await;
 
-        let visible = store.list_visible_tasks_for_project(Some(&proj_a)).unwrap();
+        let visible = store
+            .list_visible_tasks_for_project(Some(&proj_a))
+            .await
+            .unwrap();
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].name, "proj-a-task");
     }
 
-    #[test]
-    fn visible_tasks_running_sorted_before_completed() {
-        let store = test_store();
-        let id1 = insert_task_with_project(&store, "completed-task", None);
-        store.complete_task(&id1, 0, None).unwrap();
-        insert_task_with_project(&store, "running-task", None);
+    #[tokio::test]
+    async fn visible_tasks_running_sorted_before_completed() {
+        let store = test_store().await;
+        let id1 = insert_task_with_project(&store, "completed-task", None).await;
+        store.complete_task(&id1, 0, None).await.unwrap();
+        insert_task_with_project(&store, "running-task", None).await;
 
-        let visible = store.list_visible_tasks_for_project(None).unwrap();
+        let visible = store.list_visible_tasks_for_project(None).await.unwrap();
         assert_eq!(visible.len(), 2);
         // Running tasks should come first
         assert_eq!(visible[0].name, "running-task");
@@ -636,15 +764,16 @@ mod tests {
         assert!(!visible[1].status.is_running());
     }
 
-    #[test]
-    fn visible_tasks_empty_for_unknown_project() {
-        let store = test_store();
+    #[tokio::test]
+    async fn visible_tasks_empty_for_unknown_project() {
+        let store = test_store().await;
         let proj = ProjectId::generate();
-        insert_task_with_project(&store, "task", Some(&proj));
+        insert_task_with_project(&store, "task", Some(&proj)).await;
 
         let unknown = ProjectId::generate();
         let visible = store
             .list_visible_tasks_for_project(Some(&unknown))
+            .await
             .unwrap();
         assert!(visible.is_empty());
     }
