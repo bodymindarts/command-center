@@ -5,3 +5,4 @@ data/
 .bacon-locations
 TASK.md
 .env
+.mcp.json

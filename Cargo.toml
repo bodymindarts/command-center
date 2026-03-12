@@ -29,6 +29,8 @@ ureq = { version = "2", features = ["json"] }
 rmcp = { version = "1.2", features = ["server", "transport-streamable-http-server"] }
 schemars = "1.0"
 axum = "0.8"
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+rand = "0.9"
 
 [dev-dependencies]
 tempfile = "3"

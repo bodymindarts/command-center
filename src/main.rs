@@ -2,6 +2,7 @@ mod app;
 mod assistant;
 mod cli;
 mod config;
+mod jwt;
 mod mcp;
 mod permission;
 mod primitives;
@@ -111,16 +112,20 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn cmd_dash<R: Runtime + Send + Sync + 'static>(
-    app: ClatApp<R>,
+    mut app: ClatApp<R>,
     resume: Option<&str>,
     caffeinate: bool,
 ) -> anyhow::Result<()> {
+    // Initialize JWT signer for MCP authentication.
+    let jwt_signer = crate::jwt::JwtSigner::load_or_create(&app.data_dir().join("jwt-secret"))?;
+    app.set_jwt_signer(jwt_signer.clone());
+
     let app = Arc::new(app);
     let project_root = app.project_root().to_path_buf();
 
     // Start MCP server on localhost.
     const MCP_PORT: u16 = 9111;
-    match mcp::start_mcp_server(Arc::clone(&app), MCP_PORT).await {
+    match mcp::start_mcp_server(Arc::clone(&app), MCP_PORT, jwt_signer).await {
         Ok(url) => {
             mcp::write_mcp_url_breadcrumb(&project_root, &url);
         }

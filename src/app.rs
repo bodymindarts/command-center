@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::config::Paths;
+use crate::jwt::JwtSigner;
 use crate::primitives::{ChatId, MessageRole, ProjectId, TaskId, TaskName, WindowId};
 use crate::runtime::{LaunchConfig, Runtime};
 use crate::skill::SkillFile;
@@ -87,6 +88,7 @@ pub struct ClatApp<R: Runtime> {
     runtime: R,
     paths: Paths,
     skip_permissions: bool,
+    jwt_signer: Option<JwtSigner>,
 }
 
 impl<R: Runtime> ClatApp<R> {
@@ -104,7 +106,13 @@ impl<R: Runtime> ClatApp<R> {
             runtime,
             paths,
             skip_permissions,
+            jwt_signer: None,
         })
+    }
+
+    /// Set the JWT signer (called by dashboard startup after creating the signer).
+    pub fn set_jwt_signer(&mut self, signer: JwtSigner) {
+        self.jwt_signer = Some(signer);
     }
 
     #[cfg(test)]
@@ -114,6 +122,7 @@ impl<R: Runtime> ClatApp<R> {
             runtime,
             paths,
             skip_permissions: false,
+            jwt_signer: None,
         }
     }
 
@@ -123,6 +132,10 @@ impl<R: Runtime> ClatApp<R> {
 
     pub fn project_root(&self) -> &std::path::Path {
         &self.paths.root
+    }
+
+    pub fn data_dir(&self) -> &std::path::Path {
+        &self.paths.data_dir
     }
 
     #[cfg(test)]
@@ -185,6 +198,19 @@ impl<R: Runtime> ClatApp<R> {
             base_tools: &skill.agent.base_tools,
             bash_patterns: &skill.agent.allowed_bash_patterns,
         };
+        // Sign a JWT for this task so the MCP server can identify the caller.
+        let jwt_token = if let Some(signer) = &self.jwt_signer {
+            let claims = crate::jwt::AgentClaims {
+                sub: id.as_str().to_string(),
+                role: req.skill_name.to_string(),
+                project: req.project.clone(),
+                iat: chrono::Utc::now().timestamp() as u64,
+            };
+            Some(signer.sign(&claims)?)
+        } else {
+            None
+        };
+
         let work_dir = match req.work_dir_mode {
             WorkDirMode::Worktree { repo, branch } => {
                 let worktree_name = format!("{}-{}", req.task_name, id.short());
@@ -194,18 +220,27 @@ impl<R: Runtime> ClatApp<R> {
                     &perms,
                     branch,
                     &self.paths.root,
+                    jwt_token.as_deref(),
                 )?
             }
             WorkDirMode::Scratch => {
                 let scratch_dir = self.paths.data_dir.join("scratch").join(req.task_name);
                 self.runtime.init_scratch_dir(&scratch_dir)?;
-                self.runtime
-                    .setup_dir_config(&self.paths.root, &scratch_dir, &perms)?;
+                self.runtime.setup_dir_config(
+                    &self.paths.root,
+                    &scratch_dir,
+                    &perms,
+                    jwt_token.as_deref(),
+                )?;
                 scratch_dir
             }
             WorkDirMode::Existing { dir } => {
-                self.runtime
-                    .setup_dir_config(&self.paths.root, dir, &perms)?;
+                self.runtime.setup_dir_config(
+                    &self.paths.root,
+                    dir,
+                    &perms,
+                    jwt_token.as_deref(),
+                )?;
                 dir.to_path_buf()
             }
         };
@@ -337,8 +372,20 @@ impl<R: Runtime> ClatApp<R> {
         let work_dir = std::path::Path::new(work_dir);
         if !work_dir.is_dir() {
             // Worktree was removed (e.g. after merging and cleaning up).
-            // Recreate it so the agent can resume.
-            self.runtime.recreate_worktree(&self.paths.root, work_dir)?;
+            // Recreate it so the agent can resume. Re-sign a fresh JWT.
+            let jwt_token = if let Some(signer) = &self.jwt_signer {
+                let claims = crate::jwt::AgentClaims {
+                    sub: task.id.as_str().to_string(),
+                    role: task.skill_name.clone(),
+                    project: task.project_id.as_ref().map(|p| p.as_str().to_string()),
+                    iat: chrono::Utc::now().timestamp() as u64,
+                };
+                Some(signer.sign(&claims)?)
+            } else {
+                None
+            };
+            self.runtime
+                .recreate_worktree(&self.paths.root, work_dir, jwt_token.as_deref())?;
         }
 
         let session_id = task.session_id.as_ref().map(|s| s.as_str()).unwrap_or("");
@@ -670,6 +717,7 @@ mod tests {
             _perms: &crate::runtime::SkillPermissions,
             _branch: Option<&str>,
             _hooks_source: &Path,
+            _jwt_token: Option<&str>,
         ) -> anyhow::Result<PathBuf> {
             self.calls.borrow_mut().push(Call::CreateWorktree {
                 name: name.to_string(),
@@ -679,7 +727,12 @@ mod tests {
             Ok(path)
         }
 
-        fn recreate_worktree(&self, _repo_root: &Path, work_dir: &Path) -> anyhow::Result<()> {
+        fn recreate_worktree(
+            &self,
+            _repo_root: &Path,
+            work_dir: &Path,
+            _jwt_token: Option<&str>,
+        ) -> anyhow::Result<()> {
             self.calls.borrow_mut().push(Call::RecreateWorktree {
                 work_dir: work_dir.to_path_buf(),
             });
@@ -692,6 +745,7 @@ mod tests {
             _hooks_source: &Path,
             work_dir: &Path,
             _perms: &crate::runtime::SkillPermissions,
+            _jwt_token: Option<&str>,
         ) -> anyhow::Result<()> {
             self.calls.borrow_mut().push(Call::SetupDirConfig {
                 work_dir: work_dir.to_path_buf(),

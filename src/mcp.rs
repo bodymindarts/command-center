@@ -2,6 +2,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use axum::extract::Request;
+use axum::middleware::Next;
+use axum::response::Response;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
@@ -9,6 +12,7 @@ use rmcp::schemars;
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 
 use crate::app::{ClatApp, PromptMode, SpawnOutput, SpawnRequest, WorkDirMode};
+use crate::jwt::JwtSigner;
 use crate::runtime::Runtime;
 
 // ---------------------------------------------------------------------------
@@ -211,12 +215,72 @@ pub fn read_mcp_url_breadcrumb(project_root: &std::path::Path) -> Option<String>
 // Server startup
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// JWT authentication middleware
+// ---------------------------------------------------------------------------
+
+/// Axum middleware that extracts and verifies JWT tokens from incoming requests.
+///
+/// Checks `Authorization: Bearer <token>` header first, then falls back to
+/// `?token=<token>` query parameter. Verified claims are inserted into
+/// request extensions for downstream handlers.
+///
+/// During migration, requests without tokens are allowed through with a warning.
+async fn jwt_auth_middleware(
+    axum::extract::State(signer): axum::extract::State<JwtSigner>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    // Try Authorization header first.
+    let token = req
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|t| t.to_string());
+
+    // Fall back to query parameter.
+    let token = token.or_else(|| {
+        req.uri().query().and_then(|q| {
+            q.split('&')
+                .find_map(|pair| pair.strip_prefix("token=").map(|v| v.to_string()))
+        })
+    });
+
+    match token {
+        Some(t) => match signer.verify(&t) {
+            Ok(claims) => {
+                tracing::debug!(
+                    task_id = %claims.sub,
+                    role = %claims.role,
+                    "authenticated MCP request"
+                );
+                req.extensions_mut().insert(claims);
+            }
+            Err(e) => {
+                tracing::warn!("invalid JWT token: {e}");
+                return Response::builder()
+                    .status(401)
+                    .body(axum::body::Body::from("invalid token"))
+                    .unwrap();
+            }
+        },
+        None => {
+            // Graceful degradation: allow unauthenticated requests during migration.
+            tracing::debug!("unauthenticated MCP request (no token)");
+        }
+    }
+
+    next.run(req).await
+}
+
 /// Start the MCP HTTP server as a background tokio task.
 ///
 /// Returns the URL the server is listening on.
 pub async fn start_mcp_server<R: Runtime + Send + Sync + 'static>(
     app: Arc<ClatApp<R>>,
     port: u16,
+    jwt_signer: JwtSigner,
 ) -> anyhow::Result<String> {
     use rmcp::transport::streamable_http_server::{
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
@@ -234,7 +298,9 @@ pub async fn start_mcp_server<R: Runtime + Send + Sync + 'static>(
         config,
     );
 
-    let router = axum::Router::new().nest_service("/mcp", service);
+    let router = axum::Router::new().nest_service("/mcp", service).layer(
+        axum::middleware::from_fn_with_state(jwt_signer, jwt_auth_middleware),
+    );
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}")).await?;
     let url = format!("http://127.0.0.1:{port}/mcp");
 
