@@ -2,9 +2,8 @@ use std::path::Path;
 
 use anyhow::Context;
 use chrono::{DateTime, Utc};
-use rusqlite::Row;
-use rusqlite_migration::{M, Migrations};
-use tokio_rusqlite::Connection;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use sqlx::{Row, SqlitePool};
 
 use crate::primitives::{
     ChatId, ClaudeSessionId, MessageRole, PaneId, ProjectId, ProjectName, TaskId, TaskName,
@@ -12,56 +11,25 @@ use crate::primitives::{
 };
 use crate::task::{Project, Task, TaskMessage};
 
-static MIGRATION_STEPS: [M<'static>; 3] = [
-    M::up(
-        "CREATE TABLE IF NOT EXISTS tasks (
-            id           TEXT PRIMARY KEY,
-            name         TEXT NOT NULL DEFAULT '',
-            skill_name   TEXT NOT NULL,
-            params_json  TEXT NOT NULL,
-            status       TEXT NOT NULL DEFAULT 'running',
-            tmux_pane    TEXT,
-            tmux_window  TEXT,
-            work_dir     TEXT,
-            started_at   TEXT NOT NULL,
-            completed_at TEXT,
-            exit_code    INTEGER,
-            output       TEXT
-        );
-        CREATE TABLE IF NOT EXISTS task_messages (
-            id         TEXT PRIMARY KEY,
-            task_id    TEXT NOT NULL,
-            role       TEXT NOT NULL,
-            content    TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        );",
-    ),
-    M::up(
-        "CREATE TABLE IF NOT EXISTS projects (
-            id          TEXT PRIMARY KEY,
-            name        TEXT NOT NULL UNIQUE,
-            description TEXT NOT NULL DEFAULT '',
-            created_at  TEXT NOT NULL
-        );
-        ALTER TABLE tasks ADD COLUMN project_id TEXT;",
-    ),
-    M::up("ALTER TABLE tasks ADD COLUMN session_id TEXT;"),
-];
-static MIGRATIONS: Migrations<'static> = Migrations::from_slice(&MIGRATION_STEPS);
-
-fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
-    let started_at: String = row.get(8)?;
-    let completed_at: Option<String> = row.get(9)?;
+fn row_to_task(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<Task> {
+    let started_at: String = row.try_get("started_at")?;
+    let completed_at: Option<String> = row.try_get("completed_at")?;
     Ok(Task {
-        id: TaskId::from(row.get::<_, String>(0)?),
-        name: TaskName::from(row.get::<_, String>(1)?),
-        skill_name: row.get(2)?,
-        params_json: row.get(3)?,
-        status: TaskStatus::from(row.get::<_, String>(4)?),
-        tmux_pane: row.get::<_, Option<String>>(5)?.map(PaneId::from),
-        tmux_window: row.get::<_, Option<String>>(6)?.map(WindowId::from),
-        work_dir: row.get(7)?,
-        session_id: row.get::<_, Option<String>>(13)?.map(ClaudeSessionId::from),
+        id: TaskId::from(row.try_get::<String, _>("id")?),
+        name: TaskName::from(row.try_get::<String, _>("name")?),
+        skill_name: row.try_get("skill_name")?,
+        params_json: row.try_get("params_json")?,
+        status: TaskStatus::from(row.try_get::<String, _>("status")?),
+        tmux_pane: row
+            .try_get::<Option<String>, _>("tmux_pane")?
+            .map(PaneId::from),
+        tmux_window: row
+            .try_get::<Option<String>, _>("tmux_window")?
+            .map(WindowId::from),
+        work_dir: row.try_get("work_dir")?,
+        session_id: row
+            .try_get::<Option<String>, _>("session_id")?
+            .map(ClaudeSessionId::from),
         started_at: DateTime::parse_from_rfc3339(&started_at)
             .unwrap_or_default()
             .with_timezone(&Utc),
@@ -70,9 +38,36 @@ fn row_to_task(row: &Row) -> rusqlite::Result<Task> {
                 .ok()
                 .map(|dt| dt.with_timezone(&Utc))
         }),
-        exit_code: row.get(10)?,
-        output: row.get(11)?,
-        project_id: row.get::<_, Option<String>>(12)?.map(ProjectId::from),
+        exit_code: row.try_get("exit_code")?,
+        output: row.try_get("output")?,
+        project_id: row
+            .try_get::<Option<String>, _>("project_id")?
+            .map(ProjectId::from),
+    })
+}
+
+fn row_to_project(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<Project> {
+    let created_at: String = row.try_get("created_at")?;
+    Ok(Project {
+        id: ProjectId::from(row.try_get::<String, _>("id")?),
+        name: ProjectName::from(row.try_get::<String, _>("name")?),
+        description: row.try_get("description")?,
+        created_at: DateTime::parse_from_rfc3339(&created_at)
+            .unwrap_or_default()
+            .with_timezone(&Utc),
+    })
+}
+
+fn row_to_message(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<TaskMessage> {
+    let created_at: String = row.try_get("created_at")?;
+    Ok(TaskMessage {
+        id: row.try_get("id")?,
+        chat_id: row.try_get("task_id")?,
+        role: MessageRole::from(row.try_get::<String, _>("role")?),
+        content: row.try_get("content")?,
+        created_at: DateTime::parse_from_rfc3339(&created_at)
+            .unwrap_or_default()
+            .with_timezone(&Utc),
     })
 }
 
@@ -81,62 +76,58 @@ const TASK_COLUMNS: &str =
      started_at, completed_at, exit_code, output, project_id, session_id";
 
 pub struct Store {
-    conn: Connection,
+    pool: SqlitePool,
 }
 
 impl Store {
     #[cfg(test)]
     pub async fn open_in_memory() -> anyhow::Result<Self> {
-        let conn = Connection::open_in_memory()
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
             .await
             .context("failed to open in-memory database")?;
-        conn.call(|conn| -> Result<(), rusqlite_migration::Error> {
-            MIGRATIONS.to_latest(conn)?;
-            Ok(())
-        })
-        .await
-        .context("failed to run database migrations")?;
-        Ok(Self { conn })
+        sqlx::migrate!()
+            .run(&pool)
+            .await
+            .context("failed to run database migrations")?;
+        Ok(Self { pool })
     }
 
     pub async fn open(db_path: &Path) -> anyhow::Result<Self> {
-        let path = db_path.to_path_buf();
-        let conn = Connection::open(&path)
+        let options = SqliteConnectOptions::new()
+            .filename(db_path)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal);
+        let pool = SqlitePoolOptions::new()
+            .connect_with(options)
             .await
-            .with_context(|| format!("failed to open database at {}", path.display()))?;
-        conn.call(|conn| -> Result<(), rusqlite_migration::Error> {
-            MIGRATIONS.to_latest(conn)?;
-            Ok(())
-        })
-        .await
-        .with_context(|| format!("failed to run migrations at {}", path.display()))?;
-        Ok(Self { conn })
+            .with_context(|| format!("failed to open database at {}", db_path.display()))?;
+        sqlx::migrate!()
+            .run(&pool)
+            .await
+            .with_context(|| format!("failed to run migrations at {}", db_path.display()))?;
+        Ok(Self { pool })
     }
 
     pub async fn insert_task(&self, task: &Task) -> anyhow::Result<()> {
-        let task = task.clone();
-        self.conn
-            .call(move |conn| -> Result<(), rusqlite::Error> {
-                conn.execute(
-                    "INSERT INTO tasks (id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir, started_at, project_id, session_id)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                    (
-                        task.id.as_str(),
-                        task.name.as_str(),
-                        &task.skill_name,
-                        &task.params_json,
-                        task.status.as_str(),
-                        task.tmux_pane.as_ref().map(|p| p.as_str().to_string()),
-                        task.tmux_window.as_ref().map(|w| w.as_str().to_string()),
-                        &task.work_dir,
-                        task.started_at.to_rfc3339(),
-                        task.project_id.as_ref().map(|p| p.as_str().to_string()),
-                        task.session_id.as_ref().map(|s| s.as_str().to_string()),
-                    ),
-                )?;
-                Ok(())
-            })
-            .await?;
+        sqlx::query(
+            "INSERT INTO tasks (id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir, started_at, project_id, session_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(task.id.as_str())
+        .bind(task.name.as_str())
+        .bind(&task.skill_name)
+        .bind(&task.params_json)
+        .bind(task.status.as_str())
+        .bind(task.tmux_pane.as_ref().map(|p| p.as_str().to_string()))
+        .bind(task.tmux_window.as_ref().map(|w| w.as_str().to_string()))
+        .bind(&task.work_dir)
+        .bind(task.started_at.to_rfc3339())
+        .bind(task.project_id.as_ref().map(|p| p.as_str().to_string()))
+        .bind(task.session_id.as_ref().map(|s| s.as_str().to_string()))
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -146,43 +137,38 @@ impl Store {
         exit_code: i32,
         output: Option<&str>,
     ) -> anyhow::Result<()> {
-        let id = id.as_str().to_string();
-        let output = output.map(|s| s.to_string());
-        self.conn
-            .call(move |conn| -> Result<(), rusqlite::Error> {
-                let now = Utc::now().to_rfc3339();
-                let status = if exit_code == 0 {
-                    "completed"
-                } else {
-                    "failed"
-                };
-                conn.execute(
-                    "UPDATE tasks SET status = ?1, exit_code = ?2, completed_at = ?3, output = ?4
-                     WHERE id = ?5",
-                    (status, exit_code, &now, output.as_deref(), &id),
-                )?;
-                Ok(())
-            })
-            .await?;
+        let now = Utc::now().to_rfc3339();
+        let status = if exit_code == 0 {
+            "completed"
+        } else {
+            "failed"
+        };
+        sqlx::query(
+            "UPDATE tasks SET status = ?, exit_code = ?, completed_at = ?, output = ?
+             WHERE id = ?",
+        )
+        .bind(status)
+        .bind(exit_code)
+        .bind(&now)
+        .bind(output)
+        .bind(id.as_str())
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
     pub async fn close_task(&self, id: &TaskId, output: Option<&str>) -> anyhow::Result<bool> {
-        let id = id.as_str().to_string();
-        let output = output.map(|s| s.to_string());
-        let rows = self
-            .conn
-            .call(move |conn| -> Result<usize, rusqlite::Error> {
-                let now = Utc::now().to_rfc3339();
-                let rows = conn.execute(
-                    "UPDATE tasks SET status = 'closed', completed_at = ?1, output = ?2
-                     WHERE id = ?3 AND status = 'running'",
-                    (&now, output.as_deref(), &id),
-                )?;
-                Ok(rows)
-            })
-            .await?;
-        Ok(rows > 0)
+        let now = Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE tasks SET status = 'closed', completed_at = ?, output = ?
+             WHERE id = ? AND status = 'running'",
+        )
+        .bind(&now)
+        .bind(output)
+        .bind(id.as_str())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn reopen_task(
@@ -191,110 +177,75 @@ impl Store {
         pane: &PaneId,
         window: &WindowId,
     ) -> anyhow::Result<bool> {
-        let id = id.as_str().to_string();
-        let pane = pane.as_str().to_string();
-        let window = window.as_str().to_string();
-        let rows = self
-            .conn
-            .call(move |conn| -> Result<usize, rusqlite::Error> {
-                let rows = conn.execute(
-                    "UPDATE tasks SET status = 'running', tmux_pane = ?1, tmux_window = ?2, completed_at = NULL
-                     WHERE id = ?3 AND status != 'running'",
-                    (&pane, &window, &id),
-                )?;
-                Ok(rows)
-            })
-            .await?;
-        Ok(rows > 0)
+        let result = sqlx::query(
+            "UPDATE tasks SET status = 'running', tmux_pane = ?, tmux_window = ?, completed_at = NULL
+             WHERE id = ? AND status != 'running'",
+        )
+        .bind(pane.as_str())
+        .bind(window.as_str())
+        .bind(id.as_str())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn delete_task(&self, id: &TaskId) -> anyhow::Result<()> {
-        let id = id.as_str().to_string();
-        self.conn
-            .call(move |conn| -> Result<(), rusqlite::Error> {
-                conn.execute("DELETE FROM task_messages WHERE task_id = ?1", [&id])?;
-                conn.execute("DELETE FROM tasks WHERE id = ?1", [&id])?;
-                Ok(())
-            })
+        sqlx::query("DELETE FROM task_messages WHERE task_id = ?")
+            .bind(id.as_str())
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM tasks WHERE id = ?")
+            .bind(id.as_str())
+            .execute(&self.pool)
             .await?;
         Ok(())
     }
 
     pub async fn list_tasks(&self) -> anyhow::Result<Vec<Task>> {
-        let tasks = self
-            .conn
-            .call(|conn| -> Result<Vec<Task>, rusqlite::Error> {
-                let sql = format!("SELECT {TASK_COLUMNS} FROM tasks ORDER BY started_at DESC");
-                let mut stmt = conn.prepare(&sql)?;
-                let tasks = stmt
-                    .query_map([], row_to_task)?
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(tasks)
-            })
-            .await?;
-        Ok(tasks)
+        let sql = format!("SELECT {TASK_COLUMNS} FROM tasks ORDER BY started_at DESC");
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        rows.iter().map(row_to_task).collect()
     }
 
     pub async fn list_active_tasks(&self) -> anyhow::Result<Vec<Task>> {
-        let tasks = self
-            .conn
-            .call(|conn| -> Result<Vec<Task>, rusqlite::Error> {
-                let sql = format!(
-                    "SELECT {TASK_COLUMNS} FROM tasks WHERE status = 'running' ORDER BY started_at DESC"
-                );
-                let mut stmt = conn.prepare(&sql)?;
-                let tasks = stmt
-                    .query_map([], row_to_task)?
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(tasks)
-            })
-            .await?;
-        Ok(tasks)
+        let sql = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks WHERE status = 'running' ORDER BY started_at DESC"
+        );
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        rows.iter().map(row_to_task).collect()
     }
 
     pub async fn update_task(&self, task: &Task) -> anyhow::Result<()> {
-        let task = task.clone();
-        self.conn
-            .call(move |conn| -> Result<(), rusqlite::Error> {
-                conn.execute(
-                    "UPDATE tasks SET status = ?1, tmux_pane = ?2, tmux_window = ?3,
-                     completed_at = ?4, exit_code = ?5, output = ?6
-                     WHERE id = ?7",
-                    (
-                        task.status.as_str(),
-                        task.tmux_pane.as_ref().map(|p| p.as_str().to_string()),
-                        task.tmux_window.as_ref().map(|w| w.as_str().to_string()),
-                        task.completed_at.as_ref().map(|dt| dt.to_rfc3339()),
-                        task.exit_code,
-                        task.output.as_deref(),
-                        task.id.as_str(),
-                    ),
-                )?;
-                Ok(())
-            })
-            .await?;
+        sqlx::query(
+            "UPDATE tasks SET status = ?, tmux_pane = ?, tmux_window = ?,
+             completed_at = ?, exit_code = ?, output = ?
+             WHERE id = ?",
+        )
+        .bind(task.status.as_str())
+        .bind(task.tmux_pane.as_ref().map(|p| p.as_str().to_string()))
+        .bind(task.tmux_window.as_ref().map(|w| w.as_str().to_string()))
+        .bind(task.completed_at.as_ref().map(|dt| dt.to_rfc3339()))
+        .bind(task.exit_code)
+        .bind(task.output.as_deref())
+        .bind(task.id.as_str())
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
     pub async fn get_task_by_prefix(&self, prefix: &str) -> anyhow::Result<Option<Task>> {
         let pattern = format!("{prefix}%");
-        let tasks = self
-            .conn
-            .call(move |conn| -> Result<Vec<Task>, rusqlite::Error> {
-                let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id LIKE ?1");
-                let mut stmt = conn.prepare(&sql)?;
-                let tasks: Vec<Task> = stmt
-                    .query_map([&pattern], row_to_task)?
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(tasks)
-            })
+        let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id LIKE ?");
+        let rows = sqlx::query(&sql)
+            .bind(&pattern)
+            .fetch_all(&self.pool)
             .await?;
 
-        if tasks.len() > 1 {
-            anyhow::bail!("ambiguous prefix '{prefix}': matches {} tasks", tasks.len());
+        if rows.len() > 1 {
+            anyhow::bail!("ambiguous prefix '{prefix}': matches {} tasks", rows.len());
         }
 
-        Ok(tasks.into_iter().next())
+        rows.first().map(row_to_task).transpose()
     }
 
     pub async fn insert_message(
@@ -303,51 +254,31 @@ impl Store {
         role: MessageRole,
         content: &str,
     ) -> anyhow::Result<()> {
-        let key = chat_id.as_db_key();
-        let role_str = role.as_str().to_string();
-        let content = content.to_string();
-        self.conn
-            .call(move |conn| -> Result<(), rusqlite::Error> {
-                let id = uuid::Uuid::now_v7().to_string();
-                let now = Utc::now().to_rfc3339();
-                conn.execute(
-                    "INSERT INTO task_messages (id, task_id, role, content, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
-                    (&id, &key, &role_str, &content, &now),
-                )?;
-                Ok(())
-            })
-            .await?;
+        let id = uuid::Uuid::now_v7().to_string();
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO task_messages (id, task_id, role, content, created_at)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(chat_id.as_db_key())
+        .bind(role.as_str())
+        .bind(content)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
     pub async fn list_messages(&self, chat_id: &ChatId) -> anyhow::Result<Vec<TaskMessage>> {
-        let key = chat_id.as_db_key();
-        let messages = self
-            .conn
-            .call(move |conn| -> Result<Vec<TaskMessage>, rusqlite::Error> {
-                let mut stmt = conn.prepare(
-                    "SELECT id, task_id, role, content, created_at
-                     FROM task_messages WHERE task_id = ?1 ORDER BY created_at ASC",
-                )?;
-                let messages = stmt
-                    .query_map([&key], |row| {
-                        let created_at: String = row.get(4)?;
-                        Ok(TaskMessage {
-                            id: row.get(0)?,
-                            chat_id: row.get(1)?,
-                            role: MessageRole::from(row.get::<_, String>(2)?),
-                            content: row.get(3)?,
-                            created_at: DateTime::parse_from_rfc3339(&created_at)
-                                .unwrap_or_default()
-                                .with_timezone(&Utc),
-                        })
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(messages)
-            })
-            .await?;
-        Ok(messages)
+        let rows = sqlx::query(
+            "SELECT id, task_id, role, content, created_at
+             FROM task_messages WHERE task_id = ? ORDER BY created_at ASC",
+        )
+        .bind(chat_id.as_db_key())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_message).collect()
     }
 
     // -- Project CRUD --
@@ -358,84 +289,42 @@ impl Store {
         name: &str,
         description: &str,
     ) -> anyhow::Result<()> {
-        let id = id.as_str().to_string();
-        let name = name.to_string();
-        let description = description.to_string();
-        self.conn
-            .call(move |conn| -> Result<(), rusqlite::Error> {
-                let now = Utc::now().to_rfc3339();
-                conn.execute(
-                    "INSERT INTO projects (id, name, description, created_at)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    (&id, &name, &description, &now),
-                )?;
-                Ok(())
-            })
-            .await?;
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO projects (id, name, description, created_at)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(id.as_str())
+        .bind(name)
+        .bind(description)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
     pub async fn get_project_by_name(&self, name: &str) -> anyhow::Result<Option<Project>> {
-        let name = name.to_string();
-        let project = self
-            .conn
-            .call(move |conn| -> Result<Option<Project>, rusqlite::Error> {
-                let mut stmt = conn.prepare(
-                    "SELECT id, name, description, created_at FROM projects WHERE name = ?1",
-                )?;
-                let mut rows = stmt.query_map([&name], |row| {
-                    let created_at: String = row.get(3)?;
-                    Ok(Project {
-                        id: ProjectId::from(row.get::<_, String>(0)?),
-                        name: ProjectName::from(row.get::<_, String>(1)?),
-                        description: row.get(2)?,
-                        created_at: DateTime::parse_from_rfc3339(&created_at)
-                            .unwrap_or_default()
-                            .with_timezone(&Utc),
-                    })
-                })?;
-                match rows.next() {
-                    Some(row) => Ok(Some(row?)),
-                    None => Ok(None),
-                }
-            })
-            .await?;
-        Ok(project)
+        let row =
+            sqlx::query("SELECT id, name, description, created_at FROM projects WHERE name = ?")
+                .bind(name)
+                .fetch_optional(&self.pool)
+                .await?;
+        row.as_ref().map(row_to_project).transpose()
     }
 
     pub async fn list_projects(&self) -> anyhow::Result<Vec<Project>> {
-        let projects = self
-            .conn
-            .call(|conn| -> Result<Vec<Project>, rusqlite::Error> {
-                let mut stmt = conn.prepare(
-                    "SELECT id, name, description, created_at FROM projects ORDER BY created_at ASC",
-                )?;
-                let projects = stmt
-                    .query_map([], |row| {
-                        let created_at: String = row.get(3)?;
-                        Ok(Project {
-                            id: ProjectId::from(row.get::<_, String>(0)?),
-                            name: ProjectName::from(row.get::<_, String>(1)?),
-                            description: row.get(2)?,
-                            created_at: DateTime::parse_from_rfc3339(&created_at)
-                                .unwrap_or_default()
-                                .with_timezone(&Utc),
-                        })
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(projects)
-            })
-            .await?;
-        Ok(projects)
+        let rows = sqlx::query(
+            "SELECT id, name, description, created_at FROM projects ORDER BY created_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_project).collect()
     }
 
     pub async fn delete_project(&self, id: &ProjectId) -> anyhow::Result<()> {
-        let id = id.as_str().to_string();
-        self.conn
-            .call(move |conn| -> Result<(), rusqlite::Error> {
-                conn.execute("DELETE FROM projects WHERE id = ?1", [&id])?;
-                Ok(())
-            })
+        sqlx::query("DELETE FROM projects WHERE id = ?")
+            .bind(id.as_str())
+            .execute(&self.pool)
             .await?;
         Ok(())
     }
@@ -447,33 +336,26 @@ impl Store {
         &self,
         project_id: Option<&ProjectId>,
     ) -> anyhow::Result<Vec<Task>> {
-        let pid = project_id.map(|p| p.as_str().to_string());
-        let tasks = self
-            .conn
-            .call(move |conn| -> Result<Vec<Task>, rusqlite::Error> {
-                let sql = match pid {
-                    Some(_) => format!(
-                        "SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ?1 \
-                         ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, started_at DESC"
-                    ),
-                    None => format!(
-                        "SELECT {TASK_COLUMNS} FROM tasks WHERE project_id IS NULL \
-                         ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, started_at DESC"
-                    ),
-                };
-                let mut stmt = conn.prepare(&sql)?;
-                let tasks = match pid {
-                    Some(ref pid) => stmt
-                        .query_map([pid.as_str()], row_to_task)?
-                        .collect::<Result<Vec<_>, _>>()?,
-                    None => stmt
-                        .query_map([], row_to_task)?
-                        .collect::<Result<Vec<_>, _>>()?,
-                };
-                Ok(tasks)
-            })
-            .await?;
-        Ok(tasks)
+        let rows = match project_id {
+            Some(pid) => {
+                let sql = format!(
+                    "SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ? \
+                     ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, started_at DESC"
+                );
+                sqlx::query(&sql)
+                    .bind(pid.as_str())
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+            None => {
+                let sql = format!(
+                    "SELECT {TASK_COLUMNS} FROM tasks WHERE project_id IS NULL \
+                     ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, started_at DESC"
+                );
+                sqlx::query(&sql).fetch_all(&self.pool).await?
+            }
+        };
+        rows.iter().map(row_to_task).collect()
     }
 }
 
