@@ -149,6 +149,7 @@ impl AssistantSession {
             "stream-json".to_string(),
             "--verbose".to_string(),
             "--include-partial-messages".to_string(),
+            "--dangerously-skip-permissions".to_string(),
             "--allowedTools".to_string(),
             "Read,Grep,Glob,Bash,Edit,Write".to_string(),
             "--append-system-prompt".to_string(),

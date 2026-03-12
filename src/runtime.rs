@@ -293,6 +293,7 @@ impl Runtime for TmuxRuntime {
         std::fs::create_dir_all(&claude_dir)?;
 
         let mut script = format!("#!/bin/sh\nunset CLAUDECODE\nexec {claude_bin}");
+        script.push_str(" --dangerously-skip-permissions");
         script.push_str(&format!(" --session-id {}", config.session_id));
 
         if let Some(user_prompt) = config.user_prompt {
@@ -334,7 +335,9 @@ impl Runtime for TmuxRuntime {
         work_dir: &Path,
     ) -> anyhow::Result<SpawnResult> {
         let claude_bin = self.resolve_binary("claude")?;
-        let claude_cmd = format!("env -u CLAUDECODE {claude_bin} --resume {session_id}");
+        let claude_cmd = format!(
+            "env -u CLAUDECODE {claude_bin} --dangerously-skip-permissions --resume {session_id}"
+        );
 
         self.launch_agent_window(task_name, work_dir, &claude_cmd)
     }
