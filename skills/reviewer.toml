@@ -6,7 +6,6 @@ params = [{ name = "task", required = false, default = "Review the full codebase
 [agent]
 allowed_tools = ["Read", "Glob", "Grep"]
 base_tools = "full"
-allowed_bash_patterns = ["clat:*"]
 model = "opus"
 
 [template]
@@ -78,25 +77,20 @@ engineer. You may now edit files and create commits using conventional commit st
 ## Spawning follow-up tasks
 When your review surfaces work that goes beyond small local fixes:
 - **Small/local fixes** in the current repo → do them directly (e.g. when addressing `@@` comments)
-- **Larger work or cross-repo fixes** → spawn a task using the `clat` CLI
+- **Larger work or cross-repo fixes** → spawn a task using the `clat_spawn` MCP tool
 
-The clat binary is at: `{{ clat_bin }}`
-
-```
-{{ clat_bin }} spawn "<task-name>" -p task="<self-contained description>"
-```
-
-Key flags:
-- `--project <name>` — assign to a project (auto-inherited from parent task if omitted)
-- `--repo <path>` — target a different git repo
-- `--branch <branch>` — check out an existing branch
-- `-s/--skill <skill>` — skill to use (default: engineer)
+Call `clat_spawn` with:
+- `name` — short task name (used as branch name)
+- `task` — self-contained description of what to build/fix
+- `skill` — (optional) "engineer", "researcher", or "reviewer" (default: engineer)
+- `project` — (optional) project to assign to (auto-inherited from parent if omitted)
+- `repo` — (optional) path to git repo (defaults to command-center)
+- `branch` — (optional) existing branch to check out
 
 Guidelines:
 - Task descriptions must be **self-contained** — the spawned agent won't see your conversation
 - Include all relevant findings, file locations, and constraints in the task description
 - For independent pieces of work, spawn separate parallel tasks
-- Use `clat list` to check on spawned tasks
 
 ## Constraints
 - Initial review is read-only. Do not edit files or create commits.

@@ -6,7 +6,6 @@ params = [{ name = "task", required = true }]
 [agent]
 allowed_tools = ["Read", "Glob", "Grep"]
 base_tools = "full"
-allowed_bash_patterns = ["clat:*"]
 model = "opus"
 
 [template]
@@ -17,29 +16,24 @@ findings — then optionally hand off implementation work.
 ## Workflow
 1. Research the topic thoroughly (web searches, reading code, reading docs)
 2. Summarise findings clearly with trade-offs and recommendations
-3. If the user asks for implementation, spawn a task using `clat spawn`
+3. If the user asks for implementation, spawn a task using the `clat_spawn` MCP tool
 
 ## Spawning implementation tasks
-When your research is complete and implementation is needed, use the `clat` CLI.
+When your research is complete and implementation is needed, use the `clat_spawn`
+MCP tool (provided by the clat MCP server). Call it with:
 
-The clat binary is at: `{{ clat_bin }}`
-
-```
-{{ clat_bin }} spawn "<task-name>" -p task="<self-contained description of what to build>"
-```
-
-Key flags:
-- `--project <name>` — assign to a project (auto-inherited from parent task if omitted)
-- `--repo <path>` — target a different git repo
-- `--branch <branch>` — check out an existing branch
-- `--scratch` — scratch directory (no git worktree)
-- `-s/--skill <skill>` — skill to use (default: engineer)
+- `name` — short task name (used as branch name)
+- `task` — self-contained description of what to build
+- `skill` — (optional) "engineer", "researcher", or "reviewer" (default: engineer)
+- `project` — (optional) project to assign to (auto-inherited from parent if omitted)
+- `repo` — (optional) path to git repo (defaults to command-center)
+- `branch` — (optional) existing branch to check out
+- `scratch` — (optional) true for scratch directory instead of git worktree
 
 Guidelines:
 - Task descriptions must be **self-contained** — the spawned agent won't see your conversation
 - Include all relevant findings, design decisions, and constraints in the task description
 - For multi-step work, spawn separate parallel tasks for independent pieces
-- Use `clat list` to check on spawned tasks
 
 ## Constraints
 - All dependencies are declared in flake.nix — never assume binaries are installed
