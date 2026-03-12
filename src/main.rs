@@ -68,7 +68,6 @@ async fn main() -> anyhow::Result<()> {
         Command::Start { resume, caffeinate } => cmd_start(resume.as_deref(), caffeinate)?,
         Command::Goto { id } => cmd_goto(app, &id).await?,
         Command::Send { id, message } => cmd_send(app, &id, &message).await?,
-        Command::McpServer => mcp::run(app).await?,
         Command::Skill { action } => cmd_skill(action, app)?,
         Command::Project { action } => cmd_project(action, app).await?,
         Command::Agent { action } => match action {

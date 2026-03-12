@@ -246,6 +246,9 @@ pub async fn run<R: Runtime>(
         }
     });
 
+    // MCP HTTP server — runs alongside the dashboard on port 24462.
+    let mcp_handle = crate::mcp::start();
+
     // Optional Telegram bot for remote permission approval.
     let (tg_tx, mut tg_rx) = if let (Ok(token), Ok(chat_id)) = (
         std::env::var("TELEGRAM_BOT_TOKEN"),
@@ -270,6 +273,7 @@ pub async fn run<R: Runtime>(
     )
     .await;
 
+    mcp_handle.abort();
     cancel.store(true, Ordering::Relaxed);
     for ctx in project_contexts.values() {
         ctx.cancel.store(true, Ordering::Relaxed);
