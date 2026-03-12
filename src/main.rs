@@ -15,6 +15,8 @@ use anyhow::{Context, bail};
 use clap::Parser;
 use tabled::{Table, Tabled};
 
+use std::sync::Arc;
+
 use crate::app::{ClatApp, PromptMode, SpawnRequest, WorkDirMode};
 use crate::cli::{AgentCommand, Cli, Command, ProjectAction, SkillAction};
 use crate::primitives::MessageRole;
@@ -82,7 +84,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Delete { id } => cmd_delete(app, &id).await?,
         Command::Dash {
             resume, caffeinate, ..
-        } => tui::run(app, resume.as_deref(), caffeinate).await?,
+        } => cmd_dash(app, resume.as_deref(), caffeinate).await?,
         Command::Start {
             resume, caffeinate, ..
         } => cmd_start(resume.as_deref(), caffeinate, skip_permissions)?,
@@ -106,6 +108,29 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+async fn cmd_dash<R: Runtime + Send + Sync + 'static>(
+    app: ClatApp<R>,
+    resume: Option<&str>,
+    caffeinate: bool,
+) -> anyhow::Result<()> {
+    let app = Arc::new(app);
+
+    // Start MCP server on localhost.
+    const MCP_PORT: u16 = 9111;
+    match mcp::start_mcp_server(Arc::clone(&app), MCP_PORT).await {
+        Ok(url) => {
+            mcp::write_mcp_url_breadcrumb(&url);
+        }
+        Err(e) => {
+            eprintln!("warning: failed to start MCP server: {e}");
+        }
+    }
+
+    let result = tui::run(app, resume, caffeinate).await;
+    mcp::remove_mcp_url_breadcrumb();
+    result
 }
 
 struct SpawnOpts {
