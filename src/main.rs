@@ -116,13 +116,12 @@ async fn cmd_dash<R: Runtime + Send + Sync + 'static>(
     resume: Option<&str>,
     caffeinate: bool,
 ) -> anyhow::Result<()> {
-    let jwt_signer = app.jwt_signer().clone();
     let app = Arc::new(app);
     let project_root = app.project_root().to_path_buf();
 
     // Start MCP server on localhost.
     const MCP_PORT: u16 = 9111;
-    match mcp::start_mcp_server(Arc::clone(&app), MCP_PORT, jwt_signer).await {
+    match mcp::start_mcp_server(Arc::clone(&app), MCP_PORT).await {
         Ok(url) => {
             mcp::write_mcp_url_breadcrumb(&project_root, &url);
         }

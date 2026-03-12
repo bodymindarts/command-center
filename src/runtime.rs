@@ -49,20 +49,20 @@ pub trait Runtime {
         perms: &SkillPermissions,
         branch: Option<&str>,
         hooks_source: &Path,
-        jwt_token: Option<&str>,
+        jwt_token: &str,
     ) -> anyhow::Result<PathBuf>;
     fn recreate_worktree(
         &self,
         repo_root: &Path,
         work_dir: &Path,
-        jwt_token: Option<&str>,
+        jwt_token: &str,
     ) -> anyhow::Result<()>;
     fn setup_dir_config(
         &self,
         hooks_source: &Path,
         work_dir: &Path,
         perms: &SkillPermissions,
-        jwt_token: Option<&str>,
+        jwt_token: &str,
     ) -> anyhow::Result<()>;
     fn init_scratch_dir(&self, scratch_dir: &Path) -> anyhow::Result<()>;
     fn launch_agent(&self, config: LaunchConfig) -> anyhow::Result<SpawnResult>;
@@ -172,7 +172,7 @@ impl Runtime for TmuxRuntime {
         hooks_source: &Path,
         work_dir: &Path,
         perms: &SkillPermissions,
-        jwt_token: Option<&str>,
+        jwt_token: &str,
     ) -> anyhow::Result<()> {
         setup_worktree_config(hooks_source, work_dir, perms, jwt_token)
     }
@@ -201,7 +201,7 @@ impl Runtime for TmuxRuntime {
         perms: &SkillPermissions,
         branch: Option<&str>,
         hooks_source: &Path,
-        jwt_token: Option<&str>,
+        jwt_token: &str,
     ) -> anyhow::Result<PathBuf> {
         let worktree_dir = repo_root.join(".claude").join("worktrees");
         std::fs::create_dir_all(&worktree_dir)?;
@@ -244,7 +244,7 @@ impl Runtime for TmuxRuntime {
         &self,
         repo_root: &Path,
         work_dir: &Path,
-        jwt_token: Option<&str>,
+        jwt_token: &str,
     ) -> anyhow::Result<()> {
         let name = work_dir
             .file_name()
@@ -413,7 +413,7 @@ fn setup_worktree_config(
     repo_root: &Path,
     worktree_path: &Path,
     perms: &SkillPermissions,
-    jwt_token: Option<&str>,
+    jwt_token: &str,
 ) -> anyhow::Result<()> {
     let source_claude_dir = repo_root.join(".claude");
     let target_claude_dir = worktree_path.join(".claude");
@@ -461,19 +461,15 @@ fn setup_worktree_config(
         // Claude Code reads MCP servers from .mcp.json (project scope), NOT from
         // the mcpServers key in settings.local.json.
         if let Some(mcp_url) = crate::mcp::read_mcp_url_breadcrumb(repo_root) {
-            let mut mcp_server = serde_json::json!({
+            // Include the JWT in both the URL query param and Authorization header
+            // for resilience against Claude Code header bugs.
+            let mcp_server = serde_json::json!({
                 "type": "http",
-                "url": mcp_url
+                "url": format!("{mcp_url}?token={jwt_token}"),
+                "headers": {
+                    "Authorization": format!("Bearer {jwt_token}")
+                }
             });
-            // If a JWT token is available, include it in both the URL query param
-            // and Authorization header for resilience against Claude Code header bugs.
-            if let Some(token) = jwt_token {
-                let url_with_token = format!("{mcp_url}?token={token}");
-                mcp_server["url"] = serde_json::json!(url_with_token);
-                mcp_server["headers"] = serde_json::json!({
-                    "Authorization": format!("Bearer {token}")
-                });
-            }
             let mcp_json = serde_json::json!({
                 "mcpServers": {
                     "clat": mcp_server

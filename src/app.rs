@@ -215,7 +215,7 @@ impl<R: Runtime> ClatApp<R> {
                     &perms,
                     branch,
                     &self.paths.root,
-                    Some(&jwt_token),
+                    &jwt_token,
                 )?
             }
             WorkDirMode::Scratch => {
@@ -225,13 +225,13 @@ impl<R: Runtime> ClatApp<R> {
                     &self.paths.root,
                     &scratch_dir,
                     &perms,
-                    Some(&jwt_token),
+                    &jwt_token,
                 )?;
                 scratch_dir
             }
             WorkDirMode::Existing { dir } => {
                 self.runtime
-                    .setup_dir_config(&self.paths.root, dir, &perms, Some(&jwt_token))?;
+                    .setup_dir_config(&self.paths.root, dir, &perms, &jwt_token)?;
                 dir.to_path_buf()
             }
         };
@@ -374,7 +374,7 @@ impl<R: Runtime> ClatApp<R> {
                 self.jwt_signer.sign(&claims)?
             };
             self.runtime
-                .recreate_worktree(&self.paths.root, work_dir, Some(&jwt_token))?;
+                .recreate_worktree(&self.paths.root, work_dir, &jwt_token)?;
         }
 
         let session_id = task.session_id.as_ref().map(|s| s.as_str()).unwrap_or("");
@@ -706,7 +706,7 @@ mod tests {
             _perms: &crate::runtime::SkillPermissions,
             _branch: Option<&str>,
             _hooks_source: &Path,
-            _jwt_token: Option<&str>,
+            _jwt_token: &str,
         ) -> anyhow::Result<PathBuf> {
             self.calls.borrow_mut().push(Call::CreateWorktree {
                 name: name.to_string(),
@@ -720,7 +720,7 @@ mod tests {
             &self,
             _repo_root: &Path,
             work_dir: &Path,
-            _jwt_token: Option<&str>,
+            _jwt_token: &str,
         ) -> anyhow::Result<()> {
             self.calls.borrow_mut().push(Call::RecreateWorktree {
                 work_dir: work_dir.to_path_buf(),
@@ -734,7 +734,7 @@ mod tests {
             _hooks_source: &Path,
             work_dir: &Path,
             _perms: &crate::runtime::SkillPermissions,
-            _jwt_token: Option<&str>,
+            _jwt_token: &str,
         ) -> anyhow::Result<()> {
             self.calls.borrow_mut().push(Call::SetupDirConfig {
                 work_dir: work_dir.to_path_buf(),

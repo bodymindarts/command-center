@@ -280,12 +280,12 @@ async fn jwt_auth_middleware(
 pub async fn start_mcp_server<R: Runtime + Send + Sync + 'static>(
     app: Arc<ClatApp<R>>,
     port: u16,
-    jwt_signer: JwtSigner,
 ) -> anyhow::Result<String> {
     use rmcp::transport::streamable_http_server::{
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
     };
 
+    let jwt_signer = app.jwt_signer().clone();
     let app_dyn: Arc<dyn McpApp> = app;
     let config = StreamableHttpServerConfig {
         stateful_mode: false,
