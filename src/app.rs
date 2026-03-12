@@ -86,6 +86,7 @@ pub struct ClatApp<R: Runtime> {
     store: Store,
     runtime: R,
     paths: Paths,
+    skip_permissions: bool,
 }
 
 impl<R: Runtime> ClatApp<R> {
@@ -97,6 +98,7 @@ impl<R: Runtime> ClatApp<R> {
             store,
             runtime,
             paths,
+            skip_permissions: false,
         })
     }
 
@@ -106,7 +108,12 @@ impl<R: Runtime> ClatApp<R> {
             store,
             runtime,
             paths,
+            skip_permissions: false,
         }
+    }
+
+    pub fn set_skip_permissions(&mut self, skip: bool) {
+        self.skip_permissions = skip;
     }
 
     pub fn project_root(&self) -> &std::path::Path {
@@ -236,6 +243,7 @@ impl<R: Runtime> ClatApp<R> {
             system_prompt: system_prompt.as_deref(),
             work_dir: &work_dir,
             user_prompt: user_prompt.as_deref(),
+            skip_permissions: self.skip_permissions,
         })?;
         task.tmux_pane = Some(result.pane_id.clone());
         task.tmux_window = Some(result.window_id.clone());
@@ -334,8 +342,12 @@ impl<R: Runtime> ClatApp<R> {
             // which still exists in the worktree's .claude/ directory.
             self.runtime.relaunch_agent(task.name.as_str(), work_dir)?
         } else {
-            self.runtime
-                .resume_agent(task.name.as_str(), session_id, work_dir)?
+            self.runtime.resume_agent(
+                task.name.as_str(),
+                session_id,
+                work_dir,
+                self.skip_permissions,
+            )?
         };
 
         self.store
@@ -706,6 +718,7 @@ mod tests {
             task_name: &str,
             _session_id: &str,
             work_dir: &Path,
+            _skip_permissions: bool,
         ) -> anyhow::Result<SpawnResult> {
             self.calls.borrow_mut().push(Call::ResumeAgent {
                 task_name: task_name.to_string(),

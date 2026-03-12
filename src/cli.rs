@@ -98,6 +98,10 @@ pub enum Command {
         /// Prevent system sleep while the dashboard is running (macOS only)
         #[arg(long)]
         caffeinate: bool,
+
+        /// Bypass all permission checks for spawned Claude Code sessions
+        #[arg(long)]
+        dangerously_skip_permissions: bool,
     },
 
     /// Launch the ExO workspace (tmux + dashboard)
@@ -109,6 +113,10 @@ pub enum Command {
         /// Prevent system sleep while the dashboard is running (macOS only)
         #[arg(long)]
         caffeinate: bool,
+
+        /// Bypass all permission checks for spawned Claude Code sessions
+        #[arg(long)]
+        dangerously_skip_permissions: bool,
     },
 
     /// Send a message to a running agent's tmux pane
