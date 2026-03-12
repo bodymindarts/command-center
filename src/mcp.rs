@@ -6,6 +6,7 @@ use axum::extract::Request;
 use axum::middleware::Next;
 use axum::response::Response;
 use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::tool::Extension;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::schemars;
@@ -139,8 +140,14 @@ impl ClatMcpServer {
     )]
     async fn clat_spawn(
         &self,
+        Extension(parts): Extension<axum::http::request::Parts>,
         Parameters(params): Parameters<SpawnParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let _caller_task_id = parts
+            .extensions
+            .get::<crate::jwt::AgentClaims>()
+            .map(|c| c.sub.as_str());
+
         let result = self
             .app
             .spawn(McpSpawnParams {
