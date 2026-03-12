@@ -327,6 +327,10 @@ async fn run_loop<R: Runtime>(
 
     state.render_loop_starting();
 
+    // Populate global_task_work_dirs before the main loop so that hook events
+    // arriving early can resolve CWDs to task names correctly.
+    handlers::tick_refresh(state, app, tg_tx).await;
+
     loop {
         let tick_rate = if state.any_streaming() {
             Duration::from_millis(50)
