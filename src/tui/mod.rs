@@ -123,8 +123,8 @@ pub async fn run<R: Runtime>(
     app: ClatApp<R>,
     resume_session: Option<&str>,
     caffeinate: bool,
-    skip_permissions: bool,
 ) -> anyhow::Result<()> {
+    let skip_permissions = app.skip_permissions();
     let mut caffeinate_child = if caffeinate { spawn_caffeinate() } else { None };
 
     terminal::enable_raw_mode()?;

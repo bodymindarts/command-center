@@ -155,10 +155,13 @@ impl AssistantSession {
         ];
         if self.skip_permissions {
             args.push("--dangerously-skip-permissions".to_string());
+        } else {
+            args.extend([
+                "--allowedTools".to_string(),
+                "Read,Grep,Glob,Bash,Edit,Write".to_string(),
+            ]);
         }
         args.extend([
-            "--allowedTools".to_string(),
-            "Read,Grep,Glob,Bash,Edit,Write".to_string(),
             "--append-system-prompt".to_string(),
             self.system_prompt.clone(),
         ]);

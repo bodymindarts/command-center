@@ -90,7 +90,7 @@ pub struct ClatApp<R: Runtime> {
 }
 
 impl<R: Runtime> ClatApp<R> {
-    pub async fn try_new(runtime: R) -> anyhow::Result<Self> {
+    pub async fn try_new(runtime: R, skip_permissions: bool) -> anyhow::Result<Self> {
         let paths = Paths::resolve()?;
         paths.ensure_dirs()?;
         let store = Store::open(&paths.db_path).await?;
@@ -98,7 +98,7 @@ impl<R: Runtime> ClatApp<R> {
             store,
             runtime,
             paths,
-            skip_permissions: false,
+            skip_permissions,
         })
     }
 
@@ -112,8 +112,8 @@ impl<R: Runtime> ClatApp<R> {
         }
     }
 
-    pub fn set_skip_permissions(&mut self, skip: bool) {
-        self.skip_permissions = skip;
+    pub fn skip_permissions(&self) -> bool {
+        self.skip_permissions
     }
 
     pub fn project_root(&self) -> &std::path::Path {
@@ -339,7 +339,7 @@ impl<R: Runtime> ClatApp<R> {
         let session_id = task.session_id.as_ref().map(|s| s.as_str()).unwrap_or("");
         let result = if session_id.is_empty() {
             // Legacy task without session_id — fall back to re-running launch.sh
-            // which still exists in the worktree's .claude/ directory.
+            // which already has the correct flags baked in from launch_agent().
             self.runtime.relaunch_agent(task.name.as_str(), work_dir)?
         } else {
             self.runtime.resume_agent(
