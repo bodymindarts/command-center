@@ -23,6 +23,7 @@ use tokio::sync::mpsc;
 
 use crate::app::ClatApp;
 use crate::assistant::{AssistantEvent, AssistantSession, EXO_SYSTEM_PROMPT, SessionKey};
+use crate::mcp;
 use crate::permission::HookEvent;
 use crate::primitives::ProjectId;
 use crate::runtime::Runtime;
@@ -119,13 +120,27 @@ fn spawn_caffeinate() -> Option<std::process::Child> {
     }
 }
 
-pub async fn run<R: Runtime>(
+pub async fn run<R: Runtime + Send + Sync + 'static>(
     app: ClatApp<R>,
     resume_session: Option<&str>,
     caffeinate: bool,
 ) -> anyhow::Result<()> {
     let skip_permissions = app.skip_permissions();
     let mut caffeinate_child = if caffeinate { spawn_caffeinate() } else { None };
+
+    // Wrap in Arc so the MCP server can share ownership.
+    let app = Arc::new(app);
+
+    // Start MCP server on localhost.
+    const MCP_PORT: u16 = 9111;
+    match mcp::start_mcp_server(Arc::clone(&app), MCP_PORT).await {
+        Ok(url) => {
+            mcp::write_mcp_url_breadcrumb(&url);
+        }
+        Err(e) => {
+            eprintln!("warning: failed to start MCP server: {e}");
+        }
+    }
 
     terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -305,6 +320,7 @@ pub async fn run<R: Runtime>(
     let _ = std::fs::remove_file(&socket_path);
     crate::permission::remove_socket_breadcrumb(app.project_root());
     crate::permission::remove_skip_permissions_breadcrumb(app.project_root());
+    mcp::remove_mcp_url_breadcrumb();
 
     if let Some(ref mut child) = caffeinate_child {
         let _ = child.kill();

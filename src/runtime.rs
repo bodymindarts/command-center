@@ -441,6 +441,17 @@ fn setup_worktree_config(
         if let Some(sock_path) = sock_path {
             embed_socket_in_hooks(&mut settings, &sock_path);
         }
+
+        // Inject MCP server config so agents discover clat tools natively.
+        if let Some(mcp_url) = crate::mcp::read_mcp_url_breadcrumb() {
+            settings["mcpServers"] = serde_json::json!({
+                "clat": {
+                    "type": "http",
+                    "url": mcp_url
+                }
+            });
+        }
+
         std::fs::write(&target_settings, settings.to_string())?;
 
         // Ignore all generated files so agents don't commit them.
