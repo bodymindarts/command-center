@@ -3,11 +3,13 @@ use std::path::Path;
 
 use crate::config::Paths;
 use crate::jwt::JwtSigner;
-use crate::primitives::{ChatId, MessageRole, ProjectId, TaskId, TaskName, WindowId};
+use crate::primitives::{
+    ChatId, ClaudeSessionId, MessageRole, ProjectId, TaskId, TaskName, WindowId,
+};
 use crate::runtime::{LaunchConfig, Runtime};
 use crate::skill::SkillFile;
 use crate::store::Store;
-use crate::task::{Project, Task, TaskMessage};
+use crate::task::{NewTask, Project, Task, TaskMessage};
 use anyhow::bail;
 
 pub enum WorkDirMode<'a> {
@@ -157,7 +159,7 @@ impl<R: Runtime> ClatApp<R> {
     }
 
     pub fn read_project_session_id(&self, project_id: &ProjectId) -> Option<String> {
-        std::fs::read_to_string(self.paths.project_session_file(project_id.as_str()))
+        std::fs::read_to_string(self.paths.project_session_file(&project_id.to_string()))
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
@@ -165,7 +167,7 @@ impl<R: Runtime> ClatApp<R> {
 
     pub fn write_project_session_id(&self, project_id: &ProjectId, session_id: &str) {
         let _ = std::fs::write(
-            self.paths.project_session_file(project_id.as_str()),
+            self.paths.project_session_file(&project_id.to_string()),
             session_id,
         );
     }
@@ -189,7 +191,7 @@ impl<R: Runtime> ClatApp<R> {
 
         // 3. Set up working directory
         // For Worktree mode, generate TaskId first since worktree name includes id.short()
-        let id = TaskId::generate();
+        let id = TaskId::new();
         let perms = crate::runtime::SkillPermissions {
             allowed_tools: &skill.agent.allowed_tools,
             base_tools: &skill.agent.base_tools,
@@ -198,7 +200,7 @@ impl<R: Runtime> ClatApp<R> {
         // Sign a JWT for this task so the MCP server can identify the caller.
         let jwt_token = {
             let claims = crate::jwt::AgentClaims {
-                sub: id.as_str().to_string(),
+                sub: id.to_string(),
                 role: req.skill_name.to_string(),
                 project: req.project.clone(),
                 iat: chrono::Utc::now().timestamp() as u64,
@@ -248,37 +250,38 @@ impl<R: Runtime> ClatApp<R> {
         }
 
         // 5. Insert task into DB
-        let mut task = Task::new(
+        let session_id = ClaudeSessionId::new();
+        let new_task = NewTask {
             id,
-            TaskName::from(req.task_name.to_string()),
-            req.skill_name,
-            &params_map,
-            &work_dir,
+            name: TaskName::from(req.task_name.to_string()),
+            skill_name: req.skill_name.to_string(),
+            params_json: serde_json::to_string(&params_map).unwrap_or_else(|_| "{}".to_string()),
+            work_dir: Some(work_dir.display().to_string()),
+            session_id,
             project_id,
-        );
-        self.store.insert_task(&task).await?;
+        };
+        let mut task = self.store.tasks.create(new_task).await?;
 
         // Store user prompt message only if Full mode
         if let Some(ref prompt) = user_prompt {
-            let chat = ChatId::Task(task.id.clone());
+            let chat = ChatId::Task(task.id);
             self.store
                 .insert_message(&chat, MessageRole::System, prompt)
                 .await?;
         }
 
         // 6. Launch agent
-        let session_id = task.session_id.as_ref().expect("session_id set in new()");
+        let session_id_str = session_id.to_string();
         let result = self.runtime.launch_agent(LaunchConfig {
             task_name: req.task_name,
-            session_id: session_id.as_str(),
+            session_id: &session_id_str,
             system_prompt: system_prompt.as_deref(),
             work_dir: &work_dir,
             user_prompt: user_prompt.as_deref(),
             skip_permissions: self.skip_permissions,
         })?;
-        task.tmux_pane = Some(result.pane_id.clone());
-        task.tmux_window = Some(result.window_id.clone());
-        self.store.update_task(&task).await?;
+        task.launch_agent(result.pane_id.clone(), result.window_id.clone());
+        self.store.tasks.update(&mut task).await?;
 
         Ok(SpawnOutput {
             task_id: task.id,
@@ -289,7 +292,7 @@ impl<R: Runtime> ClatApp<R> {
     }
 
     pub async fn close(&self, id_prefix: &str) -> anyhow::Result<CloseOutput> {
-        let task = self.resolve_task(id_prefix).await?;
+        let mut task = self.resolve_task(id_prefix).await?;
 
         if !task.status.is_running() {
             bail!(
@@ -309,10 +312,11 @@ impl<R: Runtime> ClatApp<R> {
             let _ = self.runtime.kill_tmux_window(window_id.as_str());
         }
 
-        let closed = self.store.close_task(&task.id, output.as_deref()).await?;
+        let closed = task.close(output).map_err(anyhow::Error::from)?;
         if !closed {
             bail!("failed to close task {} ({})", task.name, task.id.short());
         }
+        self.store.tasks.update(&mut task).await?;
 
         Ok(CloseOutput {
             task_id: task.id,
@@ -321,13 +325,14 @@ impl<R: Runtime> ClatApp<R> {
     }
 
     pub async fn delete(&self, task_id: &str) -> anyhow::Result<DeleteOutput> {
-        let task = self.resolve_task(task_id).await?;
+        let mut task = self.resolve_task(task_id).await?;
 
         if task.status.is_running() {
             if let Some(ref window_id) = task.tmux_window {
                 let _ = self.runtime.kill_tmux_window(window_id.as_str());
             }
-            let _ = self.store.close_task(&task.id, None).await;
+            let _ = task.close(None);
+            let _ = self.store.tasks.update(&mut task).await;
         }
 
         // Clean up the git worktree if the task used one.
@@ -337,7 +342,8 @@ impl<R: Runtime> ClatApp<R> {
             let _ = self.runtime.remove_worktree(Path::new(work_dir));
         }
 
-        self.store.delete_task(&task.id).await?;
+        self.store.delete_task_messages(&task.id).await?;
+        self.store.tasks.delete_task(task.id).await?;
         Ok(DeleteOutput {
             task_id: task.id,
             task_name: task.name,
@@ -345,7 +351,7 @@ impl<R: Runtime> ClatApp<R> {
     }
 
     pub async fn reopen(&self, task_id: &str) -> anyhow::Result<WindowId> {
-        let task = self.resolve_task(task_id).await?;
+        let mut task = self.resolve_task(task_id).await?;
 
         if task.status.is_running() {
             bail!(
@@ -366,9 +372,9 @@ impl<R: Runtime> ClatApp<R> {
             // Recreate it so the agent can resume. Re-sign a fresh JWT.
             let jwt_token = {
                 let claims = crate::jwt::AgentClaims {
-                    sub: task.id.as_str().to_string(),
+                    sub: task.id.to_string(),
                     role: task.skill_name.clone(),
-                    project: task.project_id.as_ref().map(|p| p.as_str().to_string()),
+                    project: task.project_id.as_ref().map(|p| p.to_string()),
                     iat: chrono::Utc::now().timestamp() as u64,
                 };
                 self.jwt_signer.sign(&claims)?
@@ -377,7 +383,7 @@ impl<R: Runtime> ClatApp<R> {
                 .recreate_worktree(&self.paths.root, work_dir, &jwt_token)?;
         }
 
-        let session_id = task.session_id.as_ref().map(|s| s.as_str()).unwrap_or("");
+        let session_id = task.session_id.map(|s| s.to_string()).unwrap_or_default();
         let result = if session_id.is_empty() {
             // Legacy task without session_id — fall back to re-running launch.sh
             // which already has the correct flags baked in from launch_agent().
@@ -385,15 +391,15 @@ impl<R: Runtime> ClatApp<R> {
         } else {
             self.runtime.resume_agent(
                 task.name.as_str(),
-                session_id,
+                &session_id,
                 work_dir,
                 self.skip_permissions,
             )?
         };
 
-        self.store
-            .reopen_task(&task.id, &result.pane_id, &result.window_id)
-            .await?;
+        task.reopen(result.pane_id.clone(), result.window_id.clone())
+            .map_err(anyhow::Error::from)?;
+        self.store.tasks.update(&mut task).await?;
 
         Ok(result.window_id)
     }
@@ -407,7 +413,7 @@ impl<R: Runtime> ClatApp<R> {
             .ok_or_else(|| anyhow::anyhow!("task {} has no tmux pane", task.id.short()))?;
 
         self.runtime.send_keys_to_pane(pane_id.as_str(), message)?;
-        let chat = ChatId::Task(task.id.clone());
+        let chat = ChatId::Task(task.id);
         self.store
             .insert_message(&chat, MessageRole::User, message)
             .await?;
@@ -435,7 +441,7 @@ impl<R: Runtime> ClatApp<R> {
 
     pub async fn log(&self, id_prefix: &str) -> anyhow::Result<LogOutput> {
         let task = self.resolve_task(id_prefix).await?;
-        let chat = ChatId::Task(task.id.clone());
+        let chat = ChatId::Task(task.id);
         let messages = self.store.list_messages(&chat).await?;
 
         let live_output = if task.status.is_running() {
@@ -455,7 +461,7 @@ impl<R: Runtime> ClatApp<R> {
 
     pub async fn list_tasks(&self, all: bool, project: Option<&str>) -> anyhow::Result<Vec<Task>> {
         if all {
-            self.store.list_tasks().await
+            self.store.tasks.list_all().await
         } else if let Some(name) = project {
             let project = self
                 .store
@@ -463,16 +469,17 @@ impl<R: Runtime> ClatApp<R> {
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("no project found with name '{name}'"))?;
             self.store
-                .list_visible_tasks_for_project(Some(&project.id))
+                .tasks
+                .list_visible_for_project(Some(&project.id))
                 .await
         } else {
-            self.store.list_active_tasks().await
+            self.store.tasks.list_active().await
         }
     }
 
     /// Close any running tasks whose tmux pane no longer exists.
     pub async fn close_stale_tasks(&self) {
-        let tasks = match self.store.list_active_tasks().await {
+        let tasks = match self.store.tasks.list_active().await {
             Ok(t) => t,
             Err(_) => return,
         };
@@ -482,21 +489,22 @@ impl<R: Runtime> ClatApp<R> {
                 Ok(output) => output.lines().map(|l| l.trim().to_string()).collect(),
                 Err(_) => return, // tmux not running — can't determine staleness
             };
-        for task in tasks {
+        for mut task in tasks {
             if let Some(ref pane) = task.tmux_pane
                 && !existing.contains(pane.as_str())
             {
-                let _ = self.store.close_task(&task.id, None).await;
+                let _ = task.close(None);
+                let _ = self.store.tasks.update(&mut task).await;
             }
         }
     }
 
     pub async fn list_active(&self) -> anyhow::Result<Vec<Task>> {
-        self.store.list_active_tasks().await
+        self.store.tasks.list_active().await
     }
 
     pub async fn list_visible(&self, project_id: Option<&ProjectId>) -> anyhow::Result<Vec<Task>> {
-        self.store.list_visible_tasks_for_project(project_id).await
+        self.store.tasks.list_visible_for_project(project_id).await
     }
 
     pub async fn messages(&self, chat_id: &ChatId) -> anyhow::Result<Vec<TaskMessage>> {
@@ -558,7 +566,7 @@ impl<R: Runtime> ClatApp<R> {
     // -- Project methods --
 
     pub async fn create_project(&self, name: &str, description: &str) -> anyhow::Result<Project> {
-        let id = crate::primitives::ProjectId::generate();
+        let id = crate::primitives::ProjectId::new();
         self.store.insert_project(&id, name, description).await?;
         self.store
             .get_project_by_name(name)
@@ -593,7 +601,7 @@ impl<R: Runtime> ClatApp<R> {
     fn chat_id(project_id: Option<&ProjectId>) -> ChatId {
         match project_id {
             None => EXO_CHAT,
-            Some(pid) => ChatId::Project(pid.clone()),
+            Some(pid) => ChatId::Project(*pid),
         }
     }
 
@@ -603,10 +611,10 @@ impl<R: Runtime> ClatApp<R> {
         exit_code: i32,
         output: Option<&str>,
     ) -> anyhow::Result<CompleteOutput> {
-        let task = self.resolve_task(id_prefix).await?;
-        self.store
-            .complete_task(&task.id, exit_code, output)
-            .await?;
+        let mut task = self.resolve_task(id_prefix).await?;
+        task.complete(exit_code, output.map(|s| s.to_string()))
+            .map_err(anyhow::Error::from)?;
+        self.store.tasks.update(&mut task).await?;
         Ok(CompleteOutput {
             task_id: task.id,
             task_name: task.name,
@@ -615,7 +623,8 @@ impl<R: Runtime> ClatApp<R> {
 
     async fn resolve_task(&self, id_prefix: &str) -> anyhow::Result<Task> {
         self.store
-            .get_task_by_prefix(id_prefix)
+            .tasks
+            .find_by_id_prefix(id_prefix)
             .await?
             .ok_or_else(|| anyhow::anyhow!("no task found matching '{id_prefix}'"))
     }
@@ -628,11 +637,10 @@ mod tests {
 
     use anyhow::bail;
 
-    use chrono::Utc;
-
-    use crate::primitives::{PaneId, TaskId, TaskName, TaskStatus, WindowId};
+    use crate::primitives::{ClaudeSessionId, PaneId, TaskId, TaskName, TaskStatus, WindowId};
     use crate::runtime::{LaunchConfig, Runtime, SpawnResult};
     use crate::store::Store;
+    use crate::task::NewTask;
 
     use super::*;
 
@@ -892,7 +900,7 @@ prompt = "noop prompt"
         assert_eq!(output.skill_name, "noop");
         assert_eq!(output.window_id, "@fake-win");
 
-        let tasks = service.store().list_active_tasks().await.unwrap();
+        let tasks = service.store().tasks.list_active().await.unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].name, "test-task");
         assert_eq!(
@@ -900,7 +908,7 @@ prompt = "noop prompt"
             Some("%fake-pane")
         );
 
-        let chat = ChatId::Task(tasks[0].id.clone());
+        let chat = ChatId::Task(tasks[0].id);
         let messages = service.store().list_messages(&chat).await.unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, MessageRole::System);
@@ -925,13 +933,14 @@ prompt = "noop prompt"
         let service = ClatApp::new(store, runtime, paths);
 
         let spawned = spawn_test_task(&service).await;
-        let result = service.close(spawned.task_id.as_str()).await.unwrap();
+        let result = service.close(&spawned.task_id.to_string()).await.unwrap();
 
         assert_eq!(result.task_name, "test-task");
 
         let task = service
             .store()
-            .get_task_by_prefix(spawned.task_id.as_str())
+            .tasks
+            .find_by_id_prefix(&spawned.task_id.to_string())
             .await
             .unwrap()
             .unwrap();
@@ -960,11 +969,11 @@ prompt = "noop prompt"
 
         let spawned = spawn_test_task(&service).await;
         service
-            .complete(spawned.task_id.as_str(), 0, None)
+            .complete(&spawned.task_id.to_string(), 0, None)
             .await
             .unwrap();
 
-        let err = service.close(spawned.task_id.as_str()).await;
+        let err = service.close(&spawned.task_id.to_string()).await;
         assert!(err.is_err());
         assert!(err.unwrap_err().to_string().contains("not 'running'"));
     }
@@ -979,7 +988,7 @@ prompt = "noop prompt"
         let service = ClatApp::new(store, runtime, paths);
 
         let spawned = spawn_test_task(&service).await;
-        let result = service.close(spawned.task_id.as_str()).await;
+        let result = service.close(&spawned.task_id.to_string()).await;
         assert!(result.is_ok());
     }
 
@@ -993,7 +1002,7 @@ prompt = "noop prompt"
 
         let spawned = spawn_test_task(&service).await;
         let result = service
-            .send(spawned.task_id.as_str(), "hello agent")
+            .send(&spawned.task_id.to_string(), "hello agent")
             .await
             .unwrap();
 
@@ -1009,11 +1018,12 @@ prompt = "noop prompt"
 
         let task = service
             .store()
-            .get_task_by_prefix(spawned.task_id.as_str())
+            .tasks
+            .find_by_id_prefix(&spawned.task_id.to_string())
             .await
             .unwrap()
             .unwrap();
-        let chat = ChatId::Task(task.id.clone());
+        let chat = ChatId::Task(task.id);
         let messages = service.store().list_messages(&chat).await.unwrap();
         assert!(
             messages
@@ -1031,7 +1041,7 @@ prompt = "noop prompt"
         let service = ClatApp::new(store, runtime, paths);
 
         let spawned = spawn_test_task(&service).await;
-        service.goto(spawned.task_id.as_str()).await.unwrap();
+        service.goto(&spawned.task_id.to_string()).await.unwrap();
 
         let calls = service.runtime().calls.borrow();
         assert!(calls.iter().any(|c| matches!(c,
@@ -1047,26 +1057,19 @@ prompt = "noop prompt"
         let runtime = FakeRuntime::new(tmp.path());
         let service = ClatApp::new(store, runtime, paths);
 
-        let task_id = TaskId::generate();
-        let task = Task {
-            id: task_id.clone(),
+        // Create a task without launching agent (no tmux_window)
+        let new_task = NewTask {
+            id: TaskId::new(),
             name: TaskName::from("no-window".to_string()),
             skill_name: "noop".to_string(),
             params_json: "{}".to_string(),
-            status: TaskStatus::Running,
-            tmux_pane: None,
-            tmux_window: None,
             work_dir: None,
-            session_id: None,
-            started_at: Utc::now(),
-            completed_at: None,
-            exit_code: None,
-            output: None,
+            session_id: ClaudeSessionId::new(),
             project_id: None,
         };
-        service.store().insert_task(&task).await.unwrap();
+        let task = service.store().tasks.create(new_task).await.unwrap();
 
-        let err = service.goto(task_id.as_str()).await;
+        let err = service.goto(&task.id.to_string()).await;
         assert!(err.is_err());
         assert!(err.unwrap_err().to_string().contains("no tmux window"));
     }
@@ -1081,11 +1084,11 @@ prompt = "noop prompt"
 
         let spawned = spawn_test_task(&service).await;
         service
-            .send(spawned.task_id.as_str(), "hello")
+            .send(&spawned.task_id.to_string(), "hello")
             .await
             .unwrap();
 
-        let log = service.log(spawned.task_id.as_str()).await.unwrap();
+        let log = service.log(&spawned.task_id.to_string()).await.unwrap();
         assert_eq!(log.task.name, "test-task");
         assert_eq!(log.messages.len(), 2);
         assert!(log.live_output.is_some());
@@ -1104,7 +1107,7 @@ prompt = "noop prompt"
         let _spawned2 = spawn_test_task(&service).await;
 
         service
-            .complete(spawned1.task_id.as_str(), 0, None)
+            .complete(&spawned1.task_id.to_string(), 0, None)
             .await
             .unwrap();
 
@@ -1158,11 +1161,11 @@ prompt = "deploy to {{ env }}"
 
         let spawned = spawn_test_task(&service).await;
         service
-            .complete(spawned.task_id.as_str(), 0, None)
+            .complete(&spawned.task_id.to_string(), 0, None)
             .await
             .unwrap();
 
-        let window_id = service.reopen(spawned.task_id.as_str()).await.unwrap();
+        let window_id = service.reopen(&spawned.task_id.to_string()).await.unwrap();
         assert_eq!(window_id, "@fake-win");
 
         {
@@ -1186,7 +1189,8 @@ prompt = "deploy to {{ env }}"
 
         let task = service
             .store()
-            .get_task_by_prefix(spawned.task_id.as_str())
+            .tasks
+            .find_by_id_prefix(&spawned.task_id.to_string())
             .await
             .unwrap()
             .unwrap();
@@ -1211,20 +1215,21 @@ prompt = "deploy to {{ env }}"
 
         let spawned = spawn_test_task(&service).await;
         service
-            .complete(spawned.task_id.as_str(), 0, None)
+            .complete(&spawned.task_id.to_string(), 0, None)
             .await
             .unwrap();
 
         let task = service
             .store()
-            .get_task_by_prefix(spawned.task_id.as_str())
+            .tasks
+            .find_by_id_prefix(&spawned.task_id.to_string())
             .await
             .unwrap()
             .unwrap();
         let work_dir = task.work_dir.as_deref().unwrap();
         std::fs::remove_dir_all(work_dir).unwrap();
 
-        let window_id = service.reopen(spawned.task_id.as_str()).await.unwrap();
+        let window_id = service.reopen(&spawned.task_id.to_string()).await.unwrap();
         assert_eq!(window_id, "@fake-win");
 
         {
@@ -1239,7 +1244,8 @@ prompt = "deploy to {{ env }}"
 
         let task = service
             .store()
-            .get_task_by_prefix(spawned.task_id.as_str())
+            .tasks
+            .find_by_id_prefix(&spawned.task_id.to_string())
             .await
             .unwrap()
             .unwrap();
@@ -1256,7 +1262,7 @@ prompt = "deploy to {{ env }}"
 
         let spawned = spawn_test_task(&service).await;
 
-        let err = service.reopen(spawned.task_id.as_str()).await;
+        let err = service.reopen(&spawned.task_id.to_string()).await;
         assert!(err.is_err());
         assert!(err.unwrap_err().to_string().contains("already running"));
     }
@@ -1287,7 +1293,7 @@ prompt = "deploy to {{ env }}"
         assert_eq!(output.skill_name, "noop");
         assert_eq!(output.window_id, "@fake-win");
 
-        let tasks = service.store().list_active_tasks().await.unwrap();
+        let tasks = service.store().tasks.list_active().await.unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].name, "nw-task");
 
@@ -1334,7 +1340,8 @@ prompt = "deploy to {{ env }}"
 
         let task = service
             .store()
-            .get_task_by_prefix(output.task_id.as_str())
+            .tasks
+            .find_by_id_prefix(&output.task_id.to_string())
             .await
             .unwrap()
             .unwrap();
@@ -1377,7 +1384,7 @@ prompt = "deploy to {{ env }}"
         assert_eq!(output.skill_name, "noop");
         assert_eq!(output.window_id, "@fake-win");
 
-        let tasks = service.store().list_active_tasks().await.unwrap();
+        let tasks = service.store().tasks.list_active().await.unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].name, "scratch-task");
 
@@ -1419,7 +1426,7 @@ prompt = "deploy to {{ env }}"
             .unwrap();
         assert_eq!(project.name, "web-app");
         assert_eq!(project.description, "frontend project");
-        assert!(!project.id.as_str().is_empty());
+        assert!(!project.id.to_string().is_empty());
 
         let projects = service.list_projects().await.unwrap();
         assert_eq!(projects.len(), 1);

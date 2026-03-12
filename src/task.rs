@@ -1,12 +1,287 @@
-use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::collections::HashSet;
 
 use chrono::{DateTime, Utc};
+use derive_builder::Builder;
+use es_entity::*;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::primitives::{
     ClaudeSessionId, MessageRole, PaneId, ProjectId, ProjectName, TaskId, TaskName, TaskStatus,
     WindowId,
 };
+
+// ── Error ────────────────────────────────────────────────────────────
+
+#[derive(Error, Debug)]
+pub enum TaskError {
+    #[error("task is not running")]
+    NotRunning,
+    #[error("task is already running")]
+    AlreadyRunning,
+}
+
+// ── Events ───────────────────────────────────────────────────────────
+
+#[derive(EsEvent, Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[es_event(id = "TaskId")]
+pub enum TaskEvent {
+    Spawned {
+        id: TaskId,
+        name: TaskName,
+        skill_name: String,
+        params_json: String,
+        work_dir: Option<String>,
+        session_id: ClaudeSessionId,
+        project_id: Option<ProjectId>,
+    },
+    AgentLaunched {
+        tmux_pane: PaneId,
+        tmux_window: WindowId,
+    },
+    Completed {
+        exit_code: i32,
+        output: Option<String>,
+    },
+    Closed {
+        output: Option<String>,
+    },
+    Reopened {
+        tmux_pane: PaneId,
+        tmux_window: WindowId,
+    },
+}
+
+// ── Entity ───────────────────────────────────────────────────────────
+
+#[derive(EsEntity, Builder, Clone)]
+#[builder(pattern = "owned", build_fn(error = "EntityHydrationError"))]
+pub struct Task {
+    pub id: TaskId,
+    pub name: TaskName,
+    pub skill_name: String,
+    pub params_json: String,
+    pub status: TaskStatus,
+    pub tmux_pane: Option<PaneId>,
+    pub tmux_window: Option<WindowId>,
+    pub work_dir: Option<String>,
+    pub session_id: Option<ClaudeSessionId>,
+    #[builder(default)]
+    pub started_at: DateTime<Utc>,
+    #[builder(default)]
+    pub completed_at: Option<DateTime<Utc>>,
+    #[builder(default)]
+    pub exit_code: Option<i32>,
+    #[builder(default)]
+    pub output: Option<String>,
+    pub project_id: Option<ProjectId>,
+    events: EntityEvents<TaskEvent>,
+}
+
+impl std::fmt::Debug for Task {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Task")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("skill_name", &self.skill_name)
+            .field("status", &self.status)
+            .field("project_id", &self.project_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for Task {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Task: {} ({})", self.name, self.id)
+    }
+}
+
+// ── Hydration ────────────────────────────────────────────────────────
+
+impl TryFromEvents<TaskEvent> for Task {
+    fn try_from_events(events: EntityEvents<TaskEvent>) -> Result<Self, EntityHydrationError> {
+        let mut builder = TaskBuilder::default();
+
+        // Derive timestamps from event metadata.
+        if let Some(first) = events.entity_first_persisted_at() {
+            builder = builder.started_at(first);
+        }
+
+        for event in events.iter_all() {
+            match event {
+                TaskEvent::Spawned {
+                    id,
+                    name,
+                    skill_name,
+                    params_json,
+                    work_dir,
+                    session_id,
+                    project_id,
+                } => {
+                    builder = builder
+                        .id(*id)
+                        .name(name.clone())
+                        .skill_name(skill_name.clone())
+                        .params_json(params_json.clone())
+                        .status(TaskStatus::Running)
+                        .tmux_pane(None)
+                        .tmux_window(None)
+                        .work_dir(work_dir.clone())
+                        .session_id(Some(*session_id))
+                        .project_id(*project_id);
+                }
+                TaskEvent::AgentLaunched {
+                    tmux_pane,
+                    tmux_window,
+                } => {
+                    builder = builder
+                        .tmux_pane(Some(tmux_pane.clone()))
+                        .tmux_window(Some(tmux_window.clone()));
+                }
+                TaskEvent::Completed { exit_code, output } => {
+                    let status = if *exit_code == 0 {
+                        TaskStatus::Completed
+                    } else {
+                        TaskStatus::Failed
+                    };
+                    builder = builder
+                        .status(status)
+                        .exit_code(Some(*exit_code))
+                        .output(output.clone());
+                    if let Some(last) = events.entity_last_modified_at() {
+                        builder = builder.completed_at(Some(last));
+                    }
+                }
+                TaskEvent::Closed { output } => {
+                    builder = builder.status(TaskStatus::Closed).output(output.clone());
+                    if let Some(last) = events.entity_last_modified_at() {
+                        builder = builder.completed_at(Some(last));
+                    }
+                }
+                TaskEvent::Reopened {
+                    tmux_pane,
+                    tmux_window,
+                } => {
+                    builder = builder
+                        .status(TaskStatus::Running)
+                        .tmux_pane(Some(tmux_pane.clone()))
+                        .tmux_window(Some(tmux_window.clone()))
+                        .completed_at(None);
+                }
+            }
+        }
+
+        builder.events(events).build()
+    }
+}
+
+// ── NewTask (construction) ───────────────────────────────────────────
+
+pub struct NewTask {
+    pub id: TaskId,
+    pub name: TaskName,
+    pub skill_name: String,
+    pub params_json: String,
+    pub work_dir: Option<String>,
+    pub session_id: ClaudeSessionId,
+    pub project_id: Option<ProjectId>,
+}
+
+impl IntoEvents<TaskEvent> for NewTask {
+    fn into_events(self) -> EntityEvents<TaskEvent> {
+        EntityEvents::init(
+            self.id,
+            [TaskEvent::Spawned {
+                id: self.id,
+                name: self.name,
+                skill_name: self.skill_name,
+                params_json: self.params_json,
+                work_dir: self.work_dir,
+                session_id: self.session_id,
+                project_id: self.project_id,
+            }],
+        )
+    }
+}
+
+// ── Mutations ────────────────────────────────────────────────────────
+
+impl Task {
+    pub fn launch_agent(&mut self, pane: PaneId, window: WindowId) {
+        self.tmux_pane = Some(pane.clone());
+        self.tmux_window = Some(window.clone());
+        self.events.push(TaskEvent::AgentLaunched {
+            tmux_pane: pane,
+            tmux_window: window,
+        });
+    }
+
+    pub fn complete(&mut self, exit_code: i32, output: Option<String>) -> Result<(), TaskError> {
+        if !self.status.is_running() {
+            return Err(TaskError::NotRunning);
+        }
+        self.status = if exit_code == 0 {
+            TaskStatus::Completed
+        } else {
+            TaskStatus::Failed
+        };
+        self.completed_at = Some(Utc::now());
+        self.exit_code = Some(exit_code);
+        self.output = output.clone();
+        self.events.push(TaskEvent::Completed { exit_code, output });
+        Ok(())
+    }
+
+    pub fn close(&mut self, output: Option<String>) -> Result<bool, TaskError> {
+        if !self.status.is_running() {
+            return Ok(false);
+        }
+        self.status = TaskStatus::Closed;
+        self.completed_at = Some(Utc::now());
+        self.output = output.clone();
+        self.events.push(TaskEvent::Closed { output });
+        Ok(true)
+    }
+
+    pub fn reopen(&mut self, pane: PaneId, window: WindowId) -> Result<(), TaskError> {
+        if self.status.is_running() {
+            return Err(TaskError::AlreadyRunning);
+        }
+        self.status = TaskStatus::Running;
+        self.tmux_pane = Some(pane.clone());
+        self.tmux_window = Some(window.clone());
+        self.completed_at = None;
+        self.events.push(TaskEvent::Reopened {
+            tmux_pane: pane,
+            tmux_window: window,
+        });
+        Ok(())
+    }
+
+    // ── Query helpers (not event-sourced) ────────────────────────────
+
+    fn is_active(&self, active_panes: &HashSet<PaneId>) -> bool {
+        self.status.is_running()
+            && self
+                .tmux_pane
+                .as_ref()
+                .is_some_and(|p| active_panes.contains(p))
+    }
+
+    /// Derive the visual display status from persisted status + active set.
+    pub fn display_status(&self, active_panes: &HashSet<PaneId>) -> DisplayStatus {
+        match self.status {
+            TaskStatus::Running if self.is_active(active_panes) => DisplayStatus::Active,
+            TaskStatus::Running => DisplayStatus::Idle,
+            TaskStatus::Completed => DisplayStatus::Completed,
+            TaskStatus::Failed => DisplayStatus::Failed,
+            TaskStatus::Closed => DisplayStatus::Closed,
+        }
+    }
+}
+
+// ── DisplayStatus (TUI-layer concern, not event-sourced) ─────────────
 
 /// Visual status of a task, combining persisted `TaskStatus` with runtime
 /// idle-detection state.
@@ -37,71 +312,7 @@ impl DisplayStatus {
     }
 }
 
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct Task {
-    pub id: TaskId,
-    pub name: TaskName,
-    pub skill_name: String,
-    pub params_json: String,
-    pub status: TaskStatus,
-    pub tmux_pane: Option<PaneId>,
-    pub tmux_window: Option<WindowId>,
-    pub work_dir: Option<String>,
-    pub session_id: Option<ClaudeSessionId>,
-    pub started_at: DateTime<Utc>,
-    pub completed_at: Option<DateTime<Utc>>,
-    pub exit_code: Option<i32>,
-    pub output: Option<String>,
-    pub project_id: Option<ProjectId>,
-}
-
-impl Task {
-    pub fn new(
-        id: TaskId,
-        name: TaskName,
-        skill_name: &str,
-        params: &HashMap<String, String>,
-        work_dir: &Path,
-        project_id: Option<ProjectId>,
-    ) -> Self {
-        Self {
-            id,
-            name,
-            skill_name: skill_name.to_string(),
-            params_json: serde_json::to_string(params).unwrap_or_else(|_| "{}".to_string()),
-            status: TaskStatus::Running,
-            tmux_pane: None,
-            tmux_window: None,
-            work_dir: Some(work_dir.display().to_string()),
-            session_id: Some(ClaudeSessionId::generate()),
-            started_at: Utc::now(),
-            completed_at: None,
-            exit_code: None,
-            output: None,
-            project_id,
-        }
-    }
-
-    fn is_active(&self, active_panes: &HashSet<PaneId>) -> bool {
-        self.status.is_running()
-            && self
-                .tmux_pane
-                .as_ref()
-                .is_some_and(|p| active_panes.contains(p))
-    }
-
-    /// Derive the visual display status from persisted status + active set.
-    pub fn display_status(&self, active_panes: &HashSet<PaneId>) -> DisplayStatus {
-        match self.status {
-            TaskStatus::Running if self.is_active(active_panes) => DisplayStatus::Active,
-            TaskStatus::Running => DisplayStatus::Idle,
-            TaskStatus::Completed => DisplayStatus::Completed,
-            TaskStatus::Failed => DisplayStatus::Failed,
-            TaskStatus::Closed => DisplayStatus::Closed,
-        }
-    }
-}
+// ── Non-event-sourced models (kept as-is) ────────────────────────────
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]

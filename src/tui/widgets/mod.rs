@@ -155,7 +155,7 @@ pub(in crate::tui) fn ui(frame: &mut ratatui::Frame, state: &mut ScreenState) {
         let active_name_ref = active_name.as_deref();
         let task_list = match &state.active_project_id {
             Some(pid) => {
-                let pid = pid.clone();
+                let pid = *pid;
                 &mut state
                     .projects
                     .get_mut(&pid)

@@ -229,7 +229,7 @@ impl ScreenState {
     pub fn active_state_mut(&mut self) -> &mut ProjectState {
         match &self.active_project_id {
             Some(pid) => {
-                let pid = pid.clone();
+                let pid = *pid;
                 self.projects.get_mut(&pid).unwrap_or(&mut self.exo)
             }
             None => &mut self.exo,
@@ -301,7 +301,7 @@ impl ScreenState {
         if let Some(task) = self.selected_task()
             && task.status.is_running()
         {
-            let id = task.id.clone();
+            let id = task.id;
             self.set_focus(Focus::ConfirmCloseTask(id));
         }
     }
@@ -309,7 +309,7 @@ impl ScreenState {
     /// Enter the delete confirmation flow for the selected task.
     pub fn confirm_delete_selected_task(&mut self) {
         if let Some(task) = self.selected_task() {
-            let id = task.id.clone();
+            let id = task.id;
             self.set_focus(Focus::ConfirmDelete(id));
         }
     }
@@ -461,7 +461,7 @@ impl ScreenState {
     pub fn open_task_detail(&mut self, index: usize) {
         let active = self.active_state_mut();
         // Get the task ID for the target index
-        let task_id = active.task_list.tasks.get(index).map(|t| t.id.clone());
+        let task_id = active.task_list.tasks.get(index).map(|t| t.id);
         active.task_list.list_state.select(Some(index));
         active.task_list.show_detail();
         active.chat_view.reset_scroll();
@@ -494,7 +494,7 @@ impl ScreenState {
     /// Resets chat scroll and restores the main chat input buffer.
     pub fn close_task_detail(&mut self) {
         let active = self.active_state_mut();
-        let task_id = active.task_list.selected_task().map(|t| t.id.clone());
+        let task_id = active.task_list.selected_task().map(|t| t.id);
         active.task_list.hide_detail();
         active.chat_view.reset_scroll();
         if let Some(tid) = task_id {
@@ -508,7 +508,7 @@ impl ScreenState {
     /// within bounds, `false` if it wrapped past the edge (detail is hidden).
     pub fn navigate_to_adjacent_task(&mut self, forward: bool) -> bool {
         let active = self.active_state_mut();
-        let old_task_id = active.task_list.selected_task().map(|t| t.id.clone());
+        let old_task_id = active.task_list.selected_task().map(|t| t.id);
         active.chat_view.reset_scroll();
         let current = active.task_list.list_state.selected().unwrap_or(0);
         let in_bounds = if forward {
@@ -528,7 +528,7 @@ impl ScreenState {
             active.task_list.hide_detail();
             false
         };
-        let new_task_id = active.task_list.selected_task().map(|t| t.id.clone());
+        let new_task_id = active.task_list.selected_task().map(|t| t.id);
         // Switch input buffers between old and new tasks
         if active.task_list.is_detail_visible() {
             if let (Some(old), Some(new)) = (&old_task_id, &new_task_id)
@@ -682,26 +682,28 @@ impl ScreenState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::{ProjectId, ProjectName, TaskId, TaskName};
-    use crate::task::{Project, Task};
+    use crate::primitives::{ClaudeSessionId, ProjectId, ProjectName, TaskId, TaskName};
+    use crate::task::{NewTask, Project, Task};
     use chrono::Utc;
-    use std::collections::HashMap;
-    use std::path::Path;
+    use es_entity::*;
 
     fn make_task(name: &str) -> Task {
-        Task::new(
-            TaskId::generate(),
-            TaskName::from(name.to_string()),
-            "engineer",
-            &HashMap::new(),
-            Path::new("/tmp"),
-            None,
-        )
+        let new_task = NewTask {
+            id: TaskId::new(),
+            name: TaskName::from(name.to_string()),
+            skill_name: "engineer".to_string(),
+            params_json: "{}".to_string(),
+            work_dir: Some("/tmp".to_string()),
+            session_id: ClaudeSessionId::new(),
+            project_id: None,
+        };
+        let events = new_task.into_events();
+        Task::try_from_events(events).unwrap()
     }
 
     fn make_project(name: &str) -> Project {
         Project {
-            id: ProjectId::generate(),
+            id: ProjectId::new(),
             name: ProjectName::from(name.to_string()),
             description: String::new(),
             created_at: Utc::now(),

@@ -194,7 +194,7 @@ impl TaskListState {
     }
 
     pub fn refresh_tasks(&mut self, tasks: Vec<Task>) {
-        let selected_id = self.selected_task().map(|t| t.id.clone());
+        let selected_id = self.selected_task().map(|t| t.id);
 
         self.tasks = tasks;
         if let Some(id) = selected_id {

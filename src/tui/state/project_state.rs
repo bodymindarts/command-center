@@ -60,7 +60,7 @@ impl ProjectState {
         if let Some(main) = self.saved_chat_input.take() {
             let text = self.input.take();
             if !text.is_empty() {
-                self.task_inputs.insert(task_id.clone(), text);
+                self.task_inputs.insert(*task_id, text);
             }
             self.input.set(&main);
         }
@@ -70,7 +70,7 @@ impl ProjectState {
     pub fn switch_task_detail(&mut self, old_id: &TaskId, new_id: &TaskId) {
         let text = self.input.take();
         if !text.is_empty() {
-            self.task_inputs.insert(old_id.clone(), text);
+            self.task_inputs.insert(*old_id, text);
         }
         let new_text = self.task_inputs.remove(new_id).unwrap_or_default();
         self.input.set(&new_text);

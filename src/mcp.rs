@@ -166,7 +166,7 @@ impl ClatMcpServer {
         match result {
             Ok(output) => {
                 let response = serde_json::json!({
-                    "task_id": output.task_id.as_str(),
+                    "task_id": output.task_id.to_string(),
                     "task_name": output.task_name.as_str(),
                     "skill": output.skill_name,
                     "window": output.window_id.as_str(),

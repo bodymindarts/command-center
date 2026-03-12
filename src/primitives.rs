@@ -1,11 +1,44 @@
 use std::fmt;
 
-/// Generates a newtype wrapper around `String` with common trait impls:
-/// `Debug`, `Clone`, `PartialEq`, `Eq`, `Hash`, `Display`, `From<String>`,
-/// `PartialEq<str>`, `PartialEq<String>`, and an `as_str()` accessor.
+use serde::{Deserialize, Serialize};
+
+// === UUID types (event-sourced entity IDs) ===
+//
+// entity_id! generates: sqlx::Type (transparent), Debug, Clone, Copy,
+// PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+// Display, FromStr, new() (UUID v7), From<Uuid>.
+es_entity::entity_id! { TaskId, ProjectId, ClaudeSessionId }
+
+/// Extra impls the entity_id! macro doesn't provide.
+macro_rules! impl_id_from_string {
+    ($($name:ident),+) => {
+        $(
+            impl From<String> for $name {
+                fn from(s: String) -> Self {
+                    s.parse()
+                        .unwrap_or_else(|e| panic!("invalid UUID for {}: '{s}': {e}", stringify!($name)))
+                }
+            }
+        )+
+    };
+}
+impl_id_from_string!(TaskId, ProjectId, ClaudeSessionId);
+
+impl TaskId {
+    pub fn short(&self) -> String {
+        let s = self.to_string();
+        s[..8.min(s.len())].to_string()
+    }
+}
+
+// === String newtypes ===
+
+/// Generates a newtype wrapper around `String` with serde, sqlx, and common trait impls.
 macro_rules! string_newtype {
     ($name:ident) => {
-        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type)]
+        #[serde(transparent)]
+        #[sqlx(transparent)]
         pub struct $name(String);
 
         impl $name {
@@ -46,96 +79,8 @@ macro_rules! string_newtype {
     };
 }
 
-/// Generates a newtype wrapper around `uuid::Uuid` with a cached string
-/// representation. Provides the same API surface as `string_newtype!`
-/// (`as_str()`, `Display`, `From<String>`, equality) but stores a real UUID.
-macro_rules! id_newtype {
-    ($name:ident) => {
-        #[derive(Clone)]
-        pub struct $name {
-            id: uuid::Uuid,
-            repr: String,
-        }
-
-        impl $name {
-            pub fn generate() -> Self {
-                let id = uuid::Uuid::now_v7();
-                Self {
-                    repr: id.to_string(),
-                    id,
-                }
-            }
-
-            pub fn as_str(&self) -> &str {
-                &self.repr
-            }
-
-            #[allow(dead_code)]
-            pub fn short(&self) -> &str {
-                &self.repr[..8.min(self.repr.len())]
-            }
-        }
-
-        impl fmt::Debug for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.debug_tuple(stringify!($name)).field(&self.id).finish()
-            }
-        }
-
-        impl PartialEq for $name {
-            fn eq(&self, other: &Self) -> bool {
-                self.id == other.id
-            }
-        }
-
-        impl Eq for $name {}
-
-        impl std::hash::Hash for $name {
-            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-                self.id.hash(state);
-            }
-        }
-
-        impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str(&self.repr)
-            }
-        }
-
-        impl From<String> for $name {
-            fn from(s: String) -> Self {
-                let id = uuid::Uuid::parse_str(&s).unwrap_or_else(|e| {
-                    panic!("invalid UUID for {}: '{}': {e}", stringify!($name), s)
-                });
-                Self { id, repr: s }
-            }
-        }
-
-        impl PartialEq<str> for $name {
-            fn eq(&self, other: &str) -> bool {
-                self.repr == other
-            }
-        }
-
-        impl PartialEq<&str> for $name {
-            fn eq(&self, other: &&str) -> bool {
-                self.repr == *other
-            }
-        }
-
-        impl PartialEq<String> for $name {
-            fn eq(&self, other: &String) -> bool {
-                self.repr == *other
-            }
-        }
-    };
-}
-
-id_newtype!(TaskId);
 string_newtype!(TaskName);
-id_newtype!(ProjectId);
 string_newtype!(ProjectName);
-id_newtype!(ClaudeSessionId);
 string_newtype!(PaneId);
 string_newtype!(WindowId);
 
@@ -154,13 +99,15 @@ impl ChatId {
     pub fn as_db_key(&self) -> String {
         match self {
             Self::Exo => "exo".to_string(),
-            Self::Project(pid) => format!("pm:{}", pid.as_str()),
-            Self::Task(tid) => tid.as_str().to_string(),
+            Self::Project(pid) => format!("pm:{pid}"),
+            Self::Task(tid) => tid.to_string(),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[serde(rename_all = "snake_case")]
+#[sqlx(rename_all = "snake_case")]
 pub enum TaskStatus {
     Running,
     Completed,

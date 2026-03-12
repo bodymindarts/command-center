@@ -464,7 +464,7 @@ async fn cmd_project(action: ProjectAction, app: ClatApp<impl Runtime>) -> anyho
             println!(
                 "Created project '{}' ({})",
                 project.name,
-                project.id.short()
+                &project.id.to_string()[..8]
             );
         }
         ProjectAction::List => {
@@ -489,7 +489,7 @@ async fn cmd_project(action: ProjectAction, app: ClatApp<impl Runtime>) -> anyho
             let rows: Vec<Row> = projects
                 .iter()
                 .map(|p| Row {
-                    id: p.id.short().to_string(),
+                    id: p.id.to_string()[..8].to_string(),
                     name: p.name.as_str().to_string(),
                     description: p.description.clone(),
                     created: p.created_at.format("%Y-%m-%d %H:%M").to_string(),

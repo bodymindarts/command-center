@@ -285,11 +285,9 @@ async fn handle_cycle_permissions<R: Runtime>(state: &mut ScreenState, app: &Cla
                     .iter()
                     .find(|p| p.id == pid)
                     .map(|p| p.name.clone())
-                    .unwrap_or_else(|| {
-                        crate::primitives::ProjectName::from(pid.as_str().to_string())
-                    });
+                    .unwrap_or_else(|| crate::primitives::ProjectName::from(pid.to_string()));
                 if let Ok(tasks) = app.list_visible(Some(&pid)).await {
-                    state.switch_to_project(Some((proj_name, pid.clone())), tasks, Some(&name));
+                    state.switch_to_project(Some((proj_name, pid)), tasks, Some(&name));
                 }
             } else if let Ok(tasks) = app.list_visible(None).await {
                 state.switch_to_project(None, tasks, Some(&name));
@@ -342,19 +340,19 @@ async fn handle_goto_project<R: Runtime>(state: &mut ScreenState, app: &ClatApp<
                     .projects()
                     .iter()
                     .find(|p| p.id == *pid)
-                    .map(|p| (p.name.clone(), p.id.clone()))
+                    .map(|p| (p.name.clone(), p.id))
             })
             .or_else(|| {
                 state
                     .project_list
                     .projects()
                     .first()
-                    .map(|p| (p.name.clone(), p.id.clone()))
+                    .map(|p| (p.name.clone(), p.id))
             });
         if let Some((name, id)) = target
             && let Ok(tasks) = app.list_visible(Some(&id)).await
         {
-            state.switch_to_project(Some((name, id.clone())), tasks, None);
+            state.switch_to_project(Some((name, id)), tasks, None);
         }
     // If in a project PM view, cycle to next project
     } else if state.active_project_id.is_some()
@@ -373,10 +371,10 @@ async fn handle_goto_project<R: Runtime>(state: &mut ScreenState, app: &ClatApp<
         if let Some(ci) = cur_idx {
             let next_idx = (ci + 1) % state.project_list.projects().len();
             let next = &state.project_list.projects()[next_idx];
-            let next_id = next.id.clone();
+            let next_id = next.id;
             let next_name = next.name.clone();
             if let Ok(tasks) = app.list_visible(Some(&next_id)).await {
-                state.switch_to_project(Some((next_name, next_id.clone())), tasks, None);
+                state.switch_to_project(Some((next_name, next_id)), tasks, None);
             }
         }
     }
@@ -475,10 +473,10 @@ async fn handle_project_list_key<R: Runtime>(
         state.enter_search_mode();
     } else if kb.select.matches(&key) {
         if let Some(project) = state.selected_project() {
-            let project_id = project.id.clone();
+            let project_id = project.id;
             let project_name = project.name.clone();
             if let Ok(tasks) = app.list_visible(Some(&project_id)).await {
-                state.switch_to_project(Some((project_name, project_id.clone())), tasks, None);
+                state.switch_to_project(Some((project_name, project_id)), tasks, None);
             }
         }
     } else if kb.delete.matches(&key) {
@@ -509,7 +507,7 @@ async fn handle_task_chat_input_key<R: Runtime>(
         if let Some(task) = state.selected_task()
             && task.status.is_running()
         {
-            let id = task.id.clone();
+            let id = task.id;
             state.set_focus(Focus::ConfirmCloseTask(id));
         }
     } else if kb.focus_tasks.matches(&key) {
@@ -521,7 +519,7 @@ async fn handle_task_chat_input_key<R: Runtime>(
         if !active.input.is_empty() {
             let msg = active.input.take();
             if let Some(task) = active.task_list.selected_task() {
-                let task_id = task.id.as_str().to_string();
+                let task_id = task.id.to_string();
                 let pane = task.tmux_pane.clone();
                 match app.send(&task_id, &msg).await {
                     Ok(_) => {
@@ -578,7 +576,7 @@ async fn handle_chat_enter<R: Runtime>(
     if active.input.is_empty() {
         return;
     }
-    if let Some(pid) = state.active_project_id.clone() {
+    if let Some(pid) = state.active_project_id {
         let Some(ctx) = project_contexts.get_mut(&pid) else {
             state.set_status_error("PM session not initialized".to_string());
             return;
@@ -646,12 +644,12 @@ async fn handle_confirm_delete_key<R: Runtime>(
     app: &ClatApp<R>,
 ) {
     let task_id = match state.current_focus() {
-        Focus::ConfirmDelete(id) => id.clone(),
+        Focus::ConfirmDelete(id) => *id,
         _ => return,
     };
     match key.code {
         KeyCode::Char('y') => {
-            let _ = app.delete(task_id.as_str()).await;
+            let _ = app.delete(&task_id.to_string()).await;
             if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()).await {
                 state.refresh_tasks(tasks);
             }
@@ -670,12 +668,12 @@ async fn handle_confirm_close_task_key<R: Runtime>(
     app: &ClatApp<R>,
 ) {
     let task_id = match state.current_focus() {
-        Focus::ConfirmCloseTask(id) => id.clone(),
+        Focus::ConfirmCloseTask(id) => *id,
         _ => return,
     };
     match key.code {
         KeyCode::Char('y') => {
-            let _ = app.close(task_id.as_str()).await;
+            let _ = app.close(&task_id.to_string()).await;
             if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()).await {
                 state.refresh_tasks(tasks);
             }
@@ -725,7 +723,7 @@ async fn handle_confirm_close_project_key<R: Runtime>(
 ) {
     match key.code {
         KeyCode::Char('y') => {
-            let closed_pid = state.active_project_id.clone();
+            let closed_pid = state.active_project_id;
             if let Ok(tasks) = app.list_visible(None).await {
                 state.switch_to_project(None, tasks, None);
                 state.focus_on_tasks();
@@ -749,7 +747,7 @@ async fn goto_task_window<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>)
                 app.goto_window(window_id);
             }
         } else {
-            let id = task.id.as_str().to_string();
+            let id = task.id.to_string();
             match app.reopen(&id).await {
                 Ok(window_id) => {
                     if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()).await {
@@ -770,7 +768,7 @@ async fn reopen_task<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
     if let Some(task) = state.selected_task()
         && !task.status.is_running()
     {
-        let id = task.id.as_str().to_string();
+        let id = task.id.to_string();
         match app.reopen(&id).await {
             Ok(_) => {
                 if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()).await {
@@ -1203,7 +1201,7 @@ pub(super) async fn tick_refresh<R: Runtime>(
     let all_running_names: HashSet<TaskName> = all_active.iter().map(|t| t.name.clone()).collect();
     let projects_map = all_active
         .iter()
-        .map(|t| (t.name.clone(), t.project_id.clone()))
+        .map(|t| (t.name.clone(), t.project_id))
         .collect();
     let work_dirs = all_active
         .iter()
@@ -1218,7 +1216,7 @@ pub(super) async fn tick_refresh<R: Runtime>(
     active.task_list.update_window_numbers(app.window_numbers());
     // Update selected messages and live output for detail view
     if let Some(task) = active.task_list.selected_task() {
-        let chat = ChatId::Task(task.id.clone());
+        let chat = ChatId::Task(task.id);
         let is_running = task.status.is_running();
         let pane = task.tmux_pane.clone();
         if let Ok(messages) = app.messages(&chat).await {

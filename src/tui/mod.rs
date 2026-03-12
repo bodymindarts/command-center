@@ -90,9 +90,9 @@ async fn init_project_context<R: Runtime>(
 ) -> ProjectContext {
     let project_state = build_project_state(app, project_id).await;
     let session_id = project_state.chat_view.assistant.session_id.clone();
-    state.add_project(project_id.clone(), project_state);
+    state.add_project(*project_id, project_state);
     let prompt = crate::assistant::project_system_prompt(project_name);
-    let session_key = SessionKey::Project(project_id.clone());
+    let session_key = SessionKey::Project(*project_id);
     ProjectContext::new(
         session_key,
         session_id.as_deref(),
@@ -172,7 +172,7 @@ pub async fn run<R: Runtime + Send + Sync + 'static>(
     if let Ok(projects) = app.list_projects().await {
         for project in &projects {
             project_contexts.insert(
-                project.id.clone(),
+                project.id,
                 init_project_context(
                     &mut state,
                     &app,

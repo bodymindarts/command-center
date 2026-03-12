@@ -2,49 +2,275 @@ use std::path::Path;
 
 use anyhow::Context;
 use chrono::{DateTime, Utc};
+use es_entity::*;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 
-use crate::primitives::{
-    ChatId, ClaudeSessionId, MessageRole, PaneId, ProjectId, ProjectName, TaskId, TaskName,
-    TaskStatus, WindowId,
-};
-use crate::task::{Project, Task, TaskMessage};
+use crate::primitives::{ChatId, MessageRole, ProjectId, ProjectName, TaskId};
+use crate::task::{NewTask, Project, Task, TaskMessage};
 
-fn row_to_task(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<Task> {
-    let started_at: String = row.try_get("started_at")?;
-    let completed_at: Option<String> = row.try_get("completed_at")?;
-    Ok(Task {
-        id: TaskId::from(row.try_get::<String, _>("id")?),
-        name: TaskName::from(row.try_get::<String, _>("name")?),
-        skill_name: row.try_get("skill_name")?,
-        params_json: row.try_get("params_json")?,
-        status: TaskStatus::from(row.try_get::<String, _>("status")?),
-        tmux_pane: row
-            .try_get::<Option<String>, _>("tmux_pane")?
-            .map(PaneId::from),
-        tmux_window: row
-            .try_get::<Option<String>, _>("tmux_window")?
-            .map(WindowId::from),
-        work_dir: row.try_get("work_dir")?,
-        session_id: row
-            .try_get::<Option<String>, _>("session_id")?
-            .map(ClaudeSessionId::from),
-        started_at: DateTime::parse_from_rfc3339(&started_at)
-            .unwrap_or_default()
-            .with_timezone(&Utc),
-        completed_at: completed_at.and_then(|s| {
-            DateTime::parse_from_rfc3339(&s)
-                .ok()
-                .map(|dt| dt.with_timezone(&Utc))
-        }),
-        exit_code: row.try_get("exit_code")?,
-        output: row.try_get("output")?,
-        project_id: row
-            .try_get::<Option<String>, _>("project_id")?
-            .map(ProjectId::from),
-    })
+// ── TaskRepo (manual implementation using es-entity types) ──────────
+
+pub struct TaskRepo {
+    pool: SqlitePool,
 }
+
+impl TaskRepo {
+    fn new(pool: &SqlitePool) -> Self {
+        Self { pool: pool.clone() }
+    }
+
+    /// Create a new task: persist initial events and insert index row.
+    pub async fn create(&self, new_task: NewTask) -> anyhow::Result<Task> {
+        let events = new_task.into_events();
+        let task = Task::try_from_events(events)?;
+
+        // Write index row first (task_events has FK to tasks)
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO tasks (id, created_at, name, skill_name, params_json, status, \
+             tmux_pane, tmux_window, work_dir, session_id, started_at, completed_at, \
+             exit_code, output, project_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(task.id.to_string())
+        .bind(&now)
+        .bind(&task.name)
+        .bind(&task.skill_name)
+        .bind(&task.params_json)
+        .bind(task.status)
+        .bind(task.tmux_pane.as_ref())
+        .bind(task.tmux_window.as_ref())
+        .bind(&task.work_dir)
+        .bind(task.session_id.map(|s| s.to_string()))
+        .bind(task.started_at.to_rfc3339())
+        .bind(task.completed_at.as_ref().map(|dt| dt.to_rfc3339()))
+        .bind(task.exit_code)
+        .bind(task.output.as_deref())
+        .bind(task.project_id.map(|p| p.to_string()))
+        .execute(&self.pool)
+        .await?;
+
+        // Write initial events
+        self.persist_new_events(&task).await?;
+
+        // Re-load to get persisted event metadata
+        self.find_by_id(task.id).await
+    }
+
+    /// Persist new events and update the index row.
+    pub async fn update(&self, task: &mut Task) -> anyhow::Result<()> {
+        if !task.events().any_new() {
+            return Ok(());
+        }
+
+        self.persist_new_events(task).await?;
+
+        // Update index row
+        sqlx::query(
+            "UPDATE tasks SET status = ?, tmux_pane = ?, tmux_window = ?, \
+             completed_at = ?, exit_code = ?, output = ?, name = ?, \
+             session_id = ?, work_dir = ?, project_id = ? \
+             WHERE id = ?",
+        )
+        .bind(task.status)
+        .bind(task.tmux_pane.as_ref())
+        .bind(task.tmux_window.as_ref())
+        .bind(task.completed_at.as_ref().map(|dt| dt.to_rfc3339()))
+        .bind(task.exit_code)
+        .bind(task.output.as_deref())
+        .bind(&task.name)
+        .bind(task.session_id.map(|s| s.to_string()))
+        .bind(&task.work_dir)
+        .bind(task.project_id.map(|p| p.to_string()))
+        .bind(task.id.to_string())
+        .execute(&self.pool)
+        .await?;
+
+        // Mark events as persisted
+        let now = Utc::now();
+        task.events_mut().mark_new_events_persisted_at(now);
+        Ok(())
+    }
+
+    /// Find a task by exact ID, hydrating from events.
+    pub async fn find_by_id(&self, id: TaskId) -> anyhow::Result<Task> {
+        let rows = self.load_events_for_id(&id).await?;
+        EntityEvents::load_first::<Task>(rows)?
+            .ok_or_else(|| anyhow::anyhow!("task {} not found", id))
+    }
+
+    /// Find a task by ID prefix. Returns None if no match, errors if ambiguous.
+    pub async fn find_by_id_prefix(&self, prefix: &str) -> anyhow::Result<Option<Task>> {
+        let pattern = format!("{prefix}%");
+        let ids = sqlx::query_scalar::<_, String>("SELECT id FROM tasks WHERE id LIKE ?")
+            .bind(&pattern)
+            .fetch_all(&self.pool)
+            .await?;
+
+        if ids.len() > 1 {
+            anyhow::bail!("ambiguous prefix '{prefix}': matches {} tasks", ids.len());
+        }
+
+        match ids.into_iter().next() {
+            Some(id_str) => {
+                let id: TaskId = id_str.into();
+                Ok(Some(self.find_by_id(id).await?))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// List all tasks ordered by created_at DESC.
+    pub async fn list_all(&self) -> anyhow::Result<Vec<Task>> {
+        self.list_with_filter("1=1").await
+    }
+
+    /// List tasks with status = 'running'.
+    pub async fn list_active(&self) -> anyhow::Result<Vec<Task>> {
+        self.list_with_filter("t.status = 'running'").await
+    }
+
+    /// List tasks scoped to a project.
+    pub async fn list_visible_for_project(
+        &self,
+        project_id: Option<&ProjectId>,
+    ) -> anyhow::Result<Vec<Task>> {
+        let sql_base = "SELECT e.id, e.sequence, e.event_type, e.event, e.recorded_at \
+                        FROM task_events e \
+                        INNER JOIN tasks t ON t.id = e.id";
+        let order = "ORDER BY CASE WHEN t.status = 'running' THEN 0 ELSE 1 END, \
+                     t.created_at DESC, e.id, e.sequence";
+
+        let rows = match project_id {
+            Some(pid) => {
+                let pid_str = pid.to_string();
+                sqlx::query_as::<_, EventRow>(&format!("{sql_base} WHERE t.project_id = ? {order}"))
+                    .bind(&pid_str)
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+            None => {
+                sqlx::query_as::<_, EventRow>(&format!(
+                    "{sql_base} WHERE t.project_id IS NULL {order}"
+                ))
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
+
+        let generic: Vec<_> = rows.into_iter().map(|r| r.into_generic()).collect();
+        let (tasks, _) = EntityEvents::load_n::<Task>(generic, usize::MAX)?;
+        Ok(tasks)
+    }
+
+    /// Delete a task and its events.
+    pub async fn delete_task(&self, id: TaskId) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM task_events WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM tasks WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    // ── Internal helpers ──
+
+    async fn persist_new_events(&self, task: &Task) -> anyhow::Result<()> {
+        let events = task.events();
+        if !events.any_new() {
+            return Ok(());
+        }
+
+        let id_str = task.id.to_string();
+        let now = Utc::now().to_rfc3339();
+        let base_sequence = events.len_persisted() as i32;
+        let event_types = events.new_event_types();
+        let event_jsons = events.serialize_new_events();
+
+        for (i, (event_type, event_json)) in event_types.iter().zip(event_jsons.iter()).enumerate()
+        {
+            let seq = base_sequence + 1 + i as i32;
+            let json_str = serde_json::to_string(event_json)?;
+            sqlx::query(
+                "INSERT INTO task_events (id, sequence, event_type, event, recorded_at) \
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(&id_str)
+            .bind(seq)
+            .bind(event_type)
+            .bind(&json_str)
+            .bind(&now)
+            .execute(&self.pool)
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn load_events_for_id(&self, id: &TaskId) -> anyhow::Result<Vec<GenericEvent<TaskId>>> {
+        let rows = sqlx::query_as::<_, EventRow>(
+            "SELECT id, sequence, event_type, event, recorded_at \
+             FROM task_events WHERE id = ? ORDER BY sequence",
+        )
+        .bind(id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| r.into_generic()).collect())
+    }
+
+    async fn list_with_filter(&self, filter: &str) -> anyhow::Result<Vec<Task>> {
+        let sql = format!(
+            "SELECT e.id, e.sequence, e.event_type, e.event, e.recorded_at \
+             FROM task_events e \
+             INNER JOIN tasks t ON t.id = e.id \
+             WHERE {filter} \
+             ORDER BY t.created_at DESC, e.id, e.sequence"
+        );
+        let rows = sqlx::query_as::<_, EventRow>(&sql)
+            .fetch_all(&self.pool)
+            .await?;
+        let generic: Vec<_> = rows.into_iter().map(|r| r.into_generic()).collect();
+        let (tasks, _) = EntityEvents::load_n::<Task>(generic, usize::MAX)?;
+        Ok(tasks)
+    }
+}
+
+// Helper struct for mapping sqlx rows to GenericEvent.
+#[derive(sqlx::FromRow)]
+struct EventRow {
+    id: String,
+    sequence: i32,
+    #[allow(dead_code)]
+    event_type: String,
+    event: String,
+    recorded_at: String,
+}
+
+impl EventRow {
+    fn into_generic(self) -> GenericEvent<TaskId> {
+        let entity_id: TaskId = self.id.into();
+        let event: serde_json::Value =
+            serde_json::from_str(&self.event).unwrap_or(serde_json::Value::Null);
+        let recorded_at = DateTime::parse_from_rfc3339(&self.recorded_at)
+            .unwrap_or_default()
+            .with_timezone(&Utc);
+
+        GenericEvent {
+            entity_id,
+            sequence: self.sequence,
+            event,
+            context: None,
+            recorded_at,
+        }
+    }
+}
+
+// ── Store (wraps TaskRepo + message/project CRUD) ────────────────────
 
 fn row_to_project(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<Project> {
     let created_at: String = row.try_get("created_at")?;
@@ -71,12 +297,9 @@ fn row_to_message(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<TaskMessage> 
     })
 }
 
-const TASK_COLUMNS: &str =
-    "id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir,
-     started_at, completed_at, exit_code, output, project_id, session_id";
-
 pub struct Store {
     pool: SqlitePool,
+    pub tasks: TaskRepo,
 }
 
 impl Store {
@@ -91,7 +314,8 @@ impl Store {
             .run(&pool)
             .await
             .context("failed to run database migrations")?;
-        Ok(Self { pool })
+        let tasks = TaskRepo::new(&pool);
+        Ok(Self { pool, tasks })
     }
 
     pub async fn open(db_path: &Path) -> anyhow::Result<Self> {
@@ -107,146 +331,11 @@ impl Store {
             .run(&pool)
             .await
             .with_context(|| format!("failed to run migrations at {}", db_path.display()))?;
-        Ok(Self { pool })
+        let tasks = TaskRepo::new(&pool);
+        Ok(Self { pool, tasks })
     }
 
-    pub async fn insert_task(&self, task: &Task) -> anyhow::Result<()> {
-        sqlx::query(
-            "INSERT INTO tasks (id, name, skill_name, params_json, status, tmux_pane, tmux_window, work_dir, started_at, project_id, session_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(task.id.as_str())
-        .bind(task.name.as_str())
-        .bind(&task.skill_name)
-        .bind(&task.params_json)
-        .bind(task.status.as_str())
-        .bind(task.tmux_pane.as_ref().map(|p| p.as_str().to_string()))
-        .bind(task.tmux_window.as_ref().map(|w| w.as_str().to_string()))
-        .bind(&task.work_dir)
-        .bind(task.started_at.to_rfc3339())
-        .bind(task.project_id.as_ref().map(|p| p.as_str().to_string()))
-        .bind(task.session_id.as_ref().map(|s| s.as_str().to_string()))
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    pub async fn complete_task(
-        &self,
-        id: &TaskId,
-        exit_code: i32,
-        output: Option<&str>,
-    ) -> anyhow::Result<()> {
-        let now = Utc::now().to_rfc3339();
-        let status = if exit_code == 0 {
-            "completed"
-        } else {
-            "failed"
-        };
-        sqlx::query(
-            "UPDATE tasks SET status = ?, exit_code = ?, completed_at = ?, output = ?
-             WHERE id = ?",
-        )
-        .bind(status)
-        .bind(exit_code)
-        .bind(&now)
-        .bind(output)
-        .bind(id.as_str())
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    pub async fn close_task(&self, id: &TaskId, output: Option<&str>) -> anyhow::Result<bool> {
-        let now = Utc::now().to_rfc3339();
-        let result = sqlx::query(
-            "UPDATE tasks SET status = 'closed', completed_at = ?, output = ?
-             WHERE id = ? AND status = 'running'",
-        )
-        .bind(&now)
-        .bind(output)
-        .bind(id.as_str())
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
-    pub async fn reopen_task(
-        &self,
-        id: &TaskId,
-        pane: &PaneId,
-        window: &WindowId,
-    ) -> anyhow::Result<bool> {
-        let result = sqlx::query(
-            "UPDATE tasks SET status = 'running', tmux_pane = ?, tmux_window = ?, completed_at = NULL
-             WHERE id = ? AND status != 'running'",
-        )
-        .bind(pane.as_str())
-        .bind(window.as_str())
-        .bind(id.as_str())
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
-    pub async fn delete_task(&self, id: &TaskId) -> anyhow::Result<()> {
-        sqlx::query("DELETE FROM task_messages WHERE task_id = ?")
-            .bind(id.as_str())
-            .execute(&self.pool)
-            .await?;
-        sqlx::query("DELETE FROM tasks WHERE id = ?")
-            .bind(id.as_str())
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    pub async fn list_tasks(&self) -> anyhow::Result<Vec<Task>> {
-        let sql = format!("SELECT {TASK_COLUMNS} FROM tasks ORDER BY started_at DESC");
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
-        rows.iter().map(row_to_task).collect()
-    }
-
-    pub async fn list_active_tasks(&self) -> anyhow::Result<Vec<Task>> {
-        let sql = format!(
-            "SELECT {TASK_COLUMNS} FROM tasks WHERE status = 'running' ORDER BY started_at DESC"
-        );
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
-        rows.iter().map(row_to_task).collect()
-    }
-
-    pub async fn update_task(&self, task: &Task) -> anyhow::Result<()> {
-        sqlx::query(
-            "UPDATE tasks SET status = ?, tmux_pane = ?, tmux_window = ?,
-             completed_at = ?, exit_code = ?, output = ?
-             WHERE id = ?",
-        )
-        .bind(task.status.as_str())
-        .bind(task.tmux_pane.as_ref().map(|p| p.as_str().to_string()))
-        .bind(task.tmux_window.as_ref().map(|w| w.as_str().to_string()))
-        .bind(task.completed_at.as_ref().map(|dt| dt.to_rfc3339()))
-        .bind(task.exit_code)
-        .bind(task.output.as_deref())
-        .bind(task.id.as_str())
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    pub async fn get_task_by_prefix(&self, prefix: &str) -> anyhow::Result<Option<Task>> {
-        let pattern = format!("{prefix}%");
-        let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id LIKE ?");
-        let rows = sqlx::query(&sql)
-            .bind(&pattern)
-            .fetch_all(&self.pool)
-            .await?;
-
-        if rows.len() > 1 {
-            anyhow::bail!("ambiguous prefix '{prefix}': matches {} tasks", rows.len());
-        }
-
-        rows.first().map(row_to_task).transpose()
-    }
+    // -- Message CRUD (not event-sourced) --
 
     pub async fn insert_message(
         &self,
@@ -281,7 +370,15 @@ impl Store {
         rows.iter().map(row_to_message).collect()
     }
 
-    // -- Project CRUD --
+    pub async fn delete_task_messages(&self, task_id: &TaskId) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM task_messages WHERE task_id = ?")
+            .bind(task_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    // -- Project CRUD (not event-sourced) --
 
     pub async fn insert_project(
         &self,
@@ -294,7 +391,7 @@ impl Store {
             "INSERT INTO projects (id, name, description, created_at)
              VALUES (?, ?, ?, ?)",
         )
-        .bind(id.as_str())
+        .bind(id.to_string())
         .bind(name)
         .bind(description)
         .bind(&now)
@@ -323,129 +420,121 @@ impl Store {
 
     pub async fn delete_project(&self, id: &ProjectId) -> anyhow::Result<()> {
         sqlx::query("DELETE FROM projects WHERE id = ?")
-            .bind(id.as_str())
+            .bind(id.to_string())
             .execute(&self.pool)
             .await?;
         Ok(())
-    }
-
-    /// Returns visible tasks scoped to a project.
-    /// When project_id is None, returns tasks with no project (default/ExO scope).
-    /// When Some, returns tasks belonging to that project.
-    pub async fn list_visible_tasks_for_project(
-        &self,
-        project_id: Option<&ProjectId>,
-    ) -> anyhow::Result<Vec<Task>> {
-        let rows = match project_id {
-            Some(pid) => {
-                let sql = format!(
-                    "SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ? \
-                     ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, started_at DESC"
-                );
-                sqlx::query(&sql)
-                    .bind(pid.as_str())
-                    .fetch_all(&self.pool)
-                    .await?
-            }
-            None => {
-                let sql = format!(
-                    "SELECT {TASK_COLUMNS} FROM tasks WHERE project_id IS NULL \
-                     ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, started_at DESC"
-                );
-                sqlx::query(&sql).fetch_all(&self.pool).await?
-            }
-        };
-        rows.iter().map(row_to_task).collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::primitives::{ClaudeSessionId, PaneId, TaskName, TaskStatus, WindowId};
 
     async fn test_store() -> Store {
         Store::open_in_memory().await.unwrap()
     }
 
-    async fn insert_running_task(store: &Store, name: &str) -> TaskId {
-        let id = TaskId::generate();
-        let task = Task {
-            id: id.clone(),
+    async fn create_running_task(store: &Store, name: &str) -> Task {
+        let new_task = NewTask {
+            id: TaskId::new(),
             name: TaskName::from(name.to_string()),
             skill_name: "noop".to_string(),
             params_json: "{}".to_string(),
-            status: TaskStatus::Running,
-            tmux_pane: Some(PaneId::from("%1".to_string())),
-            tmux_window: Some(WindowId::from("@1".to_string())),
             work_dir: None,
-            session_id: None,
-            started_at: Utc::now(),
-            completed_at: None,
-            exit_code: None,
-            output: None,
+            session_id: ClaudeSessionId::new(),
             project_id: None,
         };
-        store.insert_task(&task).await.unwrap();
-        id
+        let mut task = store.tasks.create(new_task).await.unwrap();
+        task.launch_agent(
+            PaneId::from("%1".to_string()),
+            WindowId::from("@1".to_string()),
+        );
+        store.tasks.update(&mut task).await.unwrap();
+        task
+    }
+
+    async fn create_task_with_project(
+        store: &Store,
+        name: &str,
+        project_id: Option<&ProjectId>,
+    ) -> Task {
+        let new_task = NewTask {
+            id: TaskId::new(),
+            name: TaskName::from(name.to_string()),
+            skill_name: "noop".to_string(),
+            params_json: "{}".to_string(),
+            work_dir: None,
+            session_id: ClaudeSessionId::new(),
+            project_id: project_id.copied(),
+        };
+        let mut task = store.tasks.create(new_task).await.unwrap();
+        task.launch_agent(
+            PaneId::from("%1".to_string()),
+            WindowId::from("@1".to_string()),
+        );
+        store.tasks.update(&mut task).await.unwrap();
+        task
     }
 
     #[tokio::test]
-    async fn close_task_sets_status_and_timestamp() {
+    async fn close_task_sets_status_and_output() {
         let store = test_store().await;
-        let id = insert_running_task(&store, "t1").await;
+        let mut task = create_running_task(&store, "t1").await;
 
-        let ok = store.close_task(&id, Some("output text")).await.unwrap();
-        assert!(ok);
+        let closed = task.close(Some("output text".to_string())).unwrap();
+        assert!(closed);
+        store.tasks.update(&mut task).await.unwrap();
 
-        let task = store
-            .get_task_by_prefix(id.as_str())
+        let loaded = store
+            .tasks
+            .find_by_id_prefix(&task.id.to_string())
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(task.status, TaskStatus::Closed);
-        assert!(task.completed_at.is_some());
-        assert_eq!(task.output.as_deref(), Some("output text"));
+        assert_eq!(loaded.status, TaskStatus::Closed);
+        assert!(loaded.completed_at.is_some());
+        assert_eq!(loaded.output.as_deref(), Some("output text"));
     }
 
     #[tokio::test]
     async fn close_task_only_affects_running() {
         let store = test_store().await;
-        let id = insert_running_task(&store, "t2").await;
-        store.complete_task(&id, 0, None).await.unwrap();
+        let mut task = create_running_task(&store, "t2").await;
 
-        let ok = store.close_task(&id, None).await.unwrap();
-        assert!(!ok);
+        task.complete(0, None).unwrap();
+        store.tasks.update(&mut task).await.unwrap();
 
-        let task = store
-            .get_task_by_prefix(id.as_str())
-            .await
-            .unwrap()
-            .unwrap();
+        let closed = task.close(None).unwrap();
+        assert!(!closed);
         assert_eq!(task.status, TaskStatus::Completed);
     }
 
     #[tokio::test]
     async fn list_active_excludes_non_running() {
         let store = test_store().await;
-        let _id1 = insert_running_task(&store, "active").await;
-        let id2 = insert_running_task(&store, "done").await;
-        store.complete_task(&id2, 0, None).await.unwrap();
-        let id3 = insert_running_task(&store, "closed").await;
-        store.close_task(&id3, None).await.unwrap();
+        let _task1 = create_running_task(&store, "active").await;
+        let mut task2 = create_running_task(&store, "done").await;
+        task2.complete(0, None).unwrap();
+        store.tasks.update(&mut task2).await.unwrap();
+        let mut task3 = create_running_task(&store, "closed").await;
+        task3.close(None).unwrap();
+        store.tasks.update(&mut task3).await.unwrap();
 
-        let active = store.list_active_tasks().await.unwrap();
+        let active = store.tasks.list_active().await.unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].name, "active");
 
-        let all = store.list_tasks().await.unwrap();
+        let all = store.tasks.list_all().await.unwrap();
         assert_eq!(all.len(), 3);
     }
 
     #[tokio::test]
     async fn insert_and_list_messages() {
         let store = test_store().await;
-        let id = insert_running_task(&store, "t1").await;
-        let chat = ChatId::Task(id);
+        let task = create_running_task(&store, "t1").await;
+        let chat = ChatId::Task(task.id);
 
         store
             .insert_message(&chat, MessageRole::System, "initial prompt")
@@ -467,7 +556,7 @@ mod tests {
     #[tokio::test]
     async fn list_messages_empty_for_unknown_task() {
         let store = test_store().await;
-        let chat = ChatId::Task(TaskId::generate());
+        let chat = ChatId::Task(TaskId::new());
         let messages = store.list_messages(&chat).await.unwrap();
         assert!(messages.is_empty());
     }
@@ -475,8 +564,8 @@ mod tests {
     #[tokio::test]
     async fn messages_ordered_by_created_at() {
         let store = test_store().await;
-        let id = insert_running_task(&store, "t1").await;
-        let chat = ChatId::Task(id);
+        let task = create_running_task(&store, "t1").await;
+        let chat = ChatId::Task(task.id);
 
         store
             .insert_message(&chat, MessageRole::System, "first")
@@ -502,7 +591,7 @@ mod tests {
     #[tokio::test]
     async fn insert_and_get_project_by_name() {
         let store = test_store().await;
-        let pid = ProjectId::generate();
+        let pid = ProjectId::new();
         store
             .insert_project(&pid, "my-project", "a description")
             .await
@@ -535,9 +624,9 @@ mod tests {
     #[tokio::test]
     async fn list_projects_ordered_by_created_at() {
         let store = test_store().await;
-        let p1 = ProjectId::generate();
-        let p2 = ProjectId::generate();
-        let p3 = ProjectId::generate();
+        let p1 = ProjectId::new();
+        let p2 = ProjectId::new();
+        let p3 = ProjectId::new();
         store.insert_project(&p1, "alpha", "first").await.unwrap();
         store.insert_project(&p2, "beta", "second").await.unwrap();
         store.insert_project(&p3, "gamma", "third").await.unwrap();
@@ -554,8 +643,8 @@ mod tests {
     #[tokio::test]
     async fn insert_project_rejects_duplicate_name() {
         let store = test_store().await;
-        let p1 = ProjectId::generate();
-        let p2 = ProjectId::generate();
+        let p1 = ProjectId::new();
+        let p2 = ProjectId::new();
         store.insert_project(&p1, "dup", "first").await.unwrap();
         let err = store.insert_project(&p2, "dup", "second").await;
         assert!(err.is_err());
@@ -564,7 +653,7 @@ mod tests {
     #[tokio::test]
     async fn delete_project_removes_it() {
         let store = test_store().await;
-        let pid = ProjectId::generate();
+        let pid = ProjectId::new();
         store.insert_project(&pid, "doomed", "bye").await.unwrap();
         assert!(store.get_project_by_name("doomed").await.unwrap().is_some());
 
@@ -573,42 +662,16 @@ mod tests {
         assert!(store.list_projects().await.unwrap().is_empty());
     }
 
-    // -- list_visible_tasks_for_project tests --
-
-    async fn insert_task_with_project(
-        store: &Store,
-        name: &str,
-        project_id: Option<&ProjectId>,
-    ) -> TaskId {
-        let id = TaskId::generate();
-        let task = Task {
-            id: id.clone(),
-            name: TaskName::from(name.to_string()),
-            skill_name: "noop".to_string(),
-            params_json: "{}".to_string(),
-            status: TaskStatus::Running,
-            tmux_pane: Some(PaneId::from("%1".to_string())),
-            tmux_window: Some(WindowId::from("@1".to_string())),
-            work_dir: None,
-            session_id: None,
-            started_at: Utc::now(),
-            completed_at: None,
-            exit_code: None,
-            output: None,
-            project_id: project_id.cloned(),
-        };
-        store.insert_task(&task).await.unwrap();
-        id
-    }
+    // -- list_visible_for_project tests --
 
     #[tokio::test]
     async fn visible_tasks_null_project_returns_only_unscoped() {
         let store = test_store().await;
-        let proj = ProjectId::generate();
-        insert_task_with_project(&store, "no-project", None).await;
-        insert_task_with_project(&store, "has-project", Some(&proj)).await;
+        let proj = ProjectId::new();
+        create_task_with_project(&store, "no-project", None).await;
+        create_task_with_project(&store, "has-project", Some(&proj)).await;
 
-        let visible = store.list_visible_tasks_for_project(None).await.unwrap();
+        let visible = store.tasks.list_visible_for_project(None).await.unwrap();
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].name, "no-project");
     }
@@ -616,14 +679,15 @@ mod tests {
     #[tokio::test]
     async fn visible_tasks_with_project_returns_only_matching() {
         let store = test_store().await;
-        let proj_a = ProjectId::generate();
-        let proj_b = ProjectId::generate();
-        insert_task_with_project(&store, "no-project", None).await;
-        insert_task_with_project(&store, "proj-a-task", Some(&proj_a)).await;
-        insert_task_with_project(&store, "proj-b-task", Some(&proj_b)).await;
+        let proj_a = ProjectId::new();
+        let proj_b = ProjectId::new();
+        create_task_with_project(&store, "no-project", None).await;
+        create_task_with_project(&store, "proj-a-task", Some(&proj_a)).await;
+        create_task_with_project(&store, "proj-b-task", Some(&proj_b)).await;
 
         let visible = store
-            .list_visible_tasks_for_project(Some(&proj_a))
+            .tasks
+            .list_visible_for_project(Some(&proj_a))
             .await
             .unwrap();
         assert_eq!(visible.len(), 1);
@@ -633,11 +697,12 @@ mod tests {
     #[tokio::test]
     async fn visible_tasks_running_sorted_before_completed() {
         let store = test_store().await;
-        let id1 = insert_task_with_project(&store, "completed-task", None).await;
-        store.complete_task(&id1, 0, None).await.unwrap();
-        insert_task_with_project(&store, "running-task", None).await;
+        let mut task1 = create_task_with_project(&store, "completed-task", None).await;
+        task1.complete(0, None).unwrap();
+        store.tasks.update(&mut task1).await.unwrap();
+        create_task_with_project(&store, "running-task", None).await;
 
-        let visible = store.list_visible_tasks_for_project(None).await.unwrap();
+        let visible = store.tasks.list_visible_for_project(None).await.unwrap();
         assert_eq!(visible.len(), 2);
         // Running tasks should come first
         assert_eq!(visible[0].name, "running-task");
@@ -649,12 +714,13 @@ mod tests {
     #[tokio::test]
     async fn visible_tasks_empty_for_unknown_project() {
         let store = test_store().await;
-        let proj = ProjectId::generate();
-        insert_task_with_project(&store, "task", Some(&proj)).await;
+        let proj = ProjectId::new();
+        create_task_with_project(&store, "task", Some(&proj)).await;
 
-        let unknown = ProjectId::generate();
+        let unknown = ProjectId::new();
         let visible = store
-            .list_visible_tasks_for_project(Some(&unknown))
+            .tasks
+            .list_visible_for_project(Some(&unknown))
             .await
             .unwrap();
         assert!(visible.is_empty());
