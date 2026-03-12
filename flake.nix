@@ -33,14 +33,22 @@
         };
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
-        src = craneLib.cleanCargoSource ./.;
+        sqlxFilter = path: _type: builtins.match ".*migrations/.*\\.sql$" path != null;
+        src = pkgs.lib.cleanSourceWith {
+          src = craneLib.path ./.;
+          filter = path: type:
+            (sqlxFilter path type) || (craneLib.filterCargoSources path type);
+        };
 
         commonArgs = {
           inherit src;
           strictDeps = true;
-          nativeBuildInputs = [ pkgs.pkg-config ]
+          buildInputs = [ pkgs.sqlite ]
             ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
               pkgs.libiconv
+            ];
+          nativeBuildInputs = [ pkgs.pkg-config ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
               pkgs.darwin.cctools
             ];
         };
