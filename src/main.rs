@@ -112,14 +112,11 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn cmd_dash<R: Runtime + Send + Sync + 'static>(
-    mut app: ClatApp<R>,
+    app: ClatApp<R>,
     resume: Option<&str>,
     caffeinate: bool,
 ) -> anyhow::Result<()> {
-    // Initialize JWT signer for MCP authentication.
-    let jwt_signer = crate::jwt::JwtSigner::load_or_create(&app.data_dir().join("jwt-secret"))?;
-    app.set_jwt_signer(jwt_signer.clone());
-
+    let jwt_signer = app.jwt_signer().clone();
     let app = Arc::new(app);
     let project_root = app.project_root().to_path_buf();
 

@@ -88,7 +88,7 @@ pub struct ClatApp<R: Runtime> {
     runtime: R,
     paths: Paths,
     skip_permissions: bool,
-    jwt_signer: Option<JwtSigner>,
+    jwt_signer: JwtSigner,
 }
 
 impl<R: Runtime> ClatApp<R> {
@@ -101,28 +101,25 @@ impl<R: Runtime> ClatApp<R> {
         // inherit the dashboard's --dangerously-skip-permissions.
         let skip_permissions =
             skip_permissions || crate::permission::read_skip_permissions_breadcrumb(&paths.root);
+        let jwt_signer = JwtSigner::load_or_create(&paths.data_dir.join("jwt-secret"))?;
         Ok(Self {
             store,
             runtime,
             paths,
             skip_permissions,
-            jwt_signer: None,
+            jwt_signer,
         })
-    }
-
-    /// Set the JWT signer (called by dashboard startup after creating the signer).
-    pub fn set_jwt_signer(&mut self, signer: JwtSigner) {
-        self.jwt_signer = Some(signer);
     }
 
     #[cfg(test)]
     pub fn new(store: Store, runtime: R, paths: Paths) -> Self {
+        let jwt_signer = JwtSigner::load_or_create(&paths.data_dir.join("jwt-secret")).unwrap();
         Self {
             store,
             runtime,
             paths,
             skip_permissions: false,
-            jwt_signer: None,
+            jwt_signer,
         }
     }
 
@@ -134,8 +131,8 @@ impl<R: Runtime> ClatApp<R> {
         &self.paths.root
     }
 
-    pub fn data_dir(&self) -> &std::path::Path {
-        &self.paths.data_dir
+    pub fn jwt_signer(&self) -> &JwtSigner {
+        &self.jwt_signer
     }
 
     #[cfg(test)]
@@ -199,16 +196,14 @@ impl<R: Runtime> ClatApp<R> {
             bash_patterns: &skill.agent.allowed_bash_patterns,
         };
         // Sign a JWT for this task so the MCP server can identify the caller.
-        let jwt_token = if let Some(signer) = &self.jwt_signer {
+        let jwt_token = {
             let claims = crate::jwt::AgentClaims {
                 sub: id.as_str().to_string(),
                 role: req.skill_name.to_string(),
                 project: req.project.clone(),
                 iat: chrono::Utc::now().timestamp() as u64,
             };
-            Some(signer.sign(&claims)?)
-        } else {
-            None
+            self.jwt_signer.sign(&claims)?
         };
 
         let work_dir = match req.work_dir_mode {
@@ -220,7 +215,7 @@ impl<R: Runtime> ClatApp<R> {
                     &perms,
                     branch,
                     &self.paths.root,
-                    jwt_token.as_deref(),
+                    Some(&jwt_token),
                 )?
             }
             WorkDirMode::Scratch => {
@@ -230,17 +225,13 @@ impl<R: Runtime> ClatApp<R> {
                     &self.paths.root,
                     &scratch_dir,
                     &perms,
-                    jwt_token.as_deref(),
+                    Some(&jwt_token),
                 )?;
                 scratch_dir
             }
             WorkDirMode::Existing { dir } => {
-                self.runtime.setup_dir_config(
-                    &self.paths.root,
-                    dir,
-                    &perms,
-                    jwt_token.as_deref(),
-                )?;
+                self.runtime
+                    .setup_dir_config(&self.paths.root, dir, &perms, Some(&jwt_token))?;
                 dir.to_path_buf()
             }
         };
@@ -373,19 +364,17 @@ impl<R: Runtime> ClatApp<R> {
         if !work_dir.is_dir() {
             // Worktree was removed (e.g. after merging and cleaning up).
             // Recreate it so the agent can resume. Re-sign a fresh JWT.
-            let jwt_token = if let Some(signer) = &self.jwt_signer {
+            let jwt_token = {
                 let claims = crate::jwt::AgentClaims {
                     sub: task.id.as_str().to_string(),
                     role: task.skill_name.clone(),
                     project: task.project_id.as_ref().map(|p| p.as_str().to_string()),
                     iat: chrono::Utc::now().timestamp() as u64,
                 };
-                Some(signer.sign(&claims)?)
-            } else {
-                None
+                self.jwt_signer.sign(&claims)?
             };
             self.runtime
-                .recreate_worktree(&self.paths.root, work_dir, jwt_token.as_deref())?;
+                .recreate_worktree(&self.paths.root, work_dir, Some(&jwt_token))?;
         }
 
         let session_id = task.session_id.as_ref().map(|s| s.as_str()).unwrap_or("");
