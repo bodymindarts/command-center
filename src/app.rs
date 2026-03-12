@@ -232,6 +232,7 @@ impl<R: Runtime> ClatApp<R> {
         let session_id = task.session_id.as_ref().expect("session_id set in new()");
         let result = self.runtime.launch_agent(LaunchConfig {
             task_name: req.task_name,
+            task_id_short: task.id.short(),
             session_id: session_id.as_str(),
             system_prompt: system_prompt.as_deref(),
             work_dir: &work_dir,
@@ -329,13 +330,15 @@ impl<R: Runtime> ClatApp<R> {
         }
 
         let session_id = task.session_id.as_ref().map(|s| s.as_str()).unwrap_or("");
+        let id_short = task.id.short();
         let result = if session_id.is_empty() {
             // Legacy task without session_id — fall back to re-running launch.sh
             // which still exists in the worktree's .claude/ directory.
-            self.runtime.relaunch_agent(task.name.as_str(), work_dir)?
+            self.runtime
+                .relaunch_agent(task.name.as_str(), id_short, work_dir)?
         } else {
             self.runtime
-                .resume_agent(task.name.as_str(), session_id, work_dir)?
+                .resume_agent(task.name.as_str(), id_short, session_id, work_dir)?
         };
 
         self.store
@@ -704,6 +707,7 @@ mod tests {
         fn resume_agent(
             &self,
             task_name: &str,
+            _task_id_short: &str,
             _session_id: &str,
             work_dir: &Path,
         ) -> anyhow::Result<SpawnResult> {
@@ -717,7 +721,12 @@ mod tests {
             })
         }
 
-        fn relaunch_agent(&self, task_name: &str, work_dir: &Path) -> anyhow::Result<SpawnResult> {
+        fn relaunch_agent(
+            &self,
+            task_name: &str,
+            _task_id_short: &str,
+            work_dir: &Path,
+        ) -> anyhow::Result<SpawnResult> {
             self.calls.borrow_mut().push(Call::ResumeAgent {
                 task_name: task_name.to_string(),
                 work_dir: work_dir.to_path_buf(),

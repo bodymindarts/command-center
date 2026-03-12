@@ -14,6 +14,7 @@ pub struct SpawnResult {
 
 pub struct LaunchConfig<'a> {
     pub task_name: &'a str,
+    pub task_id_short: &'a str,
     pub session_id: &'a str,
     pub system_prompt: Option<&'a str>,
     pub work_dir: &'a Path,
@@ -60,10 +61,16 @@ pub trait Runtime {
     fn resume_agent(
         &self,
         task_name: &str,
+        task_id_short: &str,
         session_id: &str,
         work_dir: &Path,
     ) -> anyhow::Result<SpawnResult>;
-    fn relaunch_agent(&self, task_name: &str, work_dir: &Path) -> anyhow::Result<SpawnResult>;
+    fn relaunch_agent(
+        &self,
+        task_name: &str,
+        task_id_short: &str,
+        work_dir: &Path,
+    ) -> anyhow::Result<SpawnResult>;
     fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> anyhow::Result<()>;
     fn capture_pane_output(&self, pane_id: &str) -> anyhow::Result<String>;
     fn remove_worktree(&self, path: &Path) -> anyhow::Result<()>;
@@ -99,11 +106,12 @@ impl TmuxRuntime {
     fn launch_agent_session(
         &self,
         task_name: &str,
+        task_id_short: &str,
         work_dir: &Path,
         claude_cmd: &str,
     ) -> anyhow::Result<SpawnResult> {
         let work_dir_str = work_dir.display().to_string();
-        let session_name = sanitize_tmux_session_name(task_name);
+        let session_name = sanitize_tmux_session_name(task_name, task_id_short);
 
         // Window 0: nvim (created with the session)
         self.tmux_cmd(&[
@@ -362,23 +370,34 @@ impl Runtime for TmuxRuntime {
             std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
         }
 
-        self.launch_agent_session(config.task_name, config.work_dir, "sh .claude/launch.sh")
+        self.launch_agent_session(
+            config.task_name,
+            config.task_id_short,
+            config.work_dir,
+            "sh .claude/launch.sh",
+        )
     }
 
     fn resume_agent(
         &self,
         task_name: &str,
+        task_id_short: &str,
         session_id: &str,
         work_dir: &Path,
     ) -> anyhow::Result<SpawnResult> {
         let claude_bin = self.resolve_binary("claude")?;
         let claude_cmd = format!("env -u CLAUDECODE {claude_bin} --resume {session_id}");
 
-        self.launch_agent_session(task_name, work_dir, &claude_cmd)
+        self.launch_agent_session(task_name, task_id_short, work_dir, &claude_cmd)
     }
 
-    fn relaunch_agent(&self, task_name: &str, work_dir: &Path) -> anyhow::Result<SpawnResult> {
-        self.launch_agent_session(task_name, work_dir, "sh .claude/launch.sh")
+    fn relaunch_agent(
+        &self,
+        task_name: &str,
+        task_id_short: &str,
+        work_dir: &Path,
+    ) -> anyhow::Result<SpawnResult> {
+        self.launch_agent_session(task_name, task_id_short, work_dir, "sh .claude/launch.sh")
     }
 
     fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> anyhow::Result<()> {
@@ -733,15 +752,15 @@ pub fn idle_panes(pane_ids: &[&PaneId]) -> HashSet<PaneId> {
     set
 }
 
-/// Sanitize a task name into a valid tmux session name.
-/// Tmux session names cannot contain dots or colons. We prefix with "cc:" to
-/// namespace our sessions, replacing dots/colons in the task name with dashes.
-fn sanitize_tmux_session_name(task_name: &str) -> String {
+/// Sanitize a task name into a valid, unique tmux session name.
+/// Tmux session names cannot contain dots or colons. We include the task ID
+/// short hash to guarantee uniqueness even when multiple tasks share a name.
+fn sanitize_tmux_session_name(task_name: &str, task_id_short: &str) -> String {
     let clean: String = task_name
         .chars()
         .map(|c| if c == '.' || c == ':' { '-' } else { c })
         .collect();
-    format!("cc-{clean}")
+    format!("cc-{clean}-{task_id_short}")
 }
 
 /// Free function for workspace bootstrapping (cmd_start), not a task operation.
