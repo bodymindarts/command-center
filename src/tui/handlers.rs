@@ -162,7 +162,7 @@ pub(super) fn handle_paste(state: &mut ScreenState, text: String) {
 // ── Global key handler ──────────────────────────────────────────────
 
 /// Handle global key shortcuts. Returns true if the key was consumed.
-pub(super) fn handle_global_keys<R: Runtime>(
+pub(super) async fn handle_global_keys<R: Runtime>(
     state: &mut ScreenState,
     key: KeyEvent,
     app: &ClatApp<R>,
@@ -176,7 +176,7 @@ pub(super) fn handle_global_keys<R: Runtime>(
     }
 
     if kb.cycle_permissions.matches(&key) {
-        return handle_cycle_permissions(state, app);
+        return handle_cycle_permissions(state, app).await;
     }
 
     // Permission keys — global so they work regardless of focus (ChatInput, ChatHistory, TaskList)
@@ -230,21 +230,21 @@ pub(super) fn handle_global_keys<R: Runtime>(
     }
 
     if kb.focus_exo.matches(&key) {
-        if let Ok(tasks) = app.list_visible(None) {
+        if let Ok(tasks) = app.list_visible(None).await {
             state.switch_to_project(None, tasks, None);
         }
         return true;
     }
 
     if kb.cycle_projects.matches(&key) {
-        handle_goto_project(state, app);
+        handle_goto_project(state, app).await;
         return true;
     }
 
     false
 }
 
-fn handle_cycle_permissions<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) -> bool {
+async fn handle_cycle_permissions<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) -> bool {
     let names = state.permissions.task_names_with_pending();
     if !names.is_empty() {
         let current = state.focused_perm_key();
@@ -257,7 +257,7 @@ fn handle_cycle_permissions<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R
         if name == EXO_PERM_KEY {
             // Navigate to ExO view
             if state.active_project_id.is_some() {
-                if let Ok(tasks) = app.list_visible(None) {
+                if let Ok(tasks) = app.list_visible(None).await {
                     state.switch_to_project(None, tasks, None);
                 }
             } else {
@@ -276,7 +276,7 @@ fn handle_cycle_permissions<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R
             // Task is in a different project — switch to it
             let target_pid = state.global_task_project(&name).cloned().flatten();
             if let Some(pid) = target_pid {
-                if let Ok(projects) = app.list_projects() {
+                if let Ok(projects) = app.list_projects().await {
                     state.project_list.set_projects(projects);
                 }
                 let proj_name = state
@@ -288,10 +288,10 @@ fn handle_cycle_permissions<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R
                     .unwrap_or_else(|| {
                         crate::primitives::ProjectName::from(pid.as_str().to_string())
                     });
-                if let Ok(tasks) = app.list_visible(Some(&pid)) {
+                if let Ok(tasks) = app.list_visible(Some(&pid)).await {
                     state.switch_to_project(Some((proj_name, pid.clone())), tasks, Some(&name));
                 }
-            } else if let Ok(tasks) = app.list_visible(None) {
+            } else if let Ok(tasks) = app.list_visible(None).await {
                 state.switch_to_project(None, tasks, Some(&name));
             }
         }
@@ -324,13 +324,13 @@ fn handle_askuser_select(
     }
 }
 
-fn handle_goto_project<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
+async fn handle_goto_project<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
     // If in a project's task detail, go back to PM chat
     if state.active_state().task_list.is_detail_visible() && state.active_project_id.is_some() {
         state.close_task_detail();
     // If in ExO view, restore last active project (or first project)
     } else if state.active_project_id.is_none() {
-        if let Ok(projects) = app.list_projects() {
+        if let Ok(projects) = app.list_projects().await {
             state.project_list.set_projects(projects);
         }
         // Try last_project_id first, then fall back to first project
@@ -352,7 +352,7 @@ fn handle_goto_project<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
                     .map(|p| (p.name.clone(), p.id.clone()))
             });
         if let Some((name, id)) = target
-            && let Ok(tasks) = app.list_visible(Some(&id))
+            && let Ok(tasks) = app.list_visible(Some(&id)).await
         {
             state.switch_to_project(Some((name, id.clone())), tasks, None);
         }
@@ -360,7 +360,7 @@ fn handle_goto_project<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
     } else if state.active_project_id.is_some()
         && !state.active_state().task_list.is_detail_visible()
     {
-        if let Ok(projects) = app.list_projects() {
+        if let Ok(projects) = app.list_projects().await {
             state.project_list.set_projects(projects);
         }
         let cur_idx = state.active_project_id.as_ref().and_then(|pid| {
@@ -375,7 +375,7 @@ fn handle_goto_project<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
             let next = &state.project_list.projects()[next_idx];
             let next_id = next.id.clone();
             let next_name = next.name.clone();
-            if let Ok(tasks) = app.list_visible(Some(&next_id)) {
+            if let Ok(tasks) = app.list_visible(Some(&next_id)).await {
                 state.switch_to_project(Some((next_name, next_id.clone())), tasks, None);
             }
         }
@@ -384,7 +384,7 @@ fn handle_goto_project<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
 
 // ── Per-focus key handlers ──────────────────────────────────────────
 
-pub(super) fn handle_focus_key<R: Runtime>(
+pub(super) async fn handle_focus_key<R: Runtime>(
     state: &mut ScreenState,
     key: KeyEvent,
     app: &ClatApp<R>,
@@ -392,24 +392,30 @@ pub(super) fn handle_focus_key<R: Runtime>(
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
 ) {
     match state.current_focus() {
-        Focus::TaskList => handle_task_list_key(state, key, app),
+        Focus::TaskList => handle_task_list_key(state, key, app).await,
         Focus::ListSearch => handle_task_search_key(state, key),
-        Focus::ProjectList => handle_project_list_key(state, key, app),
+        Focus::ProjectList => handle_project_list_key(state, key, app).await,
         Focus::ChatInput if state.active_state().task_list.is_detail_visible() => {
-            handle_task_chat_input_key(state, key, app)
+            handle_task_chat_input_key(state, key, app).await
         }
-        Focus::ChatInput => handle_chat_input_key(state, key, app, exo_session, project_contexts),
+        Focus::ChatInput => {
+            handle_chat_input_key(state, key, app, exo_session, project_contexts).await
+        }
         Focus::ChatHistory => handle_chat_history_key(state, key),
-        Focus::ConfirmDelete(_) => handle_confirm_delete_key(state, key, app),
-        Focus::ConfirmCloseTask(_) => handle_confirm_close_task_key(state, key, app),
-        Focus::ConfirmDeleteProject(_) => handle_confirm_delete_project_key(state, key, app),
+        Focus::ConfirmDelete(_) => handle_confirm_delete_key(state, key, app).await,
+        Focus::ConfirmCloseTask(_) => handle_confirm_close_task_key(state, key, app).await,
+        Focus::ConfirmDeleteProject(_) => handle_confirm_delete_project_key(state, key, app).await,
         Focus::ConfirmCloseProject => {
-            handle_confirm_close_project_key(state, key, app, project_contexts)
+            handle_confirm_close_project_key(state, key, app, project_contexts).await
         }
     }
 }
 
-fn handle_task_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app: &ClatApp<R>) {
+async fn handle_task_list_key<R: Runtime>(
+    state: &mut ScreenState,
+    key: KeyEvent,
+    app: &ClatApp<R>,
+) {
     let kb = &state.keybindings.task_list;
     if kb.close_detail.matches(&key) {
         state.close_task_detail();
@@ -422,13 +428,13 @@ fn handle_task_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app:
     } else if kb.scroll_up.matches(&key) {
         state.scroll_up_tasks();
     } else if kb.goto_window.matches(&key) {
-        goto_task_window(state, app);
+        goto_task_window(state, app).await;
     } else if kb.open_detail.matches(&key) {
         state.open_selected_task();
     } else if kb.close_task.matches(&key) {
         state.confirm_close_selected_task();
     } else if kb.reopen_task.matches(&key) {
-        reopen_task(state, app);
+        reopen_task(state, app).await;
     } else if kb.delete_task.matches(&key) {
         state.confirm_delete_selected_task();
     } else if kb.search.matches(&key) {
@@ -436,7 +442,7 @@ fn handle_task_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app:
     } else if kb.focus_chat.matches(&key) {
         state.focus_left();
     } else if kb.show_projects.matches(&key) {
-        state.show_project_list(app.list_projects().unwrap_or_default());
+        state.show_project_list(app.list_projects().await.unwrap_or_default());
     }
 }
 
@@ -455,7 +461,11 @@ fn handle_task_search_key(state: &mut ScreenState, key: KeyEvent) {
     }
 }
 
-fn handle_project_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app: &ClatApp<R>) {
+async fn handle_project_list_key<R: Runtime>(
+    state: &mut ScreenState,
+    key: KeyEvent,
+    app: &ClatApp<R>,
+) {
     let kb = &state.keybindings.project_list;
     if kb.navigate_down.matches(&key) {
         state.next_project();
@@ -467,7 +477,7 @@ fn handle_project_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, a
         if let Some(project) = state.selected_project() {
             let project_id = project.id.clone();
             let project_name = project.name.clone();
-            if let Ok(tasks) = app.list_visible(Some(&project_id)) {
+            if let Ok(tasks) = app.list_visible(Some(&project_id)).await {
                 state.switch_to_project(Some((project_name, project_id.clone())), tasks, None);
             }
         }
@@ -481,7 +491,7 @@ fn handle_project_list_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, a
     }
 }
 
-fn handle_task_chat_input_key<R: Runtime>(
+async fn handle_task_chat_input_key<R: Runtime>(
     state: &mut ScreenState,
     key: KeyEvent,
     app: &ClatApp<R>,
@@ -505,7 +515,7 @@ fn handle_task_chat_input_key<R: Runtime>(
     } else if kb.focus_tasks.matches(&key) {
         state.focus_on_tasks();
     } else if kb.goto_window.matches(&key) {
-        goto_task_window(state, app);
+        goto_task_window(state, app).await;
     } else if kb.send.matches(&key) {
         let active = state.active_state_mut();
         if !active.input.is_empty() {
@@ -513,7 +523,7 @@ fn handle_task_chat_input_key<R: Runtime>(
             if let Some(task) = active.task_list.selected_task() {
                 let task_id = task.id.as_str().to_string();
                 let pane = task.tmux_pane.clone();
-                match app.send(&task_id, &msg) {
+                match app.send(&task_id, &msg).await {
                     Ok(_) => {
                         if let Some(pane) = pane {
                             active.task_list.mark_pane_active(pane);
@@ -530,7 +540,7 @@ fn handle_task_chat_input_key<R: Runtime>(
     }
 }
 
-fn handle_chat_input_key<R: Runtime>(
+async fn handle_chat_input_key<R: Runtime>(
     state: &mut ScreenState,
     key: KeyEvent,
     app: &ClatApp<R>,
@@ -551,13 +561,13 @@ fn handle_chat_input_key<R: Runtime>(
     } else if kb.focus_task_list.matches(&key) {
         state.focus_task_list_with_detail();
     } else if kb.send.matches(&key) {
-        handle_chat_enter(state, app, exo_session, project_contexts);
+        handle_chat_enter(state, app, exo_session, project_contexts).await;
     } else {
         handle_input_editing(&mut state.active_state_mut().input, &key);
     }
 }
 
-fn handle_chat_enter<R: Runtime>(
+async fn handle_chat_enter<R: Runtime>(
     state: &mut ScreenState,
     app: &ClatApp<R>,
     exo_session: &mut AssistantSession,
@@ -581,15 +591,15 @@ fn handle_chat_enter<R: Runtime>(
                 && matches!(msg.role, MessageRole::Assistant)
                 && msg.has_text()
             {
-                let _ = app.insert_session_message(
-                    Some(&pid),
-                    MessageRole::Assistant,
-                    &msg.text_content(),
-                );
+                let _ = app
+                    .insert_session_message(Some(&pid), MessageRole::Assistant, &msg.text_content())
+                    .await;
             }
         }
         let msg = active.input.take();
-        let _ = app.insert_session_message(Some(&pid), MessageRole::User, &msg);
+        let _ = app
+            .insert_session_message(Some(&pid), MessageRole::User, &msg)
+            .await;
         chat.add_user_message(msg.clone());
         ctx.session.send_message(&msg, chat.session_id.as_deref());
         active.chat_view.reset_scroll();
@@ -602,12 +612,15 @@ fn handle_chat_enter<R: Runtime>(
                 && matches!(msg.role, MessageRole::Assistant)
                 && msg.has_text()
             {
-                let _ =
-                    app.insert_session_message(None, MessageRole::Assistant, &msg.text_content());
+                let _ = app
+                    .insert_session_message(None, MessageRole::Assistant, &msg.text_content())
+                    .await;
             }
         }
         let msg = active.input.take();
-        let _ = app.insert_session_message(None, MessageRole::User, &msg);
+        let _ = app
+            .insert_session_message(None, MessageRole::User, &msg)
+            .await;
         chat.add_user_message(msg.clone());
         exo_session.send_message(&msg, chat.session_id.as_deref());
         active.chat_view.reset_scroll();
@@ -627,15 +640,19 @@ fn handle_chat_history_key(state: &mut ScreenState, key: KeyEvent) {
     }
 }
 
-fn handle_confirm_delete_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent, app: &ClatApp<R>) {
+async fn handle_confirm_delete_key<R: Runtime>(
+    state: &mut ScreenState,
+    key: KeyEvent,
+    app: &ClatApp<R>,
+) {
     let task_id = match state.current_focus() {
         Focus::ConfirmDelete(id) => id.clone(),
         _ => return,
     };
     match key.code {
         KeyCode::Char('y') => {
-            let _ = app.delete(task_id.as_str());
-            if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()) {
+            let _ = app.delete(task_id.as_str()).await;
+            if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()).await {
                 state.refresh_tasks(tasks);
             }
             state.focus_on_tasks();
@@ -647,7 +664,7 @@ fn handle_confirm_delete_key<R: Runtime>(state: &mut ScreenState, key: KeyEvent,
     }
 }
 
-fn handle_confirm_close_task_key<R: Runtime>(
+async fn handle_confirm_close_task_key<R: Runtime>(
     state: &mut ScreenState,
     key: KeyEvent,
     app: &ClatApp<R>,
@@ -658,8 +675,8 @@ fn handle_confirm_close_task_key<R: Runtime>(
     };
     match key.code {
         KeyCode::Char('y') => {
-            let _ = app.close(task_id.as_str());
-            if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()) {
+            let _ = app.close(task_id.as_str()).await;
+            if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()).await {
                 state.refresh_tasks(tasks);
             }
             state.close_task_detail();
@@ -676,7 +693,7 @@ fn handle_confirm_close_task_key<R: Runtime>(
     }
 }
 
-fn handle_confirm_delete_project_key<R: Runtime>(
+async fn handle_confirm_delete_project_key<R: Runtime>(
     state: &mut ScreenState,
     key: KeyEvent,
     app: &ClatApp<R>,
@@ -687,8 +704,8 @@ fn handle_confirm_delete_project_key<R: Runtime>(
     };
     match key.code {
         KeyCode::Char('y') => {
-            let _ = app.delete_project(project_name.as_str());
-            if let Ok(projects) = app.list_projects() {
+            let _ = app.delete_project(project_name.as_str()).await;
+            if let Ok(projects) = app.list_projects().await {
                 state.refresh_projects(projects);
             }
             state.set_focus(Focus::ProjectList);
@@ -700,7 +717,7 @@ fn handle_confirm_delete_project_key<R: Runtime>(
     }
 }
 
-fn handle_confirm_close_project_key<R: Runtime>(
+async fn handle_confirm_close_project_key<R: Runtime>(
     state: &mut ScreenState,
     key: KeyEvent,
     app: &ClatApp<R>,
@@ -709,7 +726,7 @@ fn handle_confirm_close_project_key<R: Runtime>(
     match key.code {
         KeyCode::Char('y') => {
             let closed_pid = state.active_project_id.clone();
-            if let Ok(tasks) = app.list_visible(None) {
+            if let Ok(tasks) = app.list_visible(None).await {
                 state.switch_to_project(None, tasks, None);
                 state.focus_on_tasks();
             }
@@ -725,7 +742,7 @@ fn handle_confirm_close_project_key<R: Runtime>(
 }
 
 /// Shared: go to the selected task's tmux window (or reopen if closed).
-fn goto_task_window<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
+async fn goto_task_window<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
     if let Some(task) = state.selected_task() {
         if task.status.is_running() {
             if let Some(window_id) = &task.tmux_window {
@@ -733,9 +750,9 @@ fn goto_task_window<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
             }
         } else {
             let id = task.id.as_str().to_string();
-            match app.reopen(&id) {
+            match app.reopen(&id).await {
                 Ok(window_id) => {
-                    if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()) {
+                    if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()).await {
                         state.refresh_tasks(tasks);
                     }
                     app.goto_window(&window_id);
@@ -749,14 +766,14 @@ fn goto_task_window<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
 }
 
 /// Shared: reopen a closed task.
-fn reopen_task<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
+async fn reopen_task<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
     if let Some(task) = state.selected_task()
         && !task.status.is_running()
     {
         let id = task.id.as_str().to_string();
-        match app.reopen(&id) {
+        match app.reopen(&id).await {
             Ok(_) => {
-                if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()) {
+                if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()).await {
                     state.refresh_tasks(tasks);
                 }
             }
@@ -771,7 +788,7 @@ fn reopen_task<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
 
 /// Dispatch a single assistant event (from the shared channel) to the
 /// appropriate session handler based on the session key.
-pub(super) fn dispatch_assistant_event<R: Runtime>(
+pub(super) async fn dispatch_assistant_event<R: Runtime>(
     key: &SessionKey,
     event: AssistantEvent,
     state: &mut ScreenState,
@@ -791,7 +808,8 @@ pub(super) fn dispatch_assistant_event<R: Runtime>(
                 None,
                 tg_tx,
                 event,
-            );
+            )
+            .await;
         }
         SessionKey::Project(pid) => {
             let is_viewing = state.active_project_id.as_ref() == Some(pid);
@@ -806,13 +824,14 @@ pub(super) fn dispatch_assistant_event<R: Runtime>(
                     Some(pid),
                     tg_tx,
                     event,
-                );
+                )
+                .await;
             }
         }
     }
 }
 
-fn handle_session_event<R: Runtime>(
+async fn handle_session_event<R: Runtime>(
     app: &ClatApp<R>,
     ps: &mut super::state::ProjectState,
     is_viewing: bool,
@@ -854,11 +873,9 @@ fn handle_session_event<R: Runtime>(
                 && matches!(msg.role, MessageRole::Assistant)
                 && msg.has_text()
             {
-                let _ = app.insert_session_message(
-                    project_id,
-                    MessageRole::Assistant,
-                    &msg.text_content(),
-                );
+                let _ = app
+                    .insert_session_message(project_id, MessageRole::Assistant, &msg.text_content())
+                    .await;
             }
             if project_id.is_none()
                 && let Some(tx) = tg_tx
@@ -883,11 +900,9 @@ fn handle_session_event<R: Runtime>(
                 && matches!(msg.role, MessageRole::Assistant)
                 && msg.has_text()
             {
-                let _ = app.insert_session_message(
-                    project_id,
-                    MessageRole::Assistant,
-                    &msg.text_content(),
-                );
+                let _ = app
+                    .insert_session_message(project_id, MessageRole::Assistant, &msg.text_content())
+                    .await;
             }
         }
     }
@@ -901,7 +916,7 @@ pub(super) struct TgPermState {
 
 /// Handle a single hook event from the permission socket.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn dispatch_hook_event<R: Runtime>(
+pub(super) async fn dispatch_hook_event<R: Runtime>(
     state: &mut ScreenState,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
     app: &ClatApp<R>,
@@ -942,7 +957,7 @@ pub(super) fn dispatch_hook_event<R: Runtime>(
             drop(stream);
         }
         HookEvent::PmMessage { project, message } => {
-            handle_hook_pm_message(state, project_contexts, app, stream, &project, &message);
+            handle_hook_pm_message(state, project_contexts, app, stream, &project, &message).await;
         }
         HookEvent::Unknown(_) => {}
     }
@@ -990,7 +1005,7 @@ fn handle_hook_active(
     }
 }
 
-fn handle_hook_pm_message<R: Runtime>(
+async fn handle_hook_pm_message<R: Runtime>(
     state: &mut ScreenState,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
     app: &ClatApp<R>,
@@ -1000,7 +1015,7 @@ fn handle_hook_pm_message<R: Runtime>(
 ) {
     use std::io::Write;
 
-    let project = match app.resolve_project(project_name) {
+    let project = match app.resolve_project(project_name).await {
         Ok(p) => p,
         Err(_) => {
             let resp = serde_json::json!({"error": format!("unknown project '{project_name}'")});
@@ -1030,11 +1045,14 @@ fn handle_hook_pm_message<R: Runtime>(
             && matches!(msg.role, MessageRole::Assistant)
             && msg.has_text()
         {
-            let _ =
-                app.insert_session_message(Some(&pid), MessageRole::Assistant, &msg.text_content());
+            let _ = app
+                .insert_session_message(Some(&pid), MessageRole::Assistant, &msg.text_content())
+                .await;
         }
     }
-    let _ = app.insert_session_message(Some(&pid), MessageRole::User, message);
+    let _ = app
+        .insert_session_message(Some(&pid), MessageRole::User, message)
+        .await;
     chat.add_user_message(message.to_string());
     ctx.session
         .send_message(message, chat.session_id.as_deref());
@@ -1097,7 +1115,7 @@ fn handle_hook_permission(
 }
 
 /// Handle a single telegram inbound event.
-pub(super) fn dispatch_telegram_event<R: Runtime>(
+pub(super) async fn dispatch_telegram_event<R: Runtime>(
     state: &mut ScreenState,
     exo_session: &mut AssistantSession,
     app: &ClatApp<R>,
@@ -1152,30 +1170,30 @@ pub(super) fn dispatch_telegram_event<R: Runtime>(
                     && matches!(msg.role, MessageRole::Assistant)
                     && msg.has_text()
                 {
-                    let _ = app.insert_session_message(
-                        None,
-                        MessageRole::Assistant,
-                        &msg.text_content(),
-                    );
+                    let _ = app
+                        .insert_session_message(None, MessageRole::Assistant, &msg.text_content())
+                        .await;
                 }
             }
-            let _ = app.insert_session_message(None, MessageRole::User, &text);
+            let _ = app
+                .insert_session_message(None, MessageRole::User, &text)
+                .await;
             chat.add_user_message(text.clone());
             exo_session.send_message(&text, chat.session_id.as_deref());
         }
     }
 }
 
-pub(super) fn tick_refresh<R: Runtime>(
+pub(super) async fn tick_refresh<R: Runtime>(
     state: &mut ScreenState,
     app: &ClatApp<R>,
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
 ) {
-    if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()) {
+    if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()).await {
         state.refresh_tasks(tasks);
     }
     // Update global task→project mapping and drain stale permissions.
-    let all_active = app.list_active().unwrap_or_default();
+    let all_active = app.list_active().await.unwrap_or_default();
     let all_running_names: HashSet<TaskName> = all_active.iter().map(|t| t.name.clone()).collect();
     let projects_map = all_active
         .iter()
@@ -1197,7 +1215,7 @@ pub(super) fn tick_refresh<R: Runtime>(
         let chat = ChatId::Task(task.id.clone());
         let is_running = task.status.is_running();
         let pane = task.tmux_pane.clone();
-        if let Ok(messages) = app.messages(&chat) {
+        if let Ok(messages) = app.messages(&chat).await {
             active.task_list.set_selected_messages(messages);
         }
         if is_running {

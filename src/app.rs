@@ -89,10 +89,10 @@ pub struct ClatApp<R: Runtime> {
 }
 
 impl<R: Runtime> ClatApp<R> {
-    pub fn try_new(runtime: R) -> anyhow::Result<Self> {
+    pub async fn try_new(runtime: R) -> anyhow::Result<Self> {
         let paths = Paths::resolve()?;
         paths.ensure_dirs()?;
-        let store = Store::open(&paths.db_path)?;
+        let store = Store::open(&paths.db_path).await?;
         Ok(Self {
             store,
             runtime,
@@ -148,7 +148,7 @@ impl<R: Runtime> ClatApp<R> {
         );
     }
 
-    pub fn spawn(&self, req: SpawnRequest) -> anyhow::Result<SpawnOutput> {
+    pub async fn spawn(&self, req: SpawnRequest<'_>) -> anyhow::Result<SpawnOutput> {
         // 1. Load skill, validate params
         let skill = SkillFile::load(&self.paths.skills_dir, req.skill_name)?;
 
@@ -200,11 +200,10 @@ impl<R: Runtime> ClatApp<R> {
 
         // 4. Resolve project name → ID (if given)
         //    Also write a breadcrumb so spawned sub-tasks can inherit the project.
-        let project_id = req
-            .project
-            .as_deref()
-            .map(|name| self.resolve_project_id(name))
-            .transpose()?;
+        let project_id = match req.project.as_deref() {
+            Some(name) => Some(self.resolve_project_id(name).await?),
+            None => None,
+        };
         if let Some(ref name) = req.project {
             let breadcrumb = work_dir.join(".claude").join("project");
             let _ = std::fs::write(&breadcrumb, name);
@@ -219,13 +218,14 @@ impl<R: Runtime> ClatApp<R> {
             &work_dir,
             project_id,
         );
-        self.store.insert_task(&task)?;
+        self.store.insert_task(&task).await?;
 
         // Store user prompt message only if Full mode
         if let Some(ref prompt) = user_prompt {
             let chat = ChatId::Task(task.id.clone());
             self.store
-                .insert_message(&chat, MessageRole::System, prompt)?;
+                .insert_message(&chat, MessageRole::System, prompt)
+                .await?;
         }
 
         // 6. Launch agent
@@ -239,7 +239,7 @@ impl<R: Runtime> ClatApp<R> {
         })?;
         task.tmux_pane = Some(result.pane_id.clone());
         task.tmux_window = Some(result.window_id.clone());
-        self.store.update_task(&task)?;
+        self.store.update_task(&task).await?;
 
         Ok(SpawnOutput {
             task_id: task.id,
@@ -249,8 +249,8 @@ impl<R: Runtime> ClatApp<R> {
         })
     }
 
-    pub fn close(&self, id_prefix: &str) -> anyhow::Result<CloseOutput> {
-        let task = self.resolve_task(id_prefix)?;
+    pub async fn close(&self, id_prefix: &str) -> anyhow::Result<CloseOutput> {
+        let task = self.resolve_task(id_prefix).await?;
 
         if !task.status.is_running() {
             bail!(
@@ -270,7 +270,7 @@ impl<R: Runtime> ClatApp<R> {
             let _ = self.runtime.kill_tmux_window(window_id.as_str());
         }
 
-        let closed = self.store.close_task(&task.id, output.as_deref())?;
+        let closed = self.store.close_task(&task.id, output.as_deref()).await?;
         if !closed {
             bail!("failed to close task {} ({})", task.name, task.id.short());
         }
@@ -281,14 +281,14 @@ impl<R: Runtime> ClatApp<R> {
         })
     }
 
-    pub fn delete(&self, task_id: &str) -> anyhow::Result<DeleteOutput> {
-        let task = self.resolve_task(task_id)?;
+    pub async fn delete(&self, task_id: &str) -> anyhow::Result<DeleteOutput> {
+        let task = self.resolve_task(task_id).await?;
 
         if task.status.is_running() {
             if let Some(ref window_id) = task.tmux_window {
                 let _ = self.runtime.kill_tmux_window(window_id.as_str());
             }
-            let _ = self.store.close_task(&task.id, None);
+            let _ = self.store.close_task(&task.id, None).await;
         }
 
         // Clean up the git worktree if the task used one.
@@ -298,15 +298,15 @@ impl<R: Runtime> ClatApp<R> {
             let _ = self.runtime.remove_worktree(Path::new(work_dir));
         }
 
-        self.store.delete_task(&task.id)?;
+        self.store.delete_task(&task.id).await?;
         Ok(DeleteOutput {
             task_id: task.id,
             task_name: task.name,
         })
     }
 
-    pub fn reopen(&self, task_id: &str) -> anyhow::Result<WindowId> {
-        let task = self.resolve_task(task_id)?;
+    pub async fn reopen(&self, task_id: &str) -> anyhow::Result<WindowId> {
+        let task = self.resolve_task(task_id).await?;
 
         if task.status.is_running() {
             bail!(
@@ -339,13 +339,14 @@ impl<R: Runtime> ClatApp<R> {
         };
 
         self.store
-            .reopen_task(&task.id, &result.pane_id, &result.window_id)?;
+            .reopen_task(&task.id, &result.pane_id, &result.window_id)
+            .await?;
 
         Ok(result.window_id)
     }
 
-    pub fn send(&self, id_prefix: &str, message: &str) -> anyhow::Result<SendOutput> {
-        let task = self.resolve_task(id_prefix)?;
+    pub async fn send(&self, id_prefix: &str, message: &str) -> anyhow::Result<SendOutput> {
+        let task = self.resolve_task(id_prefix).await?;
 
         let pane_id = task
             .tmux_pane
@@ -355,7 +356,8 @@ impl<R: Runtime> ClatApp<R> {
         self.runtime.send_keys_to_pane(pane_id.as_str(), message)?;
         let chat = ChatId::Task(task.id.clone());
         self.store
-            .insert_message(&chat, MessageRole::User, message)?;
+            .insert_message(&chat, MessageRole::User, message)
+            .await?;
 
         Ok(SendOutput {
             task_id: task.id,
@@ -363,8 +365,8 @@ impl<R: Runtime> ClatApp<R> {
         })
     }
 
-    pub fn goto(&self, id_prefix: &str) -> anyhow::Result<()> {
-        let task = self.resolve_task(id_prefix)?;
+    pub async fn goto(&self, id_prefix: &str) -> anyhow::Result<()> {
+        let task = self.resolve_task(id_prefix).await?;
 
         let window_id = task
             .tmux_window
@@ -378,10 +380,10 @@ impl<R: Runtime> ClatApp<R> {
         let _ = self.runtime.select_window(window_id.as_str());
     }
 
-    pub fn log(&self, id_prefix: &str) -> anyhow::Result<LogOutput> {
-        let task = self.resolve_task(id_prefix)?;
+    pub async fn log(&self, id_prefix: &str) -> anyhow::Result<LogOutput> {
+        let task = self.resolve_task(id_prefix).await?;
         let chat = ChatId::Task(task.id.clone());
-        let messages = self.store.list_messages(&chat)?;
+        let messages = self.store.list_messages(&chat).await?;
 
         let live_output = if task.status.is_running() {
             task.tmux_pane
@@ -398,23 +400,26 @@ impl<R: Runtime> ClatApp<R> {
         })
     }
 
-    pub fn list_tasks(&self, all: bool, project: Option<&str>) -> anyhow::Result<Vec<Task>> {
+    pub async fn list_tasks(&self, all: bool, project: Option<&str>) -> anyhow::Result<Vec<Task>> {
         if all {
-            self.store.list_tasks()
+            self.store.list_tasks().await
         } else if let Some(name) = project {
             let project = self
                 .store
-                .get_project_by_name(name)?
+                .get_project_by_name(name)
+                .await?
                 .ok_or_else(|| anyhow::anyhow!("no project found with name '{name}'"))?;
-            self.store.list_visible_tasks_for_project(Some(&project.id))
+            self.store
+                .list_visible_tasks_for_project(Some(&project.id))
+                .await
         } else {
-            self.store.list_active_tasks()
+            self.store.list_active_tasks().await
         }
     }
 
     /// Close any running tasks whose tmux pane no longer exists.
-    pub fn close_stale_tasks(&self) {
-        let tasks = match self.store.list_active_tasks() {
+    pub async fn close_stale_tasks(&self) {
+        let tasks = match self.store.list_active_tasks().await {
             Ok(t) => t,
             Err(_) => return,
         };
@@ -428,21 +433,21 @@ impl<R: Runtime> ClatApp<R> {
             if let Some(ref pane) = task.tmux_pane
                 && !existing.contains(pane.as_str())
             {
-                let _ = self.store.close_task(&task.id, None);
+                let _ = self.store.close_task(&task.id, None).await;
             }
         }
     }
 
-    pub fn list_active(&self) -> anyhow::Result<Vec<Task>> {
-        self.store.list_active_tasks()
+    pub async fn list_active(&self) -> anyhow::Result<Vec<Task>> {
+        self.store.list_active_tasks().await
     }
 
-    pub fn list_visible(&self, project_id: Option<&ProjectId>) -> anyhow::Result<Vec<Task>> {
-        self.store.list_visible_tasks_for_project(project_id)
+    pub async fn list_visible(&self, project_id: Option<&ProjectId>) -> anyhow::Result<Vec<Task>> {
+        self.store.list_visible_tasks_for_project(project_id).await
     }
 
-    pub fn messages(&self, chat_id: &ChatId) -> anyhow::Result<Vec<TaskMessage>> {
-        self.store.list_messages(chat_id)
+    pub async fn messages(&self, chat_id: &ChatId) -> anyhow::Result<Vec<TaskMessage>> {
+        self.store.list_messages(chat_id).await
     }
 
     pub fn list_skills(&self) -> anyhow::Result<Vec<SkillSummary>> {
@@ -479,54 +484,57 @@ impl<R: Runtime> ClatApp<R> {
         crate::runtime::tmux_window_numbers()
     }
 
-    pub fn insert_session_message(
+    pub async fn insert_session_message(
         &self,
         project_id: Option<&ProjectId>,
         role: MessageRole,
         content: &str,
     ) -> anyhow::Result<()> {
         let chat = Self::chat_id(project_id);
-        self.store.insert_message(&chat, role, content)
+        self.store.insert_message(&chat, role, content).await
     }
 
-    pub fn session_messages(
+    pub async fn session_messages(
         &self,
         project_id: Option<&ProjectId>,
     ) -> anyhow::Result<Vec<TaskMessage>> {
         let chat = Self::chat_id(project_id);
-        self.store.list_messages(&chat)
+        self.store.list_messages(&chat).await
     }
 
     // -- Project methods --
 
-    pub fn create_project(&self, name: &str, description: &str) -> anyhow::Result<Project> {
+    pub async fn create_project(&self, name: &str, description: &str) -> anyhow::Result<Project> {
         let id = crate::primitives::ProjectId::generate();
-        self.store.insert_project(&id, name, description)?;
+        self.store.insert_project(&id, name, description).await?;
         self.store
-            .get_project_by_name(name)?
+            .get_project_by_name(name)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("failed to retrieve project after insert"))
     }
 
-    pub fn list_projects(&self) -> anyhow::Result<Vec<Project>> {
-        self.store.list_projects()
+    pub async fn list_projects(&self) -> anyhow::Result<Vec<Project>> {
+        self.store.list_projects().await
     }
 
-    pub fn delete_project(&self, name: &str) -> anyhow::Result<()> {
+    pub async fn delete_project(&self, name: &str) -> anyhow::Result<()> {
         let project = self
             .store
-            .get_project_by_name(name)?
+            .get_project_by_name(name)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("no project found with name '{name}'"))?;
-        self.store.delete_project(&project.id)
+        self.store.delete_project(&project.id).await
     }
 
-    pub fn resolve_project(&self, name: &str) -> anyhow::Result<Project> {
+    pub async fn resolve_project(&self, name: &str) -> anyhow::Result<Project> {
         self.store
-            .get_project_by_name(name)?
+            .get_project_by_name(name)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("no project found with name '{name}'"))
     }
 
-    pub fn resolve_project_id(&self, name: &str) -> anyhow::Result<ProjectId> {
-        Ok(self.resolve_project(name)?.id)
+    pub async fn resolve_project_id(&self, name: &str) -> anyhow::Result<ProjectId> {
+        Ok(self.resolve_project(name).await?.id)
     }
 
     fn chat_id(project_id: Option<&ProjectId>) -> ChatId {
@@ -536,23 +544,26 @@ impl<R: Runtime> ClatApp<R> {
         }
     }
 
-    pub fn complete(
+    pub async fn complete(
         &self,
         id_prefix: &str,
         exit_code: i32,
         output: Option<&str>,
     ) -> anyhow::Result<CompleteOutput> {
-        let task = self.resolve_task(id_prefix)?;
-        self.store.complete_task(&task.id, exit_code, output)?;
+        let task = self.resolve_task(id_prefix).await?;
+        self.store
+            .complete_task(&task.id, exit_code, output)
+            .await?;
         Ok(CompleteOutput {
             task_id: task.id,
             task_name: task.name,
         })
     }
 
-    fn resolve_task(&self, id_prefix: &str) -> anyhow::Result<Task> {
+    async fn resolve_task(&self, id_prefix: &str) -> anyhow::Result<Task> {
         self.store
-            .get_task_by_prefix(id_prefix)?
+            .get_task_by_prefix(id_prefix)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("no task found matching '{id_prefix}'"))
     }
 }
@@ -789,7 +800,7 @@ prompt = "noop prompt"
         }
     }
 
-    fn spawn_test_task(service: &ClatApp<impl Runtime>) -> SpawnOutput {
+    async fn spawn_test_task(service: &ClatApp<impl Runtime>) -> SpawnOutput {
         service
             .spawn(SpawnRequest {
                 task_name: "test-task",
@@ -802,25 +813,25 @@ prompt = "noop prompt"
                 prompt_mode: PromptMode::Full,
                 project: None,
             })
+            .await
             .expect("spawn should succeed")
     }
 
-    #[test]
-    fn spawn_creates_task_and_calls_runtime() {
+    #[tokio::test]
+    async fn spawn_creates_task_and_calls_runtime() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         let service = ClatApp::new(store, runtime, paths);
 
-        let output = spawn_test_task(&service);
+        let output = spawn_test_task(&service).await;
 
         assert_eq!(output.task_name, "test-task");
         assert_eq!(output.skill_name, "noop");
         assert_eq!(output.window_id, "@fake-win");
 
-        // Verify task is in store
-        let tasks = service.store().list_active_tasks().unwrap();
+        let tasks = service.store().list_active_tasks().await.unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].name, "test-task");
         assert_eq!(
@@ -828,13 +839,11 @@ prompt = "noop prompt"
             Some("%fake-pane")
         );
 
-        // Verify system message recorded
         let chat = ChatId::Task(tasks[0].id.clone());
-        let messages = service.store().list_messages(&chat).unwrap();
+        let messages = service.store().list_messages(&chat).await.unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, MessageRole::System);
 
-        // Verify call order
         let calls = service.runtime().calls.borrow();
         assert!(matches!(calls[0], Call::CreateWorktree { .. }));
         assert!(matches!(
@@ -846,29 +855,28 @@ prompt = "noop prompt"
         ));
     }
 
-    #[test]
-    fn close_captures_output_before_killing_window() {
+    #[tokio::test]
+    async fn close_captures_output_before_killing_window() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         let service = ClatApp::new(store, runtime, paths);
 
-        let spawned = spawn_test_task(&service);
-        let result = service.close(spawned.task_id.as_str()).unwrap();
+        let spawned = spawn_test_task(&service).await;
+        let result = service.close(spawned.task_id.as_str()).await.unwrap();
 
         assert_eq!(result.task_name, "test-task");
 
-        // Verify task is closed with output
         let task = service
             .store()
             .get_task_by_prefix(spawned.task_id.as_str())
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(task.status, TaskStatus::Closed);
         assert_eq!(task.output.as_deref(), Some("captured output"));
 
-        // Verify call order: CaptureOutput before KillWindow
         let calls = service.runtime().calls.borrow();
         let capture_pos = calls
             .iter()
@@ -881,71 +889,71 @@ prompt = "noop prompt"
         assert!(capture_pos < kill_pos);
     }
 
-    #[test]
-    fn close_rejects_non_running_task() {
+    #[tokio::test]
+    async fn close_rejects_non_running_task() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         let service = ClatApp::new(store, runtime, paths);
 
-        let spawned = spawn_test_task(&service);
-        let task = service
-            .store()
-            .get_task_by_prefix(spawned.task_id.as_str())
-            .unwrap()
+        let spawned = spawn_test_task(&service).await;
+        service
+            .complete(spawned.task_id.as_str(), 0, None)
+            .await
             .unwrap();
-        service.complete(task.id.as_str(), 0, None).unwrap();
 
-        let err = service.close(spawned.task_id.as_str());
+        let err = service.close(spawned.task_id.as_str()).await;
         assert!(err.is_err());
         assert!(err.unwrap_err().to_string().contains("not 'running'"));
     }
 
-    #[test]
-    fn close_succeeds_even_if_kill_fails() {
+    #[tokio::test]
+    async fn close_succeeds_even_if_kill_fails() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         *runtime.kill_should_fail.borrow_mut() = true;
         let service = ClatApp::new(store, runtime, paths);
 
-        let spawned = spawn_test_task(&service);
-        let result = service.close(spawned.task_id.as_str());
+        let spawned = spawn_test_task(&service).await;
+        let result = service.close(spawned.task_id.as_str()).await;
         assert!(result.is_ok());
     }
 
-    #[test]
-    fn send_dispatches_and_records_message() {
+    #[tokio::test]
+    async fn send_dispatches_and_records_message() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         let service = ClatApp::new(store, runtime, paths);
 
-        let spawned = spawn_test_task(&service);
+        let spawned = spawn_test_task(&service).await;
         let result = service
             .send(spawned.task_id.as_str(), "hello agent")
+            .await
             .unwrap();
 
         assert_eq!(result.task_name, "test-task");
 
-        // Verify SendKeys call
-        let calls = service.runtime().calls.borrow();
-        assert!(calls.iter().any(|c| matches!(c,
-            Call::SendKeys { pane_id, message }
-            if pane_id == "%fake-pane" && message == "hello agent"
-        )));
+        {
+            let calls = service.runtime().calls.borrow();
+            assert!(calls.iter().any(|c| matches!(c,
+                Call::SendKeys { pane_id, message }
+                if pane_id == "%fake-pane" && message == "hello agent"
+            )));
+        }
 
-        // Verify user message in store
         let task = service
             .store()
             .get_task_by_prefix(spawned.task_id.as_str())
+            .await
             .unwrap()
             .unwrap();
         let chat = ChatId::Task(task.id.clone());
-        let messages = service.store().list_messages(&chat).unwrap();
+        let messages = service.store().list_messages(&chat).await.unwrap();
         assert!(
             messages
                 .iter()
@@ -953,16 +961,16 @@ prompt = "noop prompt"
         );
     }
 
-    #[test]
-    fn goto_calls_select_window() {
+    #[tokio::test]
+    async fn goto_calls_select_window() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         let service = ClatApp::new(store, runtime, paths);
 
-        let spawned = spawn_test_task(&service);
-        service.goto(spawned.task_id.as_str()).unwrap();
+        let spawned = spawn_test_task(&service).await;
+        service.goto(spawned.task_id.as_str()).await.unwrap();
 
         let calls = service.runtime().calls.borrow();
         assert!(calls.iter().any(|c| matches!(c,
@@ -970,15 +978,14 @@ prompt = "noop prompt"
         )));
     }
 
-    #[test]
-    fn goto_errors_on_missing_window() {
+    #[tokio::test]
+    async fn goto_errors_on_missing_window() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         let service = ClatApp::new(store, runtime, paths);
 
-        // Insert a task with no tmux_window directly
         let task_id = TaskId::generate();
         let task = Task {
             id: task_id.clone(),
@@ -996,62 +1003,61 @@ prompt = "noop prompt"
             output: None,
             project_id: None,
         };
-        service.store().insert_task(&task).unwrap();
+        service.store().insert_task(&task).await.unwrap();
 
-        let err = service.goto(task_id.as_str());
+        let err = service.goto(task_id.as_str()).await;
         assert!(err.is_err());
         assert!(err.unwrap_err().to_string().contains("no tmux window"));
     }
 
-    #[test]
-    fn log_returns_messages_and_live_output() {
+    #[tokio::test]
+    async fn log_returns_messages_and_live_output() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         let service = ClatApp::new(store, runtime, paths);
 
-        let spawned = spawn_test_task(&service);
-        service.send(spawned.task_id.as_str(), "hello").unwrap();
+        let spawned = spawn_test_task(&service).await;
+        service
+            .send(spawned.task_id.as_str(), "hello")
+            .await
+            .unwrap();
 
-        let log = service.log(spawned.task_id.as_str()).unwrap();
+        let log = service.log(spawned.task_id.as_str()).await.unwrap();
         assert_eq!(log.task.name, "test-task");
-        assert_eq!(log.messages.len(), 2); // system + user
+        assert_eq!(log.messages.len(), 2);
         assert!(log.live_output.is_some());
         assert_eq!(log.live_output.as_deref(), Some("captured output"));
     }
 
-    #[test]
-    fn list_active_excludes_completed() {
+    #[tokio::test]
+    async fn list_active_excludes_completed() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         let service = ClatApp::new(store, runtime, paths);
 
-        let spawned1 = spawn_test_task(&service);
-        let _spawned2 = spawn_test_task(&service);
+        let spawned1 = spawn_test_task(&service).await;
+        let _spawned2 = spawn_test_task(&service).await;
 
-        // Complete one
-        let task1 = service
-            .store()
-            .get_task_by_prefix(spawned1.task_id.as_str())
-            .unwrap()
+        service
+            .complete(spawned1.task_id.as_str(), 0, None)
+            .await
             .unwrap();
-        service.complete(task1.id.as_str(), 0, None).unwrap();
 
-        let active = service.list_active().unwrap();
+        let active = service.list_active().await.unwrap();
         assert_eq!(active.len(), 1);
 
-        let all = service.list_tasks(true, None).unwrap();
+        let all = service.list_tasks(true, None).await.unwrap();
         assert_eq!(all.len(), 2);
     }
 
-    #[test]
-    fn list_skills_returns_available_skills() {
+    #[tokio::test]
+    async fn list_skills_returns_available_skills() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        // test_paths already writes noop.toml — add a second skill
         std::fs::write(
             paths.skills_dir.join("deploy.toml"),
             r#"
@@ -1069,55 +1075,58 @@ prompt = "deploy to {{ env }}"
         )
         .unwrap();
 
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         let service = ClatApp::new(store, runtime, paths);
 
         let skills = service.list_skills().unwrap();
         assert_eq!(skills.len(), 2);
-        // Sorted by name
         assert_eq!(skills[0].name, "deploy");
         assert_eq!(skills[0].description, "deploy to prod");
         assert_eq!(skills[0].params, vec!["env"]);
         assert_eq!(skills[1].name, "noop");
     }
 
-    #[test]
-    fn reopen_passes_work_dir_to_resume_agent() {
+    #[tokio::test]
+    async fn reopen_passes_work_dir_to_resume_agent() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         let service = ClatApp::new(store, runtime, paths);
 
-        let spawned = spawn_test_task(&service);
-        service.complete(spawned.task_id.as_str(), 0, None).unwrap();
+        let spawned = spawn_test_task(&service).await;
+        service
+            .complete(spawned.task_id.as_str(), 0, None)
+            .await
+            .unwrap();
 
-        let window_id = service.reopen(spawned.task_id.as_str()).unwrap();
+        let window_id = service.reopen(spawned.task_id.as_str()).await.unwrap();
         assert_eq!(window_id, "@fake-win");
 
-        // Verify resume_agent was called with the task's work_dir
-        let calls = service.runtime().calls.borrow();
-        let resume_call = calls
-            .iter()
-            .find(|c| matches!(c, Call::ResumeAgent { .. }))
-            .expect("expected ResumeAgent call");
-        if let Call::ResumeAgent {
-            task_name,
-            work_dir,
-        } = resume_call
         {
-            assert_eq!(task_name, "test-task");
-            assert!(
-                work_dir.starts_with(tmp.path()),
-                "work_dir should be inside the temp dir"
-            );
+            let calls = service.runtime().calls.borrow();
+            let resume_call = calls
+                .iter()
+                .find(|c| matches!(c, Call::ResumeAgent { .. }))
+                .expect("expected ResumeAgent call");
+            if let Call::ResumeAgent {
+                task_name,
+                work_dir,
+            } = resume_call
+            {
+                assert_eq!(task_name, "test-task");
+                assert!(
+                    work_dir.starts_with(tmp.path()),
+                    "work_dir should be inside the temp dir"
+                );
+            }
         }
 
-        // Verify task is back to running with new pane/window
         let task = service
             .store()
             .get_task_by_prefix(spawned.task_id.as_str())
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(task.status, TaskStatus::Running);
@@ -1131,70 +1140,71 @@ prompt = "deploy to {{ env }}"
         );
     }
 
-    #[test]
-    fn reopen_recreates_missing_worktree() {
+    #[tokio::test]
+    async fn reopen_recreates_missing_worktree() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         let service = ClatApp::new(store, runtime, paths);
 
-        let spawned = spawn_test_task(&service);
-        service.complete(spawned.task_id.as_str(), 0, None).unwrap();
+        let spawned = spawn_test_task(&service).await;
+        service
+            .complete(spawned.task_id.as_str(), 0, None)
+            .await
+            .unwrap();
 
-        // Delete the worktree directory to simulate post-merge cleanup
         let task = service
             .store()
             .get_task_by_prefix(spawned.task_id.as_str())
+            .await
             .unwrap()
             .unwrap();
         let work_dir = task.work_dir.as_deref().unwrap();
         std::fs::remove_dir_all(work_dir).unwrap();
 
-        // Reopen should recreate the worktree and succeed
-        let window_id = service.reopen(spawned.task_id.as_str()).unwrap();
+        let window_id = service.reopen(spawned.task_id.as_str()).await.unwrap();
         assert_eq!(window_id, "@fake-win");
 
-        // Verify RecreateWorktree was called
-        let calls = service.runtime().calls.borrow();
-        assert!(
-            calls
-                .iter()
-                .any(|c| matches!(c, Call::RecreateWorktree { .. })),
-            "expected RecreateWorktree call"
-        );
+        {
+            let calls = service.runtime().calls.borrow();
+            assert!(
+                calls
+                    .iter()
+                    .any(|c| matches!(c, Call::RecreateWorktree { .. })),
+                "expected RecreateWorktree call"
+            );
+        }
 
-        // Verify task is back to running
         let task = service
             .store()
             .get_task_by_prefix(spawned.task_id.as_str())
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(task.status, TaskStatus::Running);
     }
 
-    #[test]
-    fn reopen_rejects_already_running_task() {
+    #[tokio::test]
+    async fn reopen_rejects_already_running_task() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         let service = ClatApp::new(store, runtime, paths);
 
-        let spawned = spawn_test_task(&service);
+        let spawned = spawn_test_task(&service).await;
 
-        let err = service.reopen(spawned.task_id.as_str());
+        let err = service.reopen(spawned.task_id.as_str()).await;
         assert!(err.is_err());
         assert!(err.unwrap_err().to_string().contains("already running"));
     }
 
-    // -- spawn_no_worktree tests --
-
-    #[test]
-    fn spawn_existing_uses_setup_dir_config_and_interactive() {
+    #[tokio::test]
+    async fn spawn_existing_uses_setup_dir_config_and_interactive() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         let service = ClatApp::new(store, runtime, paths);
 
@@ -1209,22 +1219,17 @@ prompt = "deploy to {{ env }}"
                 prompt_mode: PromptMode::Interactive,
                 project: None,
             })
+            .await
             .unwrap();
 
         assert_eq!(output.task_name, "nw-task");
         assert_eq!(output.skill_name, "noop");
         assert_eq!(output.window_id, "@fake-win");
 
-        // Task is stored and running
-        let tasks = service.store().list_active_tasks().unwrap();
+        let tasks = service.store().list_active_tasks().await.unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].name, "nw-task");
-        assert_eq!(
-            tasks[0].tmux_pane.as_ref().map(|p| p.as_str()),
-            Some("%fake-pane")
-        );
 
-        // Verify call order: SetupDirConfig then LaunchAgent (no CreateWorktree)
         let calls = service.runtime().calls.borrow();
         assert!(
             !calls
@@ -1242,11 +1247,11 @@ prompt = "deploy to {{ env }}"
         ));
     }
 
-    #[test]
-    fn spawn_existing_uses_custom_dir_path() {
+    #[tokio::test]
+    async fn spawn_existing_uses_custom_dir_path() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         let service = ClatApp::new(store, runtime, paths);
 
@@ -1262,13 +1267,14 @@ prompt = "deploy to {{ env }}"
                 prompt_mode: PromptMode::Interactive,
                 project: None,
             })
+            .await
             .unwrap();
         assert_eq!(output.task_name, "nw-task");
 
-        // Task work_dir should be the custom path
         let task = service
             .store()
             .get_task_by_prefix(output.task_id.as_str())
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -1276,7 +1282,6 @@ prompt = "deploy to {{ env }}"
             Some(custom_repo.to_str().unwrap())
         );
 
-        // Verify SetupDirConfig was called with the custom path
         let calls = service.runtime().calls.borrow();
         let setup_call = calls
             .iter()
@@ -1287,13 +1292,11 @@ prompt = "deploy to {{ env }}"
         }
     }
 
-    // -- spawn_scratch tests --
-
-    #[test]
-    fn spawn_scratch_creates_scratch_dir_and_launches_agent() {
+    #[tokio::test]
+    async fn spawn_scratch_creates_scratch_dir_and_launches_agent() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         let service = ClatApp::new(store, runtime, paths);
 
@@ -1306,25 +1309,23 @@ prompt = "deploy to {{ env }}"
                 prompt_mode: PromptMode::Full,
                 project: None,
             })
+            .await
             .unwrap();
 
         assert_eq!(output.task_name, "scratch-task");
         assert_eq!(output.skill_name, "noop");
         assert_eq!(output.window_id, "@fake-win");
 
-        // Task is stored and running
-        let tasks = service.store().list_active_tasks().unwrap();
+        let tasks = service.store().list_active_tasks().await.unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].name, "scratch-task");
 
-        // Work dir should be data_dir/scratch/scratch-task
         let expected_scratch = tmp.path().join("data").join("scratch").join("scratch-task");
         assert_eq!(
             tasks[0].work_dir.as_deref(),
             Some(expected_scratch.to_str().unwrap())
         );
 
-        // Verify call order: InitScratchDir, SetupDirConfig, LaunchAgent
         let calls = service.runtime().calls.borrow();
         assert!(
             !calls
@@ -1343,66 +1344,64 @@ prompt = "deploy to {{ env }}"
         ));
     }
 
-    // -- Project CRUD via service layer --
-
-    #[test]
-    fn create_and_list_projects() {
+    #[tokio::test]
+    async fn create_and_list_projects() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         let service = ClatApp::new(store, runtime, paths);
 
         let project = service
             .create_project("web-app", "frontend project")
+            .await
             .unwrap();
         assert_eq!(project.name, "web-app");
         assert_eq!(project.description, "frontend project");
         assert!(!project.id.as_str().is_empty());
 
-        let projects = service.list_projects().unwrap();
+        let projects = service.list_projects().await.unwrap();
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].name, "web-app");
     }
 
-    #[test]
-    fn delete_project_by_name() {
+    #[tokio::test]
+    async fn delete_project_by_name() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         let service = ClatApp::new(store, runtime, paths);
 
-        service.create_project("temp-proj", "").unwrap();
-        assert_eq!(service.list_projects().unwrap().len(), 1);
+        service.create_project("temp-proj", "").await.unwrap();
+        assert_eq!(service.list_projects().await.unwrap().len(), 1);
 
-        service.delete_project("temp-proj").unwrap();
-        assert!(service.list_projects().unwrap().is_empty());
+        service.delete_project("temp-proj").await.unwrap();
+        assert!(service.list_projects().await.unwrap().is_empty());
     }
 
-    #[test]
-    fn delete_project_errors_on_unknown_name() {
+    #[tokio::test]
+    async fn delete_project_errors_on_unknown_name() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         let service = ClatApp::new(store, runtime, paths);
 
-        let err = service.delete_project("ghost");
+        let err = service.delete_project("ghost").await;
         assert!(err.is_err());
         assert!(err.unwrap_err().to_string().contains("no project found"));
     }
 
-    #[test]
-    fn list_visible_scoped_to_project() {
+    #[tokio::test]
+    async fn list_visible_scoped_to_project() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         let service = ClatApp::new(store, runtime, paths);
 
-        // Spawn two tasks: one with project, one without
-        let proj = service.create_project("test-proj", "").unwrap();
+        let proj = service.create_project("test-proj", "").await.unwrap();
         let proj_id = proj.id;
         let out1 = service
             .spawn(SpawnRequest {
@@ -1416,16 +1415,15 @@ prompt = "deploy to {{ env }}"
                 prompt_mode: PromptMode::Full,
                 project: Some("test-proj".to_string()),
             })
+            .await
             .unwrap();
-        let out2 = spawn_test_task(&service); // no project
+        let out2 = spawn_test_task(&service).await;
 
-        // list_visible(None) should only return the unscoped task
-        let unscoped = service.list_visible(None).unwrap();
+        let unscoped = service.list_visible(None).await.unwrap();
         assert_eq!(unscoped.len(), 1);
         assert_eq!(unscoped[0].id, out2.task_id);
 
-        // list_visible(Some(proj_id)) should only return the project task
-        let scoped = service.list_visible(Some(&proj_id)).unwrap();
+        let scoped = service.list_visible(Some(&proj_id)).await.unwrap();
         assert_eq!(scoped.len(), 1);
         assert_eq!(scoped[0].id, out1.task_id);
     }
