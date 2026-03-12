@@ -293,6 +293,7 @@ REQJSON
         fi
         sleep 0.5
     done
+
     [ "$found" = true ]
 
     # Ctrl+P navigates to the task with pending permission (opens detail view)
