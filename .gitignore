@@ -2,18 +2,6 @@
 /result
 .direnv/
 data/
-
-# Override global gitignore's blanket `.claude/` exclusion so that
-# hooks and the committed settings file are always tracked.
-!.claude/
-.claude/*
-!.claude/hooks/
-!.claude/settings.json
-!.claude/.gitignore
-.claude/settings.local.json
-.claude/worktrees/
-.claude/perm-socket
-
 .bacon-locations
 TASK.md
 .env
