@@ -22,13 +22,29 @@ use crate::runtime::{Runtime, TmuxRuntime};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let mut app = ClatApp::try_new(TmuxRuntime).await?;
 
     let command = cli.command.unwrap_or(Command::Dash {
         resume: None,
         caffeinate: false,
         dangerously_skip_permissions: false,
     });
+
+    let skip_permissions = match &command {
+        Command::Dash {
+            dangerously_skip_permissions,
+            ..
+        }
+        | Command::Start {
+            dangerously_skip_permissions,
+            ..
+        }
+        | Command::Spawn {
+            dangerously_skip_permissions,
+            ..
+        } => *dangerously_skip_permissions,
+        _ => false,
+    };
+    let app = ClatApp::try_new(TmuxRuntime, skip_permissions).await?;
 
     match command {
         Command::Spawn {
@@ -40,6 +56,7 @@ async fn main() -> anyhow::Result<()> {
             no_worktree,
             scratch,
             project,
+            ..
         } => {
             cmd_spawn(
                 app,
@@ -63,24 +80,11 @@ async fn main() -> anyhow::Result<()> {
         Command::Reopen { id } => cmd_reopen(app, &id).await?,
         Command::Delete { id } => cmd_delete(app, &id).await?,
         Command::Dash {
-            resume,
-            caffeinate,
-            dangerously_skip_permissions,
-        } => {
-            app.set_skip_permissions(dangerously_skip_permissions);
-            tui::run(
-                app,
-                resume.as_deref(),
-                caffeinate,
-                dangerously_skip_permissions,
-            )
-            .await?
-        }
+            resume, caffeinate, ..
+        } => tui::run(app, resume.as_deref(), caffeinate).await?,
         Command::Start {
-            resume,
-            caffeinate,
-            dangerously_skip_permissions,
-        } => cmd_start(resume.as_deref(), caffeinate, dangerously_skip_permissions)?,
+            resume, caffeinate, ..
+        } => cmd_start(resume.as_deref(), caffeinate, skip_permissions)?,
         Command::Goto { id } => cmd_goto(app, &id).await?,
         Command::Send { id, message } => cmd_send(app, &id, &message).await?,
         Command::Skill { action } => cmd_skill(action, app)?,

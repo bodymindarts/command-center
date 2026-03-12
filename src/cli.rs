@@ -43,6 +43,10 @@ pub enum Command {
         /// Assign task to a project
         #[arg(long)]
         project: Option<String>,
+
+        /// Bypass all permission checks for the spawned Claude Code session
+        #[arg(long)]
+        dangerously_skip_permissions: bool,
     },
 
     /// List tasks and their status
