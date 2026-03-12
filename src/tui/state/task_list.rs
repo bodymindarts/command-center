@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use ratatui::widgets::ListState;
 
@@ -12,7 +12,8 @@ pub struct TaskListState {
     selected_messages: Vec<TaskMessage>,
     detail_scroll: u16,
     detail_live_output: Option<String>,
-    window_numbers: HashMap<WindowId, String>,
+    /// Set of tmux session names that currently exist.
+    active_sessions: HashSet<WindowId>,
     /// Pane IDs that are actively working (hook reported activity).
     /// Absence from this set means idle (the safe default).
     active_panes: HashSet<PaneId>,
@@ -33,7 +34,7 @@ impl TaskListState {
             selected_messages: Vec::new(),
             detail_scroll: 0,
             detail_live_output: None,
-            window_numbers: HashMap::new(),
+            active_sessions: HashSet::new(),
             active_panes: HashSet::new(),
             filtered_indices: Vec::new(),
         }
@@ -81,14 +82,14 @@ impl TaskListState {
         self.detail_live_output.as_deref()
     }
 
-    // ── Window numbers ───────────────────────────────────────────────
+    // ── Session tracking ──────────────────────────────────────────────
 
-    pub fn update_window_numbers(&mut self, numbers: HashMap<WindowId, String>) {
-        self.window_numbers = numbers;
+    pub fn update_active_sessions(&mut self, sessions: HashSet<WindowId>) {
+        self.active_sessions = sessions;
     }
 
-    pub fn window_number(&self, id: &WindowId) -> Option<&str> {
-        self.window_numbers.get(id).map(|s| s.as_str())
+    pub fn has_active_session(&self, id: &WindowId) -> bool {
+        self.active_sessions.contains(id)
     }
 
     // ── Active panes ────────────────────────────────────────────────

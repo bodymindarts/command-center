@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::config::Paths;
@@ -267,7 +267,7 @@ impl<R: Runtime> ClatApp<R> {
             .and_then(|pane| self.runtime.capture_pane_output(pane.as_str()).ok());
 
         if let Some(ref window_id) = task.tmux_window {
-            let _ = self.runtime.kill_tmux_window(window_id.as_str());
+            let _ = self.runtime.kill_tmux_session(window_id.as_str());
         }
 
         let closed = self.store.close_task(&task.id, output.as_deref()).await?;
@@ -286,7 +286,7 @@ impl<R: Runtime> ClatApp<R> {
 
         if task.status.is_running() {
             if let Some(ref window_id) = task.tmux_window {
-                let _ = self.runtime.kill_tmux_window(window_id.as_str());
+                let _ = self.runtime.kill_tmux_session(window_id.as_str());
             }
             let _ = self.store.close_task(&task.id, None).await;
         }
@@ -368,16 +368,16 @@ impl<R: Runtime> ClatApp<R> {
     pub async fn goto(&self, id_prefix: &str) -> anyhow::Result<()> {
         let task = self.resolve_task(id_prefix).await?;
 
-        let window_id = task
+        let session_name = task
             .tmux_window
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("task {} has no tmux window", task.id.short()))?;
+            .ok_or_else(|| anyhow::anyhow!("task {} has no tmux session", task.id.short()))?;
 
-        self.runtime.select_window(window_id.as_str())
+        self.runtime.select_session(session_name.as_str())
     }
 
-    pub fn goto_window(&self, window_id: &WindowId) {
-        let _ = self.runtime.select_window(window_id.as_str());
+    pub fn goto_session(&self, session_name: &WindowId) {
+        let _ = self.runtime.select_session(session_name.as_str());
     }
 
     pub async fn log(&self, id_prefix: &str) -> anyhow::Result<LogOutput> {
@@ -480,8 +480,8 @@ impl<R: Runtime> ClatApp<R> {
         self.runtime.capture_pane_output(pane_id).ok()
     }
 
-    pub fn window_numbers(&self) -> HashMap<WindowId, String> {
-        crate::runtime::tmux_window_numbers()
+    pub fn active_sessions(&self) -> HashSet<WindowId> {
+        crate::runtime::tmux_session_names()
     }
 
     pub async fn insert_session_message(
@@ -615,11 +615,11 @@ mod tests {
         RemoveWorktree {
             path: PathBuf,
         },
-        KillWindow {
-            window_id: String,
+        KillSession {
+            session_name: String,
         },
-        SelectWindow {
-            window_id: String,
+        SelectSession {
+            session_name: String,
         },
     }
 
@@ -753,9 +753,9 @@ mod tests {
             Ok(())
         }
 
-        fn kill_tmux_window(&self, window_id: &str) -> anyhow::Result<()> {
-            self.calls.borrow_mut().push(Call::KillWindow {
-                window_id: window_id.to_string(),
+        fn kill_tmux_session(&self, session_name: &str) -> anyhow::Result<()> {
+            self.calls.borrow_mut().push(Call::KillSession {
+                session_name: session_name.to_string(),
             });
             if *self.kill_should_fail.borrow() {
                 bail!("kill failed");
@@ -763,9 +763,9 @@ mod tests {
             Ok(())
         }
 
-        fn select_window(&self, window_id: &str) -> anyhow::Result<()> {
-            self.calls.borrow_mut().push(Call::SelectWindow {
-                window_id: window_id.to_string(),
+        fn select_session(&self, session_name: &str) -> anyhow::Result<()> {
+            self.calls.borrow_mut().push(Call::SelectSession {
+                session_name: session_name.to_string(),
             });
             Ok(())
         }
@@ -884,7 +884,7 @@ prompt = "noop prompt"
             .unwrap();
         let kill_pos = calls
             .iter()
-            .position(|c| matches!(c, Call::KillWindow { .. }))
+            .position(|c| matches!(c, Call::KillSession { .. }))
             .unwrap();
         assert!(capture_pos < kill_pos);
     }
@@ -962,7 +962,7 @@ prompt = "noop prompt"
     }
 
     #[tokio::test]
-    async fn goto_calls_select_window() {
+    async fn goto_calls_select_session() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
@@ -974,7 +974,7 @@ prompt = "noop prompt"
 
         let calls = service.runtime().calls.borrow();
         assert!(calls.iter().any(|c| matches!(c,
-            Call::SelectWindow { window_id } if window_id == "@fake-win"
+            Call::SelectSession { session_name } if session_name == "@fake-win"
         )));
     }
 
@@ -1007,7 +1007,7 @@ prompt = "noop prompt"
 
         let err = service.goto(task_id.as_str()).await;
         assert!(err.is_err());
-        assert!(err.unwrap_err().to_string().contains("no tmux window"));
+        assert!(err.unwrap_err().to_string().contains("no tmux session"));
     }
 
     #[tokio::test]

@@ -30,7 +30,13 @@ fn task_list_item(
     let win_num = task
         .tmux_window
         .as_ref()
-        .and_then(|w| task_list.window_number(w))
+        .map(|w| {
+            if task_list.has_active_session(w) {
+                "●"
+            } else {
+                "-"
+            }
+        })
         .unwrap_or("-");
     let main_line = Line::from(vec![
         Span::styled(

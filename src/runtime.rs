@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -67,8 +67,8 @@ pub trait Runtime {
     fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> anyhow::Result<()>;
     fn capture_pane_output(&self, pane_id: &str) -> anyhow::Result<String>;
     fn remove_worktree(&self, path: &Path) -> anyhow::Result<()>;
-    fn kill_tmux_window(&self, window_id: &str) -> anyhow::Result<()>;
-    fn select_window(&self, window_id: &str) -> anyhow::Result<()>;
+    fn kill_tmux_session(&self, session_name: &str) -> anyhow::Result<()>;
+    fn select_session(&self, session_name: &str) -> anyhow::Result<()>;
 }
 
 pub struct TmuxRuntime;
@@ -91,66 +91,104 @@ impl TmuxRuntime {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
-    fn launch_agent_window(
+    /// Create a dedicated tmux session for a task with 4 windows:
+    ///   0: nvim   – editor
+    ///   1: lazygit – git UI
+    ///   2: claude  – the agent
+    ///   3: shell   – general purpose
+    fn launch_agent_session(
         &self,
         task_name: &str,
         work_dir: &Path,
         claude_cmd: &str,
     ) -> anyhow::Result<SpawnResult> {
-        if std::env::var("TMUX").is_err() {
-            bail!("clat spawn must be run inside a tmux session");
-        }
-
         let work_dir_str = work_dir.display().to_string();
-        let window_name = format!("cc:{task_name}");
+        let session_name = sanitize_tmux_session_name(task_name);
 
-        let window_id = self.tmux_cmd(&[
-            "new-window",
+        // Window 0: nvim (created with the session)
+        self.tmux_cmd(&[
+            "new-session",
             "-d",
-            "-P",
-            "-F",
-            "#{window_id}",
+            "-s",
+            &session_name,
             "-n",
-            &window_name,
+            "nvim",
             "-c",
             &work_dir_str,
         ])?;
-
-        let top_pane = self.tmux_cmd(&["list-panes", "-t", &window_id, "-F", "#{pane_id}"])?;
-
-        let bottom_pane = self.tmux_cmd(&[
-            "split-window",
-            "-v",
+        self.tmux_cmd(&[
+            "send-keys",
             "-t",
-            &top_pane,
-            "-P",
-            "-F",
-            "#{pane_id}",
+            &format!("{session_name}:nvim"),
+            "nvim .",
+            "Enter",
+        ])?;
+
+        // Window 1: lazygit
+        self.tmux_cmd(&[
+            "new-window",
+            "-t",
+            &session_name,
+            "-n",
+            "lazygit",
             "-c",
             &work_dir_str,
         ])?;
+        self.tmux_cmd(&[
+            "send-keys",
+            "-t",
+            &format!("{session_name}:lazygit"),
+            "lazygit",
+            "Enter",
+        ])?;
 
-        self.tmux_cmd(&["resize-pane", "-t", &top_pane, "-D", "8"])?;
-
+        // Window 2: claude (the agent)
+        self.tmux_cmd(&[
+            "new-window",
+            "-t",
+            &session_name,
+            "-n",
+            "claude",
+            "-c",
+            &work_dir_str,
+        ])?;
         let claude_pane = self.tmux_cmd(&[
-            "split-window",
-            "-h",
+            "list-panes",
             "-t",
-            &bottom_pane,
-            "-P",
+            &format!("{session_name}:claude"),
             "-F",
             "#{pane_id}",
+        ])?;
+        self.tmux_cmd(&[
+            "send-keys",
+            "-t",
+            &format!("{session_name}:claude"),
+            "-l",
+            claude_cmd,
+        ])?;
+        self.tmux_cmd(&[
+            "send-keys",
+            "-t",
+            &format!("{session_name}:claude"),
+            "Enter",
+        ])?;
+
+        // Window 3: shell
+        self.tmux_cmd(&[
+            "new-window",
+            "-t",
+            &session_name,
+            "-n",
+            "shell",
             "-c",
             &work_dir_str,
         ])?;
 
-        self.tmux_cmd(&["send-keys", "-t", &claude_pane, "-l", claude_cmd])?;
-        self.tmux_cmd(&["send-keys", "-t", &claude_pane, "Enter"])?;
-        self.tmux_cmd(&["send-keys", "-t", &top_pane, "-l", "nvim ."])?;
-        self.tmux_cmd(&["send-keys", "-t", &top_pane, "Enter"])?;
+        // Focus the claude window by default
+        self.tmux_cmd(&["select-window", "-t", &format!("{session_name}:claude")])?;
 
         Ok(SpawnResult {
-            window_id: WindowId::from(window_id),
+            window_id: WindowId::from(session_name),
             pane_id: PaneId::from(claude_pane),
         })
     }
@@ -324,7 +362,7 @@ impl Runtime for TmuxRuntime {
             std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
         }
 
-        self.launch_agent_window(config.task_name, config.work_dir, "sh .claude/launch.sh")
+        self.launch_agent_session(config.task_name, config.work_dir, "sh .claude/launch.sh")
     }
 
     fn resume_agent(
@@ -336,11 +374,11 @@ impl Runtime for TmuxRuntime {
         let claude_bin = self.resolve_binary("claude")?;
         let claude_cmd = format!("env -u CLAUDECODE {claude_bin} --resume {session_id}");
 
-        self.launch_agent_window(task_name, work_dir, &claude_cmd)
+        self.launch_agent_session(task_name, work_dir, &claude_cmd)
     }
 
     fn relaunch_agent(&self, task_name: &str, work_dir: &Path) -> anyhow::Result<SpawnResult> {
-        self.launch_agent_window(task_name, work_dir, "sh .claude/launch.sh")
+        self.launch_agent_session(task_name, work_dir, "sh .claude/launch.sh")
     }
 
     fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> anyhow::Result<()> {
@@ -370,13 +408,13 @@ impl Runtime for TmuxRuntime {
         Ok(())
     }
 
-    fn kill_tmux_window(&self, window_id: &str) -> anyhow::Result<()> {
-        self.tmux_cmd(&["kill-window", "-t", window_id])?;
+    fn kill_tmux_session(&self, session_name: &str) -> anyhow::Result<()> {
+        self.tmux_cmd(&["kill-session", "-t", session_name])?;
         Ok(())
     }
 
-    fn select_window(&self, window_id: &str) -> anyhow::Result<()> {
-        self.tmux_cmd(&["select-window", "-t", window_id])?;
+    fn select_session(&self, session_name: &str) -> anyhow::Result<()> {
+        self.tmux_cmd(&["switch-client", "-t", session_name])?;
         Ok(())
     }
 }
@@ -660,17 +698,19 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Returns a mapping from tmux window ID (e.g. "@24") to window index (e.g. "2").
-pub fn tmux_window_numbers() -> HashMap<WindowId, String> {
-    let mut map = HashMap::new();
-    if let Ok(output) = tmux_cmd(&["list-windows", "-F", "#{window_id} #{window_index}"]) {
+/// Returns the set of active tmux session names.
+/// Each task now gets its own session, so we just check which sessions exist.
+pub fn tmux_session_names() -> HashSet<WindowId> {
+    let mut set = HashSet::new();
+    if let Ok(output) = tmux_cmd(&["list-sessions", "-F", "#{session_name}"]) {
         for line in output.lines() {
-            if let Some((id, index)) = line.split_once(' ') {
-                map.insert(WindowId::from(id.to_string()), index.to_string());
+            let name = line.trim();
+            if !name.is_empty() {
+                set.insert(WindowId::from(name.to_string()));
             }
         }
     }
-    map
+    set
 }
 
 /// Returns the set of pane IDs that appear idle by inspecting the Claude Code UI.
@@ -691,6 +731,17 @@ pub fn idle_panes(pane_ids: &[&PaneId]) -> HashSet<PaneId> {
         }
     }
     set
+}
+
+/// Sanitize a task name into a valid tmux session name.
+/// Tmux session names cannot contain dots or colons. We prefix with "cc:" to
+/// namespace our sessions, replacing dots/colons in the task name with dashes.
+fn sanitize_tmux_session_name(task_name: &str) -> String {
+    let clean: String = task_name
+        .chars()
+        .map(|c| if c == '.' || c == ':' { '-' } else { c })
+        .collect();
+    format!("cc-{clean}")
 }
 
 /// Free function for workspace bootstrapping (cmd_start), not a task operation.

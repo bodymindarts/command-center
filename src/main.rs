@@ -180,7 +180,7 @@ async fn cmd_list(
         exit_code: String,
     }
 
-    let win_numbers = app.window_numbers();
+    let active_sessions = app.active_sessions();
     let running_pane_ids: Vec<crate::primitives::PaneId> = tasks
         .iter()
         .filter(|t| t.status.is_running())
@@ -206,8 +206,13 @@ async fn cmd_list(
                 win_num: t
                     .tmux_window
                     .as_ref()
-                    .and_then(|w| win_numbers.get(w))
-                    .cloned()
+                    .map(|w| {
+                        if active_sessions.contains(w) {
+                            "●".to_string()
+                        } else {
+                            "-".to_string()
+                        }
+                    })
                     .unwrap_or_else(|| "-".to_string()),
                 id: t.id.short().to_string(),
                 name: t.name.as_str().to_string(),
