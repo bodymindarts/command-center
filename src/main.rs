@@ -517,7 +517,37 @@ async fn cmd_project(action: ProjectAction, app: ClatApp<impl Runtime>) -> anyho
         ProjectAction::Send { name, message } => {
             cmd_project_send(&app, &name, &message).await?;
         }
+        ProjectAction::Log { name, last } => {
+            cmd_project_log(&app, &name, last).await?;
+        }
     }
+    Ok(())
+}
+
+async fn cmd_project_log(
+    app: &ClatApp<impl Runtime>,
+    name: &str,
+    last: Option<u32>,
+) -> anyhow::Result<()> {
+    let (project, messages) = app.project_log(name, last).await?;
+
+    if messages.is_empty() {
+        println!("No messages for project '{}'.", project.name);
+        return Ok(());
+    }
+
+    for msg in &messages {
+        let label = match msg.role {
+            MessageRole::System => "PROMPT",
+            MessageRole::User => "YOU",
+            MessageRole::Assistant => "ASSISTANT",
+        };
+        let time = msg.created_at.format("%H:%M:%S");
+        println!("[{time}] {label}:");
+        println!("{}", msg.content);
+        println!();
+    }
+
     Ok(())
 }
 

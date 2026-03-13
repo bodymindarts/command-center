@@ -497,6 +497,20 @@ impl<R: Runtime> ClatApp<R> {
         })
     }
 
+    pub async fn project_log(
+        &self,
+        name: &str,
+        last: Option<u32>,
+    ) -> anyhow::Result<(Project, Vec<TaskMessage>)> {
+        let project = self.resolve_project(name).await?;
+        let chat = ChatId::Project(project.id);
+        let messages = match last {
+            Some(n) => self.store.list_messages_last(&chat, n).await?,
+            None => self.store.list_messages(&chat).await?,
+        };
+        Ok((project, messages))
+    }
+
     pub async fn list_tasks(&self, all: bool, project: Option<&str>) -> anyhow::Result<Vec<Task>> {
         if all {
             self.store.tasks.list_all().await
