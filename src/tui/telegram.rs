@@ -192,14 +192,21 @@ fn drain_outbound(
                         ]]
                     },
                 });
-                if let Some(resp) = tg_post(&ctx.agent, &format!("{}/sendMessage", ctx.base), &body)
-                    && let Some(id) = resp["result"]["message_id"].as_i64()
-                {
-                    msg_map.insert(perm_id, id);
-                } else {
-                    tg_log(&format!(
-                        "WARN: Failed to send permission {perm_id} for task {task_name} to Telegram"
-                    ));
+                match tg_post(&ctx.agent, &format!("{}/sendMessage", ctx.base), &body) {
+                    Some(resp) if resp["result"]["message_id"].as_i64().is_some() => {
+                        msg_map.insert(perm_id, resp["result"]["message_id"].as_i64().unwrap());
+                    }
+                    Some(resp) => {
+                        tg_log(&format!(
+                            "WARN: permission {perm_id} ({task_name}): sent OK but no message_id in response: {resp}"
+                        ));
+                    }
+                    None => {
+                        // tg_post already logged the HTTP/transport error.
+                        tg_log(&format!(
+                            "WARN: permission {perm_id} ({task_name}): sendMessage failed (see error above)"
+                        ));
+                    }
                 }
             }
             TgOutbound::NewQuestion {
@@ -231,14 +238,20 @@ fn drain_outbound(
                         "inline_keyboard": buttons.iter().map(|b| vec![b.clone()]).collect::<Vec<_>>(),
                     },
                 });
-                if let Some(resp) = tg_post(&ctx.agent, &format!("{}/sendMessage", ctx.base), &body)
-                    && let Some(id) = resp["result"]["message_id"].as_i64()
-                {
-                    msg_map.insert(perm_id, id);
-                } else {
-                    tg_log(&format!(
-                        "WARN: Failed to send question {perm_id} for task {task_name} to Telegram"
-                    ));
+                match tg_post(&ctx.agent, &format!("{}/sendMessage", ctx.base), &body) {
+                    Some(resp) if resp["result"]["message_id"].as_i64().is_some() => {
+                        msg_map.insert(perm_id, resp["result"]["message_id"].as_i64().unwrap());
+                    }
+                    Some(resp) => {
+                        tg_log(&format!(
+                            "WARN: question {perm_id} ({task_name}): sent OK but no message_id in response: {resp}"
+                        ));
+                    }
+                    None => {
+                        tg_log(&format!(
+                            "WARN: question {perm_id} ({task_name}): sendMessage failed (see error above)"
+                        ));
+                    }
                 }
             }
             TgOutbound::Notify { text } => {
@@ -623,9 +636,7 @@ const MAX_SUMMARY_LEN: usize = 300;
 
 /// Escape characters that are special in Telegram's HTML parse mode.
 fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
+    minijinja::HtmlEscape(s).to_string()
 }
 
 /// Truncate a string to at most `max` characters, appending "…" if truncated.
@@ -812,6 +823,7 @@ mod tests {
     #[test]
     fn html_escape_all_special_chars() {
         assert_eq!(html_escape("<>&"), "&lt;&gt;&amp;");
+        assert_eq!(html_escape("\"quoted\""), "&quot;quoted&quot;");
         assert_eq!(html_escape("no specials"), "no specials");
         assert_eq!(html_escape(""), "");
     }
