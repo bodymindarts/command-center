@@ -54,7 +54,6 @@ impl TaskListState {
         self.show_detail
     }
 
-    #[cfg(test)]
     pub fn detail_scroll(&self) -> u16 {
         self.detail_scroll
     }

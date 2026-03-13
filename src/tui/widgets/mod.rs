@@ -63,13 +63,11 @@ pub(in crate::tui) fn ui(frame: &mut ratatui::Frame, state: &mut ScreenState) {
 
     state.update_chat_viewport_height(left[0].height);
 
-    let active = state.active_state();
     let active_project_name = state.active_project_name.as_ref().map(|n| n.as_str());
     chat_panel::render_chat(
         frame,
         state.current_focus(),
-        &active.task_list,
-        &active.chat_view,
+        state.active_state(),
         active_project_name,
         left[0],
     );

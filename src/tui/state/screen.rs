@@ -383,12 +383,12 @@ impl ScreenState {
             .update_chat_viewport_height(area_height);
     }
 
-    pub fn scroll_chat_up(&mut self) {
-        self.active_state_mut().chat_view.scroll_chat_up();
+    pub fn scroll_chat_panel_up(&mut self) {
+        self.active_state_mut().scroll_chat_panel_up();
     }
 
-    pub fn scroll_chat_down(&mut self) {
-        self.active_state_mut().chat_view.scroll_chat_down();
+    pub fn scroll_chat_panel_down(&mut self) {
+        self.active_state_mut().scroll_chat_panel_down();
     }
 
     /// If the active chat is streaming, finish it. Reset scroll regardless.
