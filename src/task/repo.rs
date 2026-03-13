@@ -1,7 +1,7 @@
 use es_entity::*;
 use sqlx::SqlitePool;
 
-use crate::primitives::{ProjectId, TaskId, TaskName, TaskStatus};
+use crate::primitives::{PaneId, ProjectId, TaskId, TaskName, TaskStatus, WindowId};
 
 use super::entity::{Task, TaskEvent};
 
@@ -23,6 +23,8 @@ const ALL: usize = i64::MAX as usize;
             update(persist = false),
         ),
         project_id(ty = "Option<ProjectId>", list_for(by(created_at))),
+        tmux_pane(ty = "Option<PaneId>", create(persist = false)),
+        tmux_window(ty = "Option<WindowId>", create(persist = false)),
     )
 )]
 pub struct TaskRepo {
