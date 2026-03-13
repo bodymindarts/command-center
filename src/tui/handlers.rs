@@ -1078,19 +1078,27 @@ fn handle_hook_permission(
         if req.tool_name == "AskUserQuestion"
             && let Some((question, options)) = parse_ask_user_options(req.tool_input.as_ref())
         {
-            let _ = tx.send(telegram::TgOutbound::NewQuestion {
-                perm_id,
-                task_name: task_name.to_string(),
-                question,
-                options,
-            });
-        } else {
-            let _ = tx.send(telegram::TgOutbound::NewPermission {
+            if tx
+                .send(telegram::TgOutbound::NewQuestion {
+                    perm_id,
+                    task_name: task_name.to_string(),
+                    question,
+                    options,
+                })
+                .is_err()
+            {
+                eprintln!("WARN: Telegram bot channel closed, could not send question {perm_id}");
+            }
+        } else if tx
+            .send(telegram::TgOutbound::NewPermission {
                 perm_id,
                 task_name: task_name.to_string(),
                 tool_name: req.tool_name.clone(),
                 tool_input_summary: req.tool_input_summary.clone(),
-            });
+            })
+            .is_err()
+        {
+            eprintln!("WARN: Telegram bot channel closed, could not send permission {perm_id}");
         }
         tg_perm_ids.insert(perm_id);
     }
