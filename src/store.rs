@@ -5,22 +5,11 @@ use chrono::{DateTime, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 
-use crate::primitives::{ChatId, MessageRole, ProjectId, ProjectName, TaskId};
-use crate::task::{Project, TaskMessage, TaskRepo};
+use crate::primitives::{ChatId, MessageRole, TaskId};
+use crate::project::ProjectRepo;
+use crate::task::{TaskMessage, TaskRepo};
 
-// ── Store (wraps TaskRepo + message/project CRUD) ────────────────────
-
-fn row_to_project(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<Project> {
-    let created_at: String = row.try_get("created_at")?;
-    Ok(Project {
-        id: ProjectId::from(row.try_get::<String, _>("id")?),
-        name: ProjectName::from(row.try_get::<String, _>("name")?),
-        description: row.try_get("description")?,
-        created_at: DateTime::parse_from_rfc3339(&created_at)
-            .unwrap_or_default()
-            .with_timezone(&Utc),
-    })
-}
+// ── Store (wraps TaskRepo + ProjectRepo + message CRUD) ──────────────
 
 fn row_to_message(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<TaskMessage> {
     let created_at: String = row.try_get("created_at")?;
@@ -38,6 +27,7 @@ fn row_to_message(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<TaskMessage> 
 pub struct Store {
     pool: SqlitePool,
     pub tasks: TaskRepo,
+    pub projects: ProjectRepo,
 }
 
 impl Store {
@@ -53,7 +43,12 @@ impl Store {
             .await
             .context("failed to run database migrations")?;
         let tasks = TaskRepo::new(&pool);
-        Ok(Self { pool, tasks })
+        let projects = ProjectRepo::new(&pool);
+        Ok(Self {
+            pool,
+            tasks,
+            projects,
+        })
     }
 
     pub async fn open(db_path: &Path) -> anyhow::Result<Self> {
@@ -70,7 +65,12 @@ impl Store {
             .await
             .with_context(|| format!("failed to run migrations at {}", db_path.display()))?;
         let tasks = TaskRepo::new(&pool);
-        Ok(Self { pool, tasks })
+        let projects = ProjectRepo::new(&pool);
+        Ok(Self {
+            pool,
+            tasks,
+            projects,
+        })
     }
 
     // -- Message CRUD (not event-sourced) --
@@ -115,60 +115,15 @@ impl Store {
             .await?;
         Ok(())
     }
-
-    // -- Project CRUD (not event-sourced) --
-
-    pub async fn insert_project(
-        &self,
-        id: &ProjectId,
-        name: &str,
-        description: &str,
-    ) -> anyhow::Result<()> {
-        let now = Utc::now().to_rfc3339();
-        sqlx::query(
-            "INSERT INTO projects (id, name, description, created_at)
-             VALUES (?, ?, ?, ?)",
-        )
-        .bind(id.to_string())
-        .bind(name)
-        .bind(description)
-        .bind(&now)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    pub async fn get_project_by_name(&self, name: &str) -> anyhow::Result<Option<Project>> {
-        let row =
-            sqlx::query("SELECT id, name, description, created_at FROM projects WHERE name = ?")
-                .bind(name)
-                .fetch_optional(&self.pool)
-                .await?;
-        row.as_ref().map(row_to_project).transpose()
-    }
-
-    pub async fn list_projects(&self) -> anyhow::Result<Vec<Project>> {
-        let rows = sqlx::query(
-            "SELECT id, name, description, created_at FROM projects ORDER BY created_at ASC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        rows.iter().map(row_to_project).collect()
-    }
-
-    pub async fn delete_project(&self, id: &ProjectId) -> anyhow::Result<()> {
-        sqlx::query("DELETE FROM projects WHERE id = ?")
-            .bind(id.to_string())
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::{ClaudeSessionId, PaneId, TaskName, TaskStatus, WindowId};
+    use crate::primitives::{
+        ClaudeSessionId, PaneId, ProjectId, ProjectName, TaskName, TaskStatus, WindowId,
+    };
+    use crate::project::NewProject;
     use crate::task::{NewTask, Task};
 
     async fn test_store() -> Store {
@@ -325,52 +280,61 @@ mod tests {
         assert!(messages[1].created_at <= messages[2].created_at);
     }
 
-    // -- Project CRUD tests --
+    // -- Project repo tests --
 
-    #[tokio::test]
-    async fn insert_and_get_project_by_name() {
-        let store = test_store().await;
-        let pid = ProjectId::new();
-        store
-            .insert_project(&pid, "my-project", "a description")
-            .await
-            .unwrap();
-
-        let project = store
-            .get_project_by_name("my-project")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(project.id, pid);
-        assert_eq!(project.name, "my-project");
-        assert_eq!(project.description, "a description");
+    fn pname(s: &str) -> ProjectName {
+        ProjectName::from(s.to_string())
     }
 
     #[tokio::test]
-    async fn get_project_by_name_returns_none_for_unknown() {
+    async fn create_and_find_project_by_name() {
         let store = test_store().await;
-        let project = store.get_project_by_name("nonexistent").await.unwrap();
-        assert!(project.is_none());
+        let new = NewProject {
+            id: ProjectId::new(),
+            name: pname("my-project"),
+            description: "a description".to_string(),
+        };
+        let project = store.projects.create(new).await.unwrap();
+        assert_eq!(project.name, "my-project");
+        assert_eq!(project.description, "a description");
+
+        let found = store
+            .projects
+            .find_by_name(pname("my-project"))
+            .await
+            .unwrap();
+        assert_eq!(found.id, project.id);
+        assert_eq!(found.name, "my-project");
+        assert_eq!(found.description, "a description");
+    }
+
+    #[tokio::test]
+    async fn find_project_by_name_returns_err_for_unknown() {
+        let store = test_store().await;
+        let result = store.projects.find_by_name(pname("nonexistent")).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn list_projects_empty() {
         let store = test_store().await;
-        let projects = store.list_projects().await.unwrap();
+        let projects = store.projects.list_all().await.unwrap();
         assert!(projects.is_empty());
     }
 
     #[tokio::test]
     async fn list_projects_ordered_by_created_at() {
         let store = test_store().await;
-        let p1 = ProjectId::new();
-        let p2 = ProjectId::new();
-        let p3 = ProjectId::new();
-        store.insert_project(&p1, "alpha", "first").await.unwrap();
-        store.insert_project(&p2, "beta", "second").await.unwrap();
-        store.insert_project(&p3, "gamma", "third").await.unwrap();
+        for name in ["alpha", "beta", "gamma"] {
+            let new = NewProject {
+                id: ProjectId::new(),
+                name: pname(name),
+                description: String::new(),
+            };
+            store.projects.create(new).await.unwrap();
+        }
 
-        let projects = store.list_projects().await.unwrap();
+        let projects = store.projects.list_all().await.unwrap();
         assert_eq!(projects.len(), 3);
         assert_eq!(projects[0].name, "alpha");
         assert_eq!(projects[1].name, "beta");
@@ -380,25 +344,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn insert_project_rejects_duplicate_name() {
+    async fn create_project_rejects_duplicate_name() {
         let store = test_store().await;
-        let p1 = ProjectId::new();
-        let p2 = ProjectId::new();
-        store.insert_project(&p1, "dup", "first").await.unwrap();
-        let err = store.insert_project(&p2, "dup", "second").await;
+        let new1 = NewProject {
+            id: ProjectId::new(),
+            name: pname("dup"),
+            description: String::new(),
+        };
+        store.projects.create(new1).await.unwrap();
+
+        let new2 = NewProject {
+            id: ProjectId::new(),
+            name: pname("dup"),
+            description: String::new(),
+        };
+        let err = store.projects.create(new2).await;
         assert!(err.is_err());
     }
 
     #[tokio::test]
-    async fn delete_project_removes_it() {
+    async fn delete_project_soft_deletes() {
         let store = test_store().await;
-        let pid = ProjectId::new();
-        store.insert_project(&pid, "doomed", "bye").await.unwrap();
-        assert!(store.get_project_by_name("doomed").await.unwrap().is_some());
+        let new = NewProject {
+            id: ProjectId::new(),
+            name: pname("doomed"),
+            description: "bye".to_string(),
+        };
+        let mut project = store.projects.create(new).await.unwrap();
 
-        store.delete_project(&pid).await.unwrap();
-        assert!(store.get_project_by_name("doomed").await.unwrap().is_none());
-        assert!(store.list_projects().await.unwrap().is_empty());
+        // Can find by name after creation.
+        let found = store.projects.find_by_name(pname("doomed")).await;
+        assert!(found.is_ok());
+
+        let _ = project.delete();
+        store.projects.delete(project).await.unwrap();
+
+        // Soft-deleted: find_by_name should error, list should be empty.
+        let result = store.projects.find_by_name(pname("doomed")).await;
+        assert!(result.is_err());
+        assert!(store.projects.list_all().await.unwrap().is_empty());
     }
 
     // -- list_visible_for_project tests --

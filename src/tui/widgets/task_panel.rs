@@ -3,7 +3,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
-use crate::task::{DisplayStatus, Project};
+use crate::project::Project;
+use crate::task::DisplayStatus;
 
 use super::super::permissions::PermissionStore;
 use super::super::state::{Focus, ProjectListState, TaskListState};

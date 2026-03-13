@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::primitives::{ProjectId, ProjectName, TaskName};
-use crate::task::{Project, Task};
+use crate::project::Project;
+use crate::task::Task;
 use crate::tui::keybindings::Keybindings;
 
 use super::TaskListState;
@@ -683,8 +684,8 @@ impl ScreenState {
 mod tests {
     use super::*;
     use crate::primitives::{ClaudeSessionId, ProjectId, ProjectName, TaskId, TaskName};
-    use crate::task::{NewTask, Project, Task};
-    use chrono::Utc;
+    use crate::project::NewProject;
+    use crate::task::{NewTask, Task};
     use es_entity::*;
 
     fn make_task(name: &str) -> Task {
@@ -702,12 +703,13 @@ mod tests {
     }
 
     fn make_project(name: &str) -> Project {
-        Project {
+        let new = NewProject {
             id: ProjectId::new(),
             name: ProjectName::from(name.to_string()),
             description: String::new(),
-            created_at: Utc::now(),
-        }
+        };
+        let events = new.into_events();
+        Project::try_from_events(events).unwrap()
     }
 
     fn state_with_tasks(n: usize) -> ScreenState {
