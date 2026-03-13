@@ -228,7 +228,7 @@ impl<R: Runtime> ClatApp<R> {
         skill.validate_params(&params_map)?;
 
         // 2. Render prompts
-        let system_prompt = skill.render_system(&self.paths.root)?;
+        let system_prompt = skill.render_system(&params_map, &self.paths.root)?;
         let user_prompt = match req.prompt_mode {
             PromptMode::Full => Some(skill.render_prompt(&params_map, &self.paths.root)?),
             PromptMode::Interactive => None,
