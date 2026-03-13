@@ -6,8 +6,7 @@ use es_entity::*;
 use serde::{Deserialize, Serialize};
 
 use crate::primitives::{
-    ClaudeSessionId, MessageRole, PaneId, ProjectId, ProjectName, TaskId, TaskName, TaskStatus,
-    WindowId,
+    ClaudeSessionId, MessageRole, PaneId, ProjectId, TaskId, TaskName, TaskStatus, WindowId,
 };
 
 use super::error::TaskError;
@@ -381,14 +380,5 @@ pub struct TaskMessage {
     pub chat_id: String,
     pub role: MessageRole,
     pub content: String,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct Project {
-    pub id: ProjectId,
-    pub name: ProjectName,
-    pub description: String,
     pub created_at: DateTime<Utc>,
 }

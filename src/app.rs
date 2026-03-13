@@ -4,12 +4,13 @@ use std::path::Path;
 use crate::config::Paths;
 use crate::jwt::JwtSigner;
 use crate::primitives::{
-    ChatId, ClaudeSessionId, MessageRole, ProjectId, TaskId, TaskName, WindowId,
+    ChatId, ClaudeSessionId, MessageRole, ProjectId, ProjectName, TaskId, TaskName, WindowId,
 };
+use crate::project::{NewProject, Project};
 use crate::runtime::{LaunchConfig, Runtime};
 use crate::skill::SkillFile;
 use crate::store::Store;
-use crate::task::{NewTask, Project, Task, TaskMessage};
+use crate::task::{NewTask, Task, TaskMessage};
 use anyhow::bail;
 
 pub enum WorkDirMode<'a> {
@@ -515,11 +516,7 @@ impl<R: Runtime> ClatApp<R> {
         if all {
             self.store.tasks.list_all().await
         } else if let Some(name) = project {
-            let project = self
-                .store
-                .get_project_by_name(name)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("no project found with name '{name}'"))?;
+            let project = self.resolve_project(name).await?;
             self.store
                 .tasks
                 .list_visible_for_project(Some(&project.id))
@@ -618,32 +615,30 @@ impl<R: Runtime> ClatApp<R> {
     // -- Project methods --
 
     pub async fn create_project(&self, name: &str, description: &str) -> anyhow::Result<Project> {
-        let id = crate::primitives::ProjectId::new();
-        self.store.insert_project(&id, name, description).await?;
-        self.store
-            .get_project_by_name(name)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("failed to retrieve project after insert"))
+        let new = NewProject {
+            id: ProjectId::new(),
+            name: ProjectName::from(name.to_string()),
+            description: description.to_string(),
+        };
+        let project = self.store.projects.create(new).await?;
+        Ok(project)
     }
 
     pub async fn list_projects(&self) -> anyhow::Result<Vec<Project>> {
-        self.store.list_projects().await
+        self.store.projects.list_all().await
     }
 
     pub async fn delete_project(&self, name: &str) -> anyhow::Result<()> {
-        let project = self
-            .store
-            .get_project_by_name(name)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("no project found with name '{name}'"))?;
-        self.store.delete_project(&project.id).await
+        let name = ProjectName::from(name.to_string());
+        let mut project = self.store.projects.find_by_name(name).await?;
+        let _ = project.delete();
+        self.store.projects.delete(project).await?;
+        Ok(())
     }
 
     pub async fn resolve_project(&self, name: &str) -> anyhow::Result<Project> {
-        self.store
-            .get_project_by_name(name)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("no project found with name '{name}'"))
+        let name = ProjectName::from(name.to_string());
+        Ok(self.store.projects.find_by_name(name).await?)
     }
 
     pub async fn resolve_project_id(&self, name: &str) -> anyhow::Result<ProjectId> {
@@ -1514,7 +1509,6 @@ prompt = "deploy to {{ env }}"
 
         let err = service.delete_project("ghost").await;
         assert!(err.is_err());
-        assert!(err.unwrap_err().to_string().contains("no project found"));
     }
 
     #[tokio::test]

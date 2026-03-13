@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::os::unix::net::UnixStream;
 
 use crate::primitives::{ProjectId, TaskName};
-use crate::task::Project;
+use crate::project::Project;
 
 pub struct ActivePermission {
     pub perm_id: u64,

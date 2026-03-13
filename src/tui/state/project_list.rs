@@ -1,6 +1,6 @@
 use ratatui::widgets::ListState;
 
-use crate::task::Project;
+use crate::project::Project;
 
 pub struct ProjectListState {
     /// Cached list of projects for rendering.

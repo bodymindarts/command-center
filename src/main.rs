@@ -6,6 +6,7 @@ mod jwt;
 mod mcp;
 mod permission;
 mod primitives;
+mod project;
 mod runtime;
 mod skill;
 mod store;
