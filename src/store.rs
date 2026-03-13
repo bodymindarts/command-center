@@ -51,6 +51,10 @@ impl Store {
         })
     }
 
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     pub async fn open(db_path: &Path) -> anyhow::Result<Self> {
         let options = SqliteConnectOptions::new()
             .filename(db_path)

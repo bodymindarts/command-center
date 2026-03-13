@@ -5,7 +5,7 @@ use std::sync::Arc;
 use axum::extract::Request;
 use axum::middleware::Next;
 use axum::response::Response;
-use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::router::tool::{ToolRoute, ToolRouter};
 use rmcp::handler::server::tool::Extension;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
@@ -15,6 +15,7 @@ use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use crate::app::{ClatApp, PromptMode, SpawnOutput, SpawnRequest, WorkDirMode};
 use crate::jwt::JwtSigner;
 use crate::runtime::Runtime;
+use crate::watch::WatchService;
 
 // ---------------------------------------------------------------------------
 // Trait-object interface so the MCP server struct stays non-generic.
@@ -103,15 +104,102 @@ impl<R: Runtime + Send + Sync + 'static> McpApp for ClatApp<R> {
 #[derive(Clone)]
 pub struct ClatMcpServer {
     app: Arc<dyn McpApp>,
+    #[allow(dead_code)]
+    watch_service: Arc<WatchService>,
     tool_router: ToolRouter<Self>,
 }
 
 impl ClatMcpServer {
-    pub fn new(app: Arc<dyn McpApp>) -> Self {
+    pub fn new(app: Arc<dyn McpApp>, watch_service: Arc<WatchService>) -> Self {
+        let mut router = Self::tool_router();
+        router.add_route(Self::create_watch_route(Arc::clone(&watch_service)));
         Self {
             app,
-            tool_router: Self::tool_router(),
+            watch_service,
+            tool_router: router,
         }
+    }
+
+    fn create_watch_route(watch_service: Arc<WatchService>) -> ToolRoute<Self> {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["label", "check"],
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": "Short description of what you're watching for (included in the notification)"
+                },
+                "check": {
+                    "oneOf": [{
+                        "type": "object",
+                        "title": "timer",
+                        "description": "Fire a notification after a delay",
+                        "required": ["name"],
+                        "properties": {
+                            "name": { "const": "timer" }
+                        },
+                        "additionalProperties": false
+                    }]
+                },
+                "delay_seconds": {
+                    "type": "integer",
+                    "minimum": 5,
+                    "description": "Seconds to wait before firing the notification"
+                }
+            },
+            "additionalProperties": false
+        });
+
+        let input_schema = Arc::new(schema.as_object().unwrap().clone());
+        let tool = rmcp::model::Tool::new(
+            "create_watch",
+            "Set a background timer. You'll receive a message when it fires. Uses zero LLM tokens while waiting. Returns immediately with a watch ID.",
+            input_schema,
+        );
+
+        ToolRoute::new_dyn(
+            tool,
+            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer>| {
+                let ws = Arc::clone(&watch_service);
+                Box::pin(async move {
+                    // Extract task_id from JWT claims via request extensions.
+                    let task_id = ctx
+                        .request_context
+                        .extensions
+                        .get::<axum::http::request::Parts>()
+                        .and_then(|parts| parts.extensions.get::<crate::jwt::AgentClaims>())
+                        .map(|c| c.sub.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+
+                    let args = ctx.arguments.unwrap_or_default();
+                    let label = args
+                        .get("label")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unnamed timer");
+                    let delay = args
+                        .get("delay_seconds")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(30);
+
+                    match ws.create_timer(&task_id, label, delay).await {
+                        Ok(watch_id) => {
+                            let response = serde_json::json!({
+                                "watch_id": watch_id,
+                                "status": "active",
+                                "fires_in_seconds": delay,
+                            });
+                            Ok(CallToolResult::success(vec![Content::text(
+                                serde_json::to_string_pretty(&response).unwrap(),
+                            )]))
+                        }
+                        Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                            "Failed to create watch: {e}"
+                        ))])),
+                    }
+                })
+            },
+        )
     }
 }
 
@@ -288,6 +376,7 @@ async fn jwt_auth_middleware(
 /// Returns the URL the server is listening on.
 pub async fn start_mcp_server<R: Runtime + Send + Sync + 'static>(
     app: Arc<ClatApp<R>>,
+    watch_service: Arc<WatchService>,
     port: u16,
 ) -> anyhow::Result<String> {
     use rmcp::transport::streamable_http_server::{
@@ -302,7 +391,12 @@ pub async fn start_mcp_server<R: Runtime + Send + Sync + 'static>(
         ..Default::default()
     };
     let service = StreamableHttpService::new(
-        move || Ok(ClatMcpServer::new(Arc::clone(&app_dyn))),
+        move || {
+            Ok(ClatMcpServer::new(
+                Arc::clone(&app_dyn),
+                Arc::clone(&watch_service),
+            ))
+        },
         LocalSessionManager::default().into(),
         config,
     );

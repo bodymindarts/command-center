@@ -145,7 +145,6 @@ impl<R: Runtime> ClatApp<R> {
         &self.jwt_signer
     }
 
-    #[cfg(test)]
     pub fn store(&self) -> &Store {
         &self.store
     }

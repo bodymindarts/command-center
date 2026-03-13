@@ -12,6 +12,7 @@ mod skill;
 mod store;
 mod task;
 mod tui;
+mod watch;
 
 use anyhow::{Context, bail};
 use clap::Parser;
@@ -121,9 +122,16 @@ async fn cmd_dash<R: Runtime + Send + Sync + 'static>(
     let app = Arc::new(app);
     let project_root = app.project_root().to_path_buf();
 
+    // Initialize WatchService (job scheduler for background timers).
+    let watch_service = Arc::new(
+        watch::WatchService::init(app.store().pool())
+            .await
+            .context("failed to initialize watch service")?,
+    );
+
     // Start MCP server on localhost.
     const MCP_PORT: u16 = 9111;
-    match mcp::start_mcp_server(Arc::clone(&app), MCP_PORT).await {
+    match mcp::start_mcp_server(Arc::clone(&app), Arc::clone(&watch_service), MCP_PORT).await {
         Ok(url) => {
             mcp::write_mcp_url_breadcrumb(&project_root, &url);
         }
