@@ -2,273 +2,11 @@ use std::path::Path;
 
 use anyhow::Context;
 use chrono::{DateTime, Utc};
-use es_entity::*;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 
 use crate::primitives::{ChatId, MessageRole, ProjectId, ProjectName, TaskId};
-use crate::task::{NewTask, Project, Task, TaskMessage};
-
-// ── TaskRepo (manual implementation using es-entity types) ──────────
-
-pub struct TaskRepo {
-    pool: SqlitePool,
-}
-
-impl TaskRepo {
-    fn new(pool: &SqlitePool) -> Self {
-        Self { pool: pool.clone() }
-    }
-
-    /// Create a new task: persist initial events and insert index row.
-    pub async fn create(&self, new_task: NewTask) -> anyhow::Result<Task> {
-        let events = new_task.into_events();
-        let task = Task::try_from_events(events)?;
-
-        // Write index row first (task_events has FK to tasks)
-        let now = Utc::now().to_rfc3339();
-        sqlx::query(
-            "INSERT INTO tasks (id, created_at, name, skill_name, params_json, status, \
-             tmux_pane, tmux_window, work_dir, session_id, started_at, completed_at, \
-             exit_code, output, project_id) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(task.id.to_string())
-        .bind(&now)
-        .bind(&task.name)
-        .bind(&task.skill_name)
-        .bind(&task.params_json)
-        .bind(task.status)
-        .bind(task.tmux_pane.as_ref())
-        .bind(task.tmux_window.as_ref())
-        .bind(&task.work_dir)
-        .bind(task.session_id.map(|s| s.to_string()))
-        .bind(task.started_at.to_rfc3339())
-        .bind(task.completed_at.as_ref().map(|dt| dt.to_rfc3339()))
-        .bind(task.exit_code)
-        .bind(task.output.as_deref())
-        .bind(task.project_id.map(|p| p.to_string()))
-        .execute(&self.pool)
-        .await?;
-
-        // Write initial events
-        self.persist_new_events(&task).await?;
-
-        // Re-load to get persisted event metadata
-        self.find_by_id(task.id).await
-    }
-
-    /// Persist new events and update the index row.
-    pub async fn update(&self, task: &mut Task) -> anyhow::Result<()> {
-        if !task.events().any_new() {
-            return Ok(());
-        }
-
-        self.persist_new_events(task).await?;
-
-        // Update index row
-        sqlx::query(
-            "UPDATE tasks SET status = ?, tmux_pane = ?, tmux_window = ?, \
-             completed_at = ?, exit_code = ?, output = ?, name = ?, \
-             session_id = ?, work_dir = ?, project_id = ? \
-             WHERE id = ?",
-        )
-        .bind(task.status)
-        .bind(task.tmux_pane.as_ref())
-        .bind(task.tmux_window.as_ref())
-        .bind(task.completed_at.as_ref().map(|dt| dt.to_rfc3339()))
-        .bind(task.exit_code)
-        .bind(task.output.as_deref())
-        .bind(&task.name)
-        .bind(task.session_id.map(|s| s.to_string()))
-        .bind(&task.work_dir)
-        .bind(task.project_id.map(|p| p.to_string()))
-        .bind(task.id.to_string())
-        .execute(&self.pool)
-        .await?;
-
-        // Mark events as persisted
-        let now = Utc::now();
-        task.events_mut().mark_new_events_persisted_at(now);
-        Ok(())
-    }
-
-    /// Find a task by exact ID, hydrating from events.
-    pub async fn find_by_id(&self, id: TaskId) -> anyhow::Result<Task> {
-        let rows = self.load_events_for_id(&id).await?;
-        EntityEvents::load_first::<Task>(rows)?
-            .ok_or_else(|| anyhow::anyhow!("task {} not found", id))
-    }
-
-    /// Find a task by ID prefix. Returns None if no match, errors if ambiguous.
-    pub async fn find_by_id_prefix(&self, prefix: &str) -> anyhow::Result<Option<Task>> {
-        let pattern = format!("{prefix}%");
-        let ids = sqlx::query_scalar::<_, String>("SELECT id FROM tasks WHERE id LIKE ?")
-            .bind(&pattern)
-            .fetch_all(&self.pool)
-            .await?;
-
-        if ids.len() > 1 {
-            anyhow::bail!("ambiguous prefix '{prefix}': matches {} tasks", ids.len());
-        }
-
-        match ids.into_iter().next() {
-            Some(id_str) => {
-                let id: TaskId = id_str.into();
-                Ok(Some(self.find_by_id(id).await?))
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// List all tasks ordered by created_at DESC.
-    pub async fn list_all(&self) -> anyhow::Result<Vec<Task>> {
-        self.list_with_filter("1=1").await
-    }
-
-    /// List tasks with status = 'running'.
-    pub async fn list_active(&self) -> anyhow::Result<Vec<Task>> {
-        self.list_with_filter("t.status = 'running'").await
-    }
-
-    /// List tasks scoped to a project.
-    pub async fn list_visible_for_project(
-        &self,
-        project_id: Option<&ProjectId>,
-    ) -> anyhow::Result<Vec<Task>> {
-        let sql_base = "SELECT e.id, e.sequence, e.event_type, e.event, e.recorded_at \
-                        FROM task_events e \
-                        INNER JOIN tasks t ON t.id = e.id";
-        let order = "ORDER BY CASE WHEN t.status = 'running' THEN 0 ELSE 1 END, \
-                     t.created_at DESC, e.id, e.sequence";
-
-        let rows = match project_id {
-            Some(pid) => {
-                let pid_str = pid.to_string();
-                sqlx::query_as::<_, EventRow>(&format!("{sql_base} WHERE t.project_id = ? {order}"))
-                    .bind(&pid_str)
-                    .fetch_all(&self.pool)
-                    .await?
-            }
-            None => {
-                sqlx::query_as::<_, EventRow>(&format!(
-                    "{sql_base} WHERE t.project_id IS NULL {order}"
-                ))
-                .fetch_all(&self.pool)
-                .await?
-            }
-        };
-
-        let generic: Vec<_> = rows.into_iter().map(|r| r.into_generic()).collect();
-        let (tasks, _) = EntityEvents::load_n::<Task>(generic, usize::MAX)?;
-        Ok(tasks)
-    }
-
-    /// Delete a task and its events.
-    pub async fn delete_task(&self, id: TaskId) -> anyhow::Result<()> {
-        sqlx::query("DELETE FROM task_events WHERE id = ?")
-            .bind(id.to_string())
-            .execute(&self.pool)
-            .await?;
-        sqlx::query("DELETE FROM tasks WHERE id = ?")
-            .bind(id.to_string())
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    // ── Internal helpers ──
-
-    async fn persist_new_events(&self, task: &Task) -> anyhow::Result<()> {
-        let events = task.events();
-        if !events.any_new() {
-            return Ok(());
-        }
-
-        let id_str = task.id.to_string();
-        let now = Utc::now().to_rfc3339();
-        let base_sequence = events.len_persisted() as i32;
-        let event_types = events.new_event_types();
-        let event_jsons = events.serialize_new_events();
-
-        for (i, (event_type, event_json)) in event_types.iter().zip(event_jsons.iter()).enumerate()
-        {
-            let seq = base_sequence + 1 + i as i32;
-            let json_str = serde_json::to_string(event_json)?;
-            sqlx::query(
-                "INSERT INTO task_events (id, sequence, event_type, event, recorded_at) \
-                 VALUES (?, ?, ?, ?, ?)",
-            )
-            .bind(&id_str)
-            .bind(seq)
-            .bind(event_type)
-            .bind(&json_str)
-            .bind(&now)
-            .execute(&self.pool)
-            .await?;
-        }
-
-        Ok(())
-    }
-
-    async fn load_events_for_id(&self, id: &TaskId) -> anyhow::Result<Vec<GenericEvent<TaskId>>> {
-        let rows = sqlx::query_as::<_, EventRow>(
-            "SELECT id, sequence, event_type, event, recorded_at \
-             FROM task_events WHERE id = ? ORDER BY sequence",
-        )
-        .bind(id.to_string())
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(rows.into_iter().map(|r| r.into_generic()).collect())
-    }
-
-    async fn list_with_filter(&self, filter: &str) -> anyhow::Result<Vec<Task>> {
-        let sql = format!(
-            "SELECT e.id, e.sequence, e.event_type, e.event, e.recorded_at \
-             FROM task_events e \
-             INNER JOIN tasks t ON t.id = e.id \
-             WHERE {filter} \
-             ORDER BY t.created_at DESC, e.id, e.sequence"
-        );
-        let rows = sqlx::query_as::<_, EventRow>(&sql)
-            .fetch_all(&self.pool)
-            .await?;
-        let generic: Vec<_> = rows.into_iter().map(|r| r.into_generic()).collect();
-        let (tasks, _) = EntityEvents::load_n::<Task>(generic, usize::MAX)?;
-        Ok(tasks)
-    }
-}
-
-// Helper struct for mapping sqlx rows to GenericEvent.
-#[derive(sqlx::FromRow)]
-struct EventRow {
-    id: String,
-    sequence: i32,
-    #[allow(dead_code)]
-    event_type: String,
-    event: String,
-    recorded_at: String,
-}
-
-impl EventRow {
-    fn into_generic(self) -> GenericEvent<TaskId> {
-        let entity_id: TaskId = self.id.into();
-        let event: serde_json::Value =
-            serde_json::from_str(&self.event).unwrap_or(serde_json::Value::Null);
-        let recorded_at = DateTime::parse_from_rfc3339(&self.recorded_at)
-            .unwrap_or_default()
-            .with_timezone(&Utc);
-
-        GenericEvent {
-            entity_id,
-            sequence: self.sequence,
-            event,
-            context: None,
-            recorded_at,
-        }
-    }
-}
+use crate::task::{Project, TaskMessage, TaskRepo};
 
 // ── Store (wraps TaskRepo + message/project CRUD) ────────────────────
 
@@ -431,6 +169,7 @@ impl Store {
 mod tests {
     use super::*;
     use crate::primitives::{ClaudeSessionId, PaneId, TaskName, TaskStatus, WindowId};
+    use crate::task::{NewTask, Task};
 
     async fn test_store() -> Store {
         Store::open_in_memory().await.unwrap()
@@ -447,7 +186,7 @@ mod tests {
             project_id: None,
         };
         let mut task = store.tasks.create(new_task).await.unwrap();
-        task.launch_agent(
+        let _ = task.launch_agent(
             PaneId::from("%1".to_string()),
             WindowId::from("@1".to_string()),
         );
@@ -470,7 +209,7 @@ mod tests {
             project_id: project_id.copied(),
         };
         let mut task = store.tasks.create(new_task).await.unwrap();
-        task.launch_agent(
+        let _ = task.launch_agent(
             PaneId::from("%1".to_string()),
             WindowId::from("@1".to_string()),
         );
@@ -483,8 +222,8 @@ mod tests {
         let store = test_store().await;
         let mut task = create_running_task(&store, "t1").await;
 
-        let closed = task.close(Some("output text".to_string())).unwrap();
-        assert!(closed);
+        let result = task.close(Some("output text".to_string()));
+        assert!(result.did_execute());
         store.tasks.update(&mut task).await.unwrap();
 
         let loaded = store
@@ -503,11 +242,11 @@ mod tests {
         let store = test_store().await;
         let mut task = create_running_task(&store, "t2").await;
 
-        task.complete(0, None).unwrap();
+        let _ = task.complete(0, None).unwrap();
         store.tasks.update(&mut task).await.unwrap();
 
-        let closed = task.close(None).unwrap();
-        assert!(!closed);
+        let result = task.close(None);
+        assert!(result.was_already_applied());
         assert_eq!(task.status, TaskStatus::Completed);
     }
 
@@ -516,10 +255,10 @@ mod tests {
         let store = test_store().await;
         let _task1 = create_running_task(&store, "active").await;
         let mut task2 = create_running_task(&store, "done").await;
-        task2.complete(0, None).unwrap();
+        let _ = task2.complete(0, None).unwrap();
         store.tasks.update(&mut task2).await.unwrap();
         let mut task3 = create_running_task(&store, "closed").await;
-        task3.close(None).unwrap();
+        let _ = task3.close(None);
         store.tasks.update(&mut task3).await.unwrap();
 
         let active = store.tasks.list_active().await.unwrap();
@@ -698,7 +437,7 @@ mod tests {
     async fn visible_tasks_running_sorted_before_completed() {
         let store = test_store().await;
         let mut task1 = create_task_with_project(&store, "completed-task", None).await;
-        task1.complete(0, None).unwrap();
+        let _ = task1.complete(0, None).unwrap();
         store.tasks.update(&mut task1).await.unwrap();
         create_task_with_project(&store, "running-task", None).await;
 

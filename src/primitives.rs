@@ -2,27 +2,91 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-// === UUID types (event-sourced entity IDs) ===
+// === UUID entity IDs (SQLite TEXT encoding) ===
 //
-// entity_id! generates: sqlx::Type (transparent), Debug, Clone, Copy,
-// PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-// Display, FromStr, new() (UUID v7), From<Uuid>.
-es_entity::entity_id! { TaskId, ProjectId, ClaudeSessionId }
-
-/// Extra impls the entity_id! macro doesn't provide.
-macro_rules! impl_id_from_string {
-    ($($name:ident),+) => {
+// Like es_entity::entity_id! but encodes as TEXT in SQLite instead of BLOB.
+// This is needed because:
+//   - our schema uses TEXT id columns
+//   - prefix-match queries (LIKE) require text storage
+//   - custom repo methods read ids as String
+macro_rules! entity_id {
+    ($($name:ident),+ $(,)?) => {
         $(
+            #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash,
+                     Serialize, Deserialize)]
+            #[serde(transparent)]
+            pub struct $name(uuid::Uuid);
+
+            impl $name {
+                #[allow(clippy::new_without_default)]
+                pub fn new() -> Self {
+                    Self(uuid::Uuid::now_v7())
+                }
+            }
+
+            impl From<uuid::Uuid> for $name {
+                fn from(uuid: uuid::Uuid) -> Self { Self(uuid) }
+            }
+
+            impl From<&uuid::Uuid> for $name {
+                fn from(uuid: &uuid::Uuid) -> Self { Self(*uuid) }
+            }
+
             impl From<String> for $name {
                 fn from(s: String) -> Self {
                     s.parse()
                         .unwrap_or_else(|e| panic!("invalid UUID for {}: '{s}': {e}", stringify!($name)))
                 }
             }
+
+            impl fmt::Display for $name {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    self.0.fmt(f)
+                }
+            }
+
+            impl std::str::FromStr for $name {
+                type Err = uuid::Error;
+                fn from_str(s: &str) -> Result<Self, Self::Err> {
+                    Ok(Self(uuid::Uuid::parse_str(s)?))
+                }
+            }
+
+            // -- SQLite-compatible sqlx impls (TEXT, not BLOB) --
+
+            impl sqlx::Type<sqlx::Sqlite> for $name {
+                fn type_info() -> sqlx::sqlite::SqliteTypeInfo {
+                    <String as sqlx::Type<sqlx::Sqlite>>::type_info()
+                }
+                fn compatible(ty: &sqlx::sqlite::SqliteTypeInfo) -> bool {
+                    <String as sqlx::Type<sqlx::Sqlite>>::compatible(ty)
+                }
+            }
+
+            impl<'q> sqlx::Encode<'q, sqlx::Sqlite> for $name {
+                fn encode_by_ref(
+                    &self,
+                    buf: &mut <sqlx::Sqlite as sqlx::Database>::ArgumentBuffer<'q>,
+                ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
+                    let s = self.0.to_string();
+                    <String as sqlx::Encode<'q, sqlx::Sqlite>>::encode(s, buf)
+                }
+            }
+
+            impl<'r> sqlx::Decode<'r, sqlx::Sqlite> for $name {
+                fn decode(
+                    value: <sqlx::Sqlite as sqlx::Database>::ValueRef<'r>,
+                ) -> Result<Self, sqlx::error::BoxDynError> {
+                    let s = <&str as sqlx::Decode<'r, sqlx::Sqlite>>::decode(value)?;
+                    let uuid = uuid::Uuid::parse_str(s)?;
+                    Ok(Self(uuid))
+                }
+            }
         )+
     };
 }
-impl_id_from_string!(TaskId, ProjectId, ClaudeSessionId);
+
+entity_id! { TaskId, ProjectId, ClaudeSessionId }
 
 impl TaskId {
     pub fn short(&self) -> String {

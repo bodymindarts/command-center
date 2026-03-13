@@ -280,8 +280,12 @@ impl<R: Runtime> ClatApp<R> {
             user_prompt: user_prompt.as_deref(),
             skip_permissions: self.skip_permissions,
         })?;
-        task.launch_agent(result.pane_id.clone(), result.window_id.clone());
-        self.store.tasks.update(&mut task).await?;
+        if task
+            .launch_agent(result.pane_id.clone(), result.window_id.clone())
+            .did_execute()
+        {
+            self.store.tasks.update(&mut task).await?;
+        }
 
         Ok(SpawnOutput {
             task_id: task.id,
@@ -312,11 +316,9 @@ impl<R: Runtime> ClatApp<R> {
             let _ = self.runtime.kill_tmux_window(window_id.as_str());
         }
 
-        let closed = task.close(output).map_err(anyhow::Error::from)?;
-        if !closed {
-            bail!("failed to close task {} ({})", task.name, task.id.short());
+        if task.close(output).did_execute() {
+            self.store.tasks.update(&mut task).await?;
         }
-        self.store.tasks.update(&mut task).await?;
 
         Ok(CloseOutput {
             task_id: task.id,
@@ -331,8 +333,9 @@ impl<R: Runtime> ClatApp<R> {
             if let Some(ref window_id) = task.tmux_window {
                 let _ = self.runtime.kill_tmux_window(window_id.as_str());
             }
-            let _ = task.close(None);
-            let _ = self.store.tasks.update(&mut task).await;
+            if task.close(None).did_execute() {
+                let _ = self.store.tasks.update(&mut task).await;
+            }
         }
 
         // Clean up the git worktree if the task used one.
@@ -397,9 +400,13 @@ impl<R: Runtime> ClatApp<R> {
             )?
         };
 
-        task.reopen(result.pane_id.clone(), result.window_id.clone())
-            .map_err(anyhow::Error::from)?;
-        self.store.tasks.update(&mut task).await?;
+        if task
+            .reopen(result.pane_id.clone(), result.window_id.clone())
+            .map_err(anyhow::Error::from)?
+            .did_execute()
+        {
+            self.store.tasks.update(&mut task).await?;
+        }
 
         Ok(result.window_id)
     }
@@ -492,8 +499,8 @@ impl<R: Runtime> ClatApp<R> {
         for mut task in tasks {
             if let Some(ref pane) = task.tmux_pane
                 && !existing.contains(pane.as_str())
+                && task.close(None).did_execute()
             {
-                let _ = task.close(None);
                 let _ = self.store.tasks.update(&mut task).await;
             }
         }
@@ -612,9 +619,13 @@ impl<R: Runtime> ClatApp<R> {
         output: Option<&str>,
     ) -> anyhow::Result<CompleteOutput> {
         let mut task = self.resolve_task(id_prefix).await?;
-        task.complete(exit_code, output.map(|s| s.to_string()))
-            .map_err(anyhow::Error::from)?;
-        self.store.tasks.update(&mut task).await?;
+        if task
+            .complete(exit_code, output.map(|s| s.to_string()))
+            .map_err(anyhow::Error::from)?
+            .did_execute()
+        {
+            self.store.tasks.update(&mut task).await?;
+        }
         Ok(CompleteOutput {
             task_id: task.id,
             task_name: task.name,

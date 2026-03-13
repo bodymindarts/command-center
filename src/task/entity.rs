@@ -4,22 +4,13 @@ use chrono::{DateTime, Utc};
 use derive_builder::Builder;
 use es_entity::*;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 use crate::primitives::{
     ClaudeSessionId, MessageRole, PaneId, ProjectId, ProjectName, TaskId, TaskName, TaskStatus,
     WindowId,
 };
 
-// ── Error ────────────────────────────────────────────────────────────
-
-#[derive(Error, Debug)]
-pub enum TaskError {
-    #[error("task is not running")]
-    NotRunning,
-    #[error("task is already running")]
-    AlreadyRunning,
-}
+use super::error::TaskError;
 
 // ── Events ───────────────────────────────────────────────────────────
 
@@ -27,7 +18,8 @@ pub enum TaskError {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[es_event(id = "TaskId")]
 pub enum TaskEvent {
-    Spawned {
+    #[serde(alias = "spawned")]
+    Initialized {
         id: TaskId,
         name: TaskName,
         skill_name: String,
@@ -61,6 +53,7 @@ pub struct Task {
     pub id: TaskId,
     pub name: TaskName,
     pub skill_name: String,
+    #[allow(dead_code)]
     pub params_json: String,
     pub status: TaskStatus,
     pub tmux_pane: Option<PaneId>,
@@ -110,7 +103,7 @@ impl TryFromEvents<TaskEvent> for Task {
 
         for event in events.iter_all() {
             match event {
-                TaskEvent::Spawned {
+                TaskEvent::Initialized {
                     id,
                     name,
                     skill_name,
@@ -188,11 +181,24 @@ pub struct NewTask {
     pub project_id: Option<ProjectId>,
 }
 
+impl NewTask {
+    /// Used by EsRepo column accessor for the `started_at` NOT NULL column.
+    pub(super) fn started_at(&self) -> String {
+        Utc::now().to_rfc3339()
+    }
+
+    /// Used by EsRepo column accessor — wraps the required session_id as Option
+    /// to match the DB column type.
+    pub(super) fn session_id_opt(&self) -> Option<ClaudeSessionId> {
+        Some(self.session_id)
+    }
+}
+
 impl IntoEvents<TaskEvent> for NewTask {
     fn into_events(self) -> EntityEvents<TaskEvent> {
         EntityEvents::init(
             self.id,
-            [TaskEvent::Spawned {
+            [TaskEvent::Initialized {
                 id: self.id,
                 name: self.name,
                 skill_name: self.skill_name,
@@ -208,19 +214,37 @@ impl IntoEvents<TaskEvent> for NewTask {
 // ── Mutations ────────────────────────────────────────────────────────
 
 impl Task {
-    pub fn launch_agent(&mut self, pane: PaneId, window: WindowId) {
+    pub fn launch_agent(&mut self, pane: PaneId, window: WindowId) -> Idempotent<()> {
+        idempotency_guard!(
+            self.events.iter_all().rev(),
+            already_applied: TaskEvent::AgentLaunched { tmux_pane, tmux_window }
+                if *tmux_pane == pane && *tmux_window == window
+        );
+
         self.tmux_pane = Some(pane.clone());
         self.tmux_window = Some(window.clone());
         self.events.push(TaskEvent::AgentLaunched {
             tmux_pane: pane,
             tmux_window: window,
         });
+        Idempotent::Executed(())
     }
 
-    pub fn complete(&mut self, exit_code: i32, output: Option<String>) -> Result<(), TaskError> {
+    pub fn complete(
+        &mut self,
+        exit_code: i32,
+        output: Option<String>,
+    ) -> Result<Idempotent<()>, TaskError> {
+        idempotency_guard!(
+            self.events.iter_all().rev(),
+            already_applied: TaskEvent::Completed { exit_code: ec, .. } if *ec == exit_code,
+            resets_on: TaskEvent::Reopened { .. }
+        );
+
         if !self.status.is_running() {
             return Err(TaskError::NotRunning);
         }
+
         self.status = if exit_code == 0 {
             TaskStatus::Completed
         } else {
@@ -230,24 +254,39 @@ impl Task {
         self.exit_code = Some(exit_code);
         self.output = output.clone();
         self.events.push(TaskEvent::Completed { exit_code, output });
-        Ok(())
+        Ok(Idempotent::Executed(()))
     }
 
-    pub fn close(&mut self, output: Option<String>) -> Result<bool, TaskError> {
+    pub fn close(&mut self, output: Option<String>) -> Idempotent<()> {
+        idempotency_guard!(
+            self.events.iter_all().rev(),
+            already_applied: TaskEvent::Closed { .. },
+            resets_on: TaskEvent::Reopened { .. }
+        );
+
         if !self.status.is_running() {
-            return Ok(false);
+            return Idempotent::AlreadyApplied;
         }
+
         self.status = TaskStatus::Closed;
         self.completed_at = Some(Utc::now());
         self.output = output.clone();
         self.events.push(TaskEvent::Closed { output });
-        Ok(true)
+        Idempotent::Executed(())
     }
 
-    pub fn reopen(&mut self, pane: PaneId, window: WindowId) -> Result<(), TaskError> {
+    pub fn reopen(&mut self, pane: PaneId, window: WindowId) -> Result<Idempotent<()>, TaskError> {
+        idempotency_guard!(
+            self.events.iter_all().rev(),
+            already_applied: TaskEvent::Reopened { tmux_pane, tmux_window }
+                if *tmux_pane == pane && *tmux_window == window,
+            resets_on: TaskEvent::Completed { .. } | TaskEvent::Closed { .. }
+        );
+
         if self.status.is_running() {
             return Err(TaskError::AlreadyRunning);
         }
+
         self.status = TaskStatus::Running;
         self.tmux_pane = Some(pane.clone());
         self.tmux_window = Some(window.clone());
@@ -256,7 +295,7 @@ impl Task {
             tmux_pane: pane,
             tmux_window: window,
         });
-        Ok(())
+        Ok(Idempotent::Executed(()))
     }
 
     // ── Query helpers (not event-sourced) ────────────────────────────
