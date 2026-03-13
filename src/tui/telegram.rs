@@ -407,7 +407,7 @@ fn tg_post(agent: &ureq::Agent, url: &str, body: &Value) -> Option<Value> {
     }
 }
 
-fn tg_log(msg: &str) {
+pub(super) fn tg_log(msg: &str) {
     let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
