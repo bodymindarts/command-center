@@ -630,9 +630,9 @@ fn handle_chat_history_key(state: &mut ScreenState, key: KeyEvent) {
     if kb.navigate_down.matches(&key) {
         state.navigate_focus_down();
     } else if kb.scroll_up.matches(&key) {
-        state.scroll_chat_up();
+        state.scroll_chat_panel_up();
     } else if kb.scroll_down.matches(&key) {
-        state.scroll_chat_down();
+        state.scroll_chat_panel_down();
     } else if kb.navigate_right.matches(&key) {
         state.navigate_focus_right();
     }

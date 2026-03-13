@@ -6,16 +6,17 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use crate::primitives::MessageRole;
 
 use super::super::chat::{ChatMessage, ContentBlock};
-use super::super::state::{ChatViewState, Focus, TaskListState};
+use super::super::state::{Focus, ProjectState};
 
 pub(in crate::tui) fn render_chat(
     frame: &mut ratatui::Frame,
     focus: &Focus,
-    task_list: &TaskListState,
-    chat_view: &ChatViewState,
+    active: &ProjectState,
     active_project_name: Option<&str>,
     area: Rect,
 ) {
+    let task_list = &active.task_list;
+    let chat_view = &active.chat_view;
     let searching = matches!(focus, Focus::ListSearch);
     let in_task_chat =
         !searching && task_list.is_detail_visible() && task_list.selected_task().is_some();
@@ -117,29 +118,18 @@ pub(in crate::tui) fn render_chat(
     }
 
     let inner_height = inner.height as usize;
-    let inner_width = inner.width as usize;
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let rendered_lines = paragraph.line_count(inner.width);
 
-    // Account for line wrapping when calculating scroll
-    let rendered_lines: usize = lines
-        .iter()
-        .map(|line| {
-            let w = line.width();
-            if w == 0 || inner_width == 0 {
-                1
-            } else {
-                w.div_ceil(inner_width)
-            }
-        })
-        .sum();
+    let scroll_offset = active.chat_panel_scroll();
+    let max_scroll = rendered_lines.saturating_sub(inner_height);
+    let effective_scroll = scroll_offset.min(max_scroll);
+    // Ratatui's Paragraph::scroll takes u16; clamp to prevent silent wrapping.
+    let scroll = max_scroll
+        .saturating_sub(effective_scroll)
+        .min(u16::MAX as usize) as u16;
 
-    let max_scroll = rendered_lines.saturating_sub(inner_height) as u16;
-    let effective_scroll = chat_view.chat_scroll().min(max_scroll);
-    let scroll = max_scroll.saturating_sub(effective_scroll);
-
-    let chat = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .scroll((scroll, 0));
-
+    let chat = paragraph.scroll((scroll, 0));
     frame.render_widget(chat, inner);
 }
 

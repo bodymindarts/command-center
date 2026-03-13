@@ -66,6 +66,34 @@ impl ProjectState {
         }
     }
 
+    /// Returns the effective scroll offset for the chat panel, choosing
+    /// between task detail scroll and chat scroll based on current mode.
+    pub fn chat_panel_scroll(&self) -> usize {
+        if self.task_list.is_detail_visible() && self.task_list.selected_task().is_some() {
+            self.task_list.detail_scroll() as usize
+        } else {
+            self.chat_view.chat_scroll() as usize
+        }
+    }
+
+    /// Scroll the chat panel up, routing to the correct scroll state.
+    pub fn scroll_chat_panel_up(&mut self) {
+        if self.task_list.is_detail_visible() && self.task_list.selected_task().is_some() {
+            self.task_list.scroll_up_tasks();
+        } else {
+            self.chat_view.scroll_chat_up();
+        }
+    }
+
+    /// Scroll the chat panel down, routing to the correct scroll state.
+    pub fn scroll_chat_panel_down(&mut self) {
+        if self.task_list.is_detail_visible() && self.task_list.selected_task().is_some() {
+            self.task_list.scroll_down_tasks();
+        } else {
+            self.chat_view.scroll_chat_down();
+        }
+    }
+
     /// Switch from one task's detail to another's.
     pub fn switch_task_detail(&mut self, old_id: &TaskId, new_id: &TaskId) {
         let text = self.input.take();
