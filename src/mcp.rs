@@ -68,7 +68,7 @@ impl<R: Runtime> ClatMcpServer<R> {
                                 "name": { "const": "command" },
                                 "cmd": {
                                     "type": "string",
-                                    "description": "Shell command to execute (e.g. 'gh run view 123 --json status')"
+                                    "description": "Shell command to execute. Only allowed CLIs: gh, curl, git. Example: 'gh run view 123 --json status'"
                                 }
                             },
                             "additionalProperties": false

@@ -6,6 +6,27 @@ use job::{Job, JobCompletion, JobInitializer, JobRunner, JobSpawner};
 use crate::app::ClatApp;
 use crate::runtime::Runtime;
 
+/// Commands allowed in the `command` check variant.
+///
+/// The first token of the shell command (before any args, pipes, or
+/// redirections) must be one of these binaries.
+const ALLOWED_COMMANDS: &[&str] = &["gh", "curl", "git"];
+
+fn validate_command(cmd: &str) -> anyhow::Result<()> {
+    let bin = cmd
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("empty command"))?;
+    if ALLOWED_COMMANDS.contains(&bin) {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "command '{bin}' is not allowed. Permitted commands: {}",
+            ALLOWED_COMMANDS.join(", ")
+        )
+    }
+}
+
 // ── Configs (serialized into the job row) ────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -74,6 +95,7 @@ impl WatchService {
         delay_seconds: i64,
         context: Option<serde_json::Value>,
     ) -> anyhow::Result<String> {
+        validate_command(cmd)?;
         let id = job::JobId::new();
         let config = CommandConfig {
             task_id: task_id.to_string(),
