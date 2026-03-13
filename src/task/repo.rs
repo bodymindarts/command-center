@@ -85,6 +85,10 @@ impl TaskRepo {
     }
 
     /// List tasks scoped to a project (running tasks sorted first).
+    ///
+    /// `None` matches tasks with no project (IS NULL).
+    /// Uses es_query! for the NULL case because list_for_project_id generates
+    /// `project_id = ?` which doesn't match NULL (es-entity bug).
     pub async fn list_visible_for_project(
         &self,
         project_id: Option<&ProjectId>,
@@ -102,7 +106,6 @@ impl TaskRepo {
                 .await?
                 .entities
             }
-            // Generated list_for treats NULL as wildcard; use es_query! for IS NULL.
             None => {
                 let (tasks, _) = es_query!(
                     "SELECT id, created_at FROM tasks \
