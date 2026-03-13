@@ -1,5 +1,3 @@
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -8,33 +6,6 @@ use sqlx::SqlitePool;
 
 use crate::app::ClatApp;
 use crate::runtime::Runtime;
-
-// ── Trait-object interface ────────────────────────────────────────────
-
-/// Operations the watch service needs from the application layer.
-///
-/// Mirrors `ClatApp::send()` but erases the `Runtime` generic so the
-/// job runner can hold a dyn reference.
-pub(crate) trait WatchApp: Send + Sync {
-    fn send_to_task<'a>(
-        &'a self,
-        task_id: &'a str,
-        message: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
-}
-
-impl<R: Runtime + Send + Sync + 'static> WatchApp for ClatApp<R> {
-    fn send_to_task<'a>(
-        &'a self,
-        task_id: &'a str,
-        message: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async move {
-            self.send(task_id, message).await?;
-            Ok(())
-        })
-    }
-}
 
 // ── Config (serialized into the job row) ──────────────────────────────
 
@@ -52,14 +23,17 @@ pub struct WatchService {
 }
 
 impl WatchService {
-    pub async fn init(pool: &SqlitePool, app: Arc<dyn WatchApp>) -> anyhow::Result<Self> {
+    pub async fn init<R: Runtime + Send + Sync + 'static>(
+        pool: &SqlitePool,
+        app: Arc<ClatApp<R>>,
+    ) -> anyhow::Result<Self> {
         let config = JobSvcConfig::builder()
             .pool(pool.clone())
             .exec_migrations(true)
             .build()
             .map_err(|e| anyhow::anyhow!("failed to build job config: {e}"))?;
         let mut jobs = Jobs::init(config).await?;
-        let timer_spawner = jobs.add_initializer(TimerJobInitializer::new(app));
+        let timer_spawner = jobs.add_initializer(TimerJobInitializer { app });
         jobs.start_poll().await?;
         Ok(Self {
             _jobs: jobs,
@@ -88,17 +62,11 @@ impl WatchService {
 
 // ── Initializer ───────────────────────────────────────────────────────
 
-struct TimerJobInitializer {
-    app: Arc<dyn WatchApp>,
+struct TimerJobInitializer<R: Runtime> {
+    app: Arc<ClatApp<R>>,
 }
 
-impl TimerJobInitializer {
-    fn new(app: Arc<dyn WatchApp>) -> Self {
-        Self { app }
-    }
-}
-
-impl JobInitializer for TimerJobInitializer {
+impl<R: Runtime + Send + Sync + 'static> JobInitializer for TimerJobInitializer<R> {
     type Config = TimerConfig;
 
     fn job_type(&self) -> job::JobType {
@@ -120,19 +88,19 @@ impl JobInitializer for TimerJobInitializer {
 
 // ── Runner ────────────────────────────────────────────────────────────
 
-struct TimerJobRunner {
+struct TimerJobRunner<R: Runtime> {
     config: TimerConfig,
-    app: Arc<dyn WatchApp>,
+    app: Arc<ClatApp<R>>,
 }
 
 #[async_trait]
-impl JobRunner for TimerJobRunner {
+impl<R: Runtime + Send + Sync + 'static> JobRunner for TimerJobRunner<R> {
     async fn run(
         &self,
         _current_job: job::CurrentJob,
     ) -> Result<JobCompletion, Box<dyn std::error::Error>> {
         let message = format!("[Watch: {}] Timer fired.", self.config.label);
-        if let Err(e) = self.app.send_to_task(&self.config.task_id, &message).await {
+        if let Err(e) = self.app.send(&self.config.task_id, &message).await {
             tracing::warn!(
                 task_id = %self.config.task_id,
                 label = %self.config.label,
