@@ -1087,7 +1087,9 @@ fn handle_hook_permission(
                 })
                 .is_err()
             {
-                eprintln!("WARN: Telegram bot channel closed, could not send question {perm_id}");
+                telegram::tg_log(&format!(
+                    "WARN: channel closed, could not send question {perm_id}"
+                ));
             }
         } else if tx
             .send(telegram::TgOutbound::NewPermission {
@@ -1098,7 +1100,9 @@ fn handle_hook_permission(
             })
             .is_err()
         {
-            eprintln!("WARN: Telegram bot channel closed, could not send permission {perm_id}");
+            telegram::tg_log(&format!(
+                "WARN: channel closed, could not send permission {perm_id}"
+            ));
         }
         tg_perm_ids.insert(perm_id);
     }
