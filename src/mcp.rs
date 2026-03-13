@@ -1,5 +1,3 @@
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use axum::extract::Request;
@@ -12,89 +10,13 @@ use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, S
 use rmcp::schemars;
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 
-use crate::app::{ClatApp, PromptMode, SpawnOutput, SpawnRequest, WorkDirMode};
+use crate::app::{ClatApp, PromptMode, SpawnRequest, WorkDirMode};
 use crate::jwt::JwtSigner;
 use crate::runtime::Runtime;
 use crate::watch::WatchService;
 
 // ---------------------------------------------------------------------------
-// Trait-object interface so the MCP server struct stays non-generic.
-// ---------------------------------------------------------------------------
-
-/// Operations the MCP server needs from the application layer.
-///
-/// Implemented for `ClatApp<R>` so we can erase the Runtime generic.
-pub(crate) trait McpApp: Send + Sync {
-    fn spawn<'a>(
-        &'a self,
-        params: McpSpawnParams,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<SpawnOutput>> + Send + 'a>>;
-}
-
-/// Owned parameter bundle for [`McpApp::spawn`].
-pub(crate) struct McpSpawnParams {
-    pub name: String,
-    pub task: String,
-    pub skill: Option<String>,
-    pub project: Option<String>,
-    pub repo: Option<String>,
-    pub branch: Option<String>,
-    pub scratch: bool,
-}
-
-impl<R: Runtime + Send + Sync + 'static> McpApp for ClatApp<R> {
-    fn spawn<'a>(
-        &'a self,
-        p: McpSpawnParams,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<SpawnOutput>> + Send + 'a>> {
-        Box::pin(async move {
-            let skill_name = p.skill.as_deref().unwrap_or("engineer");
-            let kv_params = vec![("task".to_string(), p.task)];
-
-            let repo_path;
-            let (work_dir_mode, prompt_mode) = if p.scratch {
-                (WorkDirMode::Scratch, PromptMode::Full)
-            } else {
-                repo_path = p
-                    .repo
-                    .as_deref()
-                    .map(std::path::PathBuf::from)
-                    .unwrap_or_else(|| self.project_root().to_path_buf());
-                (
-                    WorkDirMode::Worktree {
-                        repo: &repo_path,
-                        branch: p.branch.as_deref(),
-                    },
-                    PromptMode::Full,
-                )
-            };
-
-            // Inherit project from parent task breadcrumb if not explicitly set.
-            let project = p.project.or_else(|| {
-                std::fs::read_to_string(".claude/project")
-                    .ok()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-            });
-
-            ClatApp::spawn(
-                self,
-                SpawnRequest {
-                    task_name: &p.name,
-                    skill_name,
-                    params: kv_params,
-                    work_dir_mode,
-                    prompt_mode,
-                    project,
-                },
-            )
-            .await
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// MCP server (non-generic — macros work)
+// MCP server — generic over R: Runtime
 // ---------------------------------------------------------------------------
 
 /// MCP server that exposes clat commands as tools.
@@ -102,20 +24,19 @@ impl<R: Runtime + Send + Sync + 'static> McpApp for ClatApp<R> {
 /// Runs inside the dashboard process and serves spawned agents
 /// over HTTP on localhost.
 #[derive(Clone)]
-pub struct ClatMcpServer {
-    app: Arc<dyn McpApp>,
-    #[allow(dead_code)]
-    watch_service: Arc<WatchService>,
+pub struct ClatMcpServer<R: Runtime> {
+    app: Arc<ClatApp<R>>,
+    _watch_service: Arc<WatchService>,
     tool_router: ToolRouter<Self>,
 }
 
-impl ClatMcpServer {
-    pub fn new(app: Arc<dyn McpApp>, watch_service: Arc<WatchService>) -> Self {
+impl<R: Runtime + Send + Sync + 'static> ClatMcpServer<R> {
+    pub fn new(app: Arc<ClatApp<R>>, watch_service: Arc<WatchService>) -> Self {
         let mut router = Self::tool_router();
         router.add_route(Self::create_watch_route(Arc::clone(&watch_service)));
         Self {
             app,
-            watch_service,
+            _watch_service: watch_service,
             tool_router: router,
         }
     }
@@ -159,7 +80,7 @@ impl ClatMcpServer {
 
         ToolRoute::new_dyn(
             tool,
-            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer>| {
+            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
                 let ws = Arc::clone(&watch_service);
                 Box::pin(async move {
                     // Extract task_id from JWT claims via request extensions.
@@ -222,7 +143,7 @@ struct SpawnParams {
 }
 
 #[tool_router]
-impl ClatMcpServer {
+impl<R: Runtime + Send + Sync + 'static> ClatMcpServer<R> {
     #[tool(
         description = "Spawn a new task agent. Creates a git worktree, loads the skill template, and launches a Claude Code session."
     )]
@@ -238,16 +159,45 @@ impl ClatMcpServer {
             .project
             .or_else(|| caller_claims.and_then(|c| c.project.clone()));
 
+        let skill_name = params.skill.as_deref().unwrap_or("engineer");
+        let kv_params = vec![("task".to_string(), params.task)];
+
+        let repo_path;
+        let scratch = params.scratch.unwrap_or(false);
+        let (work_dir_mode, prompt_mode) = if scratch {
+            (WorkDirMode::Scratch, PromptMode::Full)
+        } else {
+            repo_path = params
+                .repo
+                .as_deref()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| self.app.project_root().to_path_buf());
+            (
+                WorkDirMode::Worktree {
+                    repo: &repo_path,
+                    branch: params.branch.as_deref(),
+                },
+                PromptMode::Full,
+            )
+        };
+
+        // Inherit project from parent task breadcrumb if not explicitly set.
+        let project = project.or_else(|| {
+            std::fs::read_to_string(".claude/project")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+
         let result = self
             .app
-            .spawn(McpSpawnParams {
-                name: params.name,
-                task: params.task,
-                skill: params.skill,
+            .spawn(SpawnRequest {
+                task_name: &params.name,
+                skill_name,
+                params: kv_params,
+                work_dir_mode,
+                prompt_mode,
                 project,
-                repo: params.repo,
-                branch: params.branch,
-                scratch: params.scratch.unwrap_or(false),
             })
             .await;
 
@@ -271,7 +221,7 @@ impl ClatMcpServer {
 }
 
 #[tool_handler]
-impl ServerHandler for ClatMcpServer {
+impl<R: Runtime + Send + Sync + 'static> ServerHandler for ClatMcpServer<R> {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("clat", env!("CARGO_PKG_VERSION")))
@@ -307,10 +257,6 @@ pub fn read_mcp_url_breadcrumb(project_root: &std::path::Path) -> Option<String>
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
-
-// ---------------------------------------------------------------------------
-// Server startup
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // JWT authentication middleware
@@ -384,7 +330,6 @@ pub async fn start_mcp_server<R: Runtime + Send + Sync + 'static>(
 
     let watch_service = Arc::new(WatchService::init(Arc::clone(&app)).await?);
     let jwt_signer = app.jwt_signer().clone();
-    let app_dyn: Arc<dyn McpApp> = app;
     let config = StreamableHttpServerConfig {
         stateful_mode: false,
         json_response: true,
@@ -393,7 +338,7 @@ pub async fn start_mcp_server<R: Runtime + Send + Sync + 'static>(
     let service = StreamableHttpService::new(
         move || {
             Ok(ClatMcpServer::new(
-                Arc::clone(&app_dyn),
+                Arc::clone(&app),
                 Arc::clone(&watch_service),
             ))
         },
