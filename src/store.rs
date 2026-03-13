@@ -108,6 +108,24 @@ impl Store {
         rows.iter().map(row_to_message).collect()
     }
 
+    pub async fn list_messages_last(
+        &self,
+        chat_id: &ChatId,
+        limit: u32,
+    ) -> anyhow::Result<Vec<TaskMessage>> {
+        let rows = sqlx::query(
+            "SELECT id, task_id, role, content, created_at FROM (
+                 SELECT id, task_id, role, content, created_at
+                 FROM task_messages WHERE task_id = ? ORDER BY created_at DESC LIMIT ?
+             ) ORDER BY created_at ASC",
+        )
+        .bind(chat_id.as_db_key())
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_message).collect()
+    }
+
     pub async fn delete_task_messages(&self, task_id: &TaskId) -> anyhow::Result<()> {
         sqlx::query("DELETE FROM task_messages WHERE task_id = ?")
             .bind(task_id.to_string())

@@ -196,6 +196,16 @@ pub enum ProjectAction {
         /// Message to send
         message: String,
     },
+
+    /// Show PM conversation log for a project
+    Log {
+        /// Project name
+        name: String,
+
+        /// Show only the N most recent messages
+        #[arg(long)]
+        last: Option<u32>,
+    },
 }
 
 #[derive(Subcommand)]
