@@ -196,6 +196,10 @@ fn drain_outbound(
                     && let Some(id) = resp["result"]["message_id"].as_i64()
                 {
                     msg_map.insert(perm_id, id);
+                } else {
+                    tg_log(&format!(
+                        "WARN: Failed to send permission {perm_id} for task {task_name} to Telegram"
+                    ));
                 }
             }
             TgOutbound::NewQuestion {
@@ -231,6 +235,10 @@ fn drain_outbound(
                     && let Some(id) = resp["result"]["message_id"].as_i64()
                 {
                     msg_map.insert(perm_id, id);
+                } else {
+                    tg_log(&format!(
+                        "WARN: Failed to send question {perm_id} for task {task_name} to Telegram"
+                    ));
                 }
             }
             TgOutbound::Notify { text } => {
@@ -610,9 +618,37 @@ fn tg_send(ctx: &BotCtx, text: &str) {
 // Formatting
 // ---------------------------------------------------------------------------
 
+/// Maximum length for the tool_input_summary sent to Telegram.
+const MAX_SUMMARY_LEN: usize = 300;
+
+/// Escape characters that are special in Telegram's HTML parse mode.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Truncate a string to at most `max` characters, appending "…" if truncated.
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        let mut end = max;
+        // Avoid splitting a multi-byte character.
+        while !s.is_char_boundary(end) && end > 0 {
+            end -= 1;
+        }
+        format!("{}…", &s[..end])
+    }
+}
+
 fn format_question_text(task_name: &str, question: &str, options: &[(String, String)]) -> String {
+    let task_name = html_escape(task_name);
+    let question = html_escape(question);
     let mut text = format!("❓ <b>Question</b>\n\nTask: <code>{task_name}</code>\n\n{question}\n");
     for (label, desc) in options {
+        let label = html_escape(label);
+        let desc = html_escape(desc);
         if desc.is_empty() {
             text.push_str(&format!("\n• <b>{label}</b>"));
         } else {
@@ -623,6 +659,9 @@ fn format_question_text(task_name: &str, question: &str, options: &[(String, Str
 }
 
 fn format_perm_text(task_name: &str, tool_name: &str, summary: &str) -> String {
+    let task_name = html_escape(task_name);
+    let tool_name = html_escape(tool_name);
+    let summary = truncate(&html_escape(summary), MAX_SUMMARY_LEN);
     let detail = if summary.is_empty() {
         format!("<code>{tool_name}</code>")
     } else {
@@ -726,6 +765,18 @@ mod tests {
     }
 
     #[test]
+    fn format_question_text_escapes_html() {
+        let options = vec![("A <b>".to_string(), "x < y & z > w".to_string())];
+        let text = format_question_text("task<1>", "Use <?= tag", &options);
+        assert!(text.contains("task&lt;1&gt;"));
+        assert!(text.contains("Use &lt;?= tag"));
+        assert!(text.contains("<b>A &lt;b&gt;</b>"));
+        assert!(text.contains("x &lt; y &amp; z &gt; w"));
+        // Must not contain unescaped dynamic content.
+        assert!(!text.contains("task<1>"));
+    }
+
+    #[test]
     fn format_perm_text_with_summary() {
         let text = format_perm_text("fix-bug", "Bash", "cargo test");
         assert!(text.contains("fix-bug"));
@@ -738,5 +789,42 @@ mod tests {
         let text = format_perm_text("fix-bug", "Agent", "");
         assert!(text.contains("Agent"));
         assert!(!text.contains(": <code></code>"));
+    }
+
+    #[test]
+    fn format_perm_text_escapes_heredoc() {
+        let text = format_perm_text("task", "Bash", "cat > file <<'EOF'\nsome content\nEOF");
+        // The `<<` must be escaped as `&lt;&lt;`.
+        assert!(text.contains("&lt;&lt;"));
+        assert!(!text.contains("<<'EOF'"));
+    }
+
+    #[test]
+    fn format_perm_text_truncates_long_summary() {
+        let long = "x".repeat(500);
+        let text = format_perm_text("task", "Bash", &long);
+        // Escaped summary is still all 'x', should be truncated.
+        assert!(text.contains('…'));
+        // The raw 500-char string should not appear in full.
+        assert!(!text.contains(&long));
+    }
+
+    #[test]
+    fn html_escape_all_special_chars() {
+        assert_eq!(html_escape("<>&"), "&lt;&gt;&amp;");
+        assert_eq!(html_escape("no specials"), "no specials");
+        assert_eq!(html_escape(""), "");
+    }
+
+    #[test]
+    fn truncate_within_limit() {
+        assert_eq!(truncate("hello", 10), "hello");
+        assert_eq!(truncate("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_exceeds_limit() {
+        let result = truncate("hello world", 5);
+        assert_eq!(result, "hello…");
     }
 }
