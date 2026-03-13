@@ -668,6 +668,31 @@ impl<R: Runtime> ClatApp<R> {
     pub async fn delete_project(&self, name: &str) -> anyhow::Result<()> {
         let name = ProjectName::from(name.to_string());
         let mut project = self.store.projects.find_by_name(name).await?;
+
+        // Cascade-delete all tasks belonging to this project.
+        let tasks = self
+            .store
+            .tasks
+            .list_visible_for_project(Some(&project.id))
+            .await?;
+        for mut task in tasks {
+            if task.status.is_running()
+                && let Some(ref window_id) = task.tmux_window
+            {
+                let _ = self.runtime.kill_tmux_window(window_id.as_str());
+            }
+            if let Some(ref work_dir) = task.work_dir
+                && work_dir.contains(".claude/worktrees/")
+            {
+                let _ = self.runtime.remove_worktree(Path::new(work_dir));
+            }
+            self.store.delete_task_messages(&task.id).await.ok();
+            let _ = task.close(None);
+            if task.delete().did_execute() {
+                self.store.tasks.delete(task).await?;
+            }
+        }
+
         let _ = project.delete();
         self.store.projects.delete(project).await?;
         Ok(())
@@ -1535,6 +1560,58 @@ prompt = "deploy to {{ env }}"
 
         service.delete_project("temp-proj").await.unwrap();
         assert!(service.list_projects().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_project_cascades_to_tasks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let store = Store::open_in_memory().await.unwrap();
+        let runtime = FakeRuntime::new(tmp.path());
+        let service = ClatApp::new(store, runtime, paths);
+
+        let proj = service.create_project("doomed", "").await.unwrap();
+        let proj_id = proj.id;
+
+        // Spawn a task inside the project.
+        service
+            .spawn(SpawnRequest {
+                task_name: "proj-task",
+                skill_name: "noop",
+                params: vec![],
+                work_dir_mode: WorkDirMode::Worktree {
+                    repo: service.project_root(),
+                    branch: None,
+                },
+                prompt_mode: PromptMode::Full,
+                project: Some("doomed".to_string()),
+            })
+            .await
+            .unwrap();
+
+        // Spawn an unscoped task that should survive.
+        spawn_test_task(&service).await;
+
+        assert_eq!(service.list_visible(Some(&proj_id)).await.unwrap().len(), 1);
+        assert_eq!(service.list_visible(None).await.unwrap().len(), 1);
+
+        // Delete the project — should cascade-delete the project task.
+        service.delete_project("doomed").await.unwrap();
+
+        assert!(service.list_projects().await.unwrap().is_empty());
+        assert!(
+            service
+                .list_visible(Some(&proj_id))
+                .await
+                .unwrap()
+                .is_empty(),
+            "project task should be deleted"
+        );
+        assert_eq!(
+            service.list_visible(None).await.unwrap().len(),
+            1,
+            "unscoped task should survive"
+        );
     }
 
     #[tokio::test]
