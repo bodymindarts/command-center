@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use job::{Job, JobCompletion, JobId, JobInitializer, JobRunner, JobSpawner, JobSvcConfig, Jobs};
-use sqlx::SqlitePool;
 
 use crate::app::ClatApp;
 use crate::runtime::Runtime;
@@ -24,11 +23,10 @@ pub struct WatchService {
 
 impl WatchService {
     pub async fn init<R: Runtime + Send + Sync + 'static>(
-        pool: &SqlitePool,
         app: Arc<ClatApp<R>>,
     ) -> anyhow::Result<Self> {
         let config = JobSvcConfig::builder()
-            .pool(pool.clone())
+            .pool(app.store().pool().clone())
             .exec_migrations(true)
             .build()
             .map_err(|e| anyhow::anyhow!("failed to build job config: {e}"))?;
