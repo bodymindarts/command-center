@@ -674,7 +674,7 @@ impl<R: Runtime> ClatApp<R> {
     async fn resolve_task(&self, id_prefix: &str) -> anyhow::Result<Task> {
         self.store
             .tasks
-            .find_by_id_prefix(id_prefix)
+            .maybe_find_by_id_prefix(id_prefix)
             .await?
             .ok_or_else(|| anyhow::anyhow!("no task found matching '{id_prefix}'"))
     }
@@ -990,7 +990,7 @@ prompt = "noop prompt"
         let task = service
             .store()
             .tasks
-            .find_by_id_prefix(&spawned.task_id.to_string())
+            .maybe_find_by_id_prefix(&spawned.task_id.to_string())
             .await
             .unwrap()
             .unwrap();
@@ -1069,7 +1069,7 @@ prompt = "noop prompt"
         let task = service
             .store()
             .tasks
-            .find_by_id_prefix(&spawned.task_id.to_string())
+            .maybe_find_by_id_prefix(&spawned.task_id.to_string())
             .await
             .unwrap()
             .unwrap();
@@ -1240,7 +1240,7 @@ prompt = "deploy to {{ env }}"
         let task = service
             .store()
             .tasks
-            .find_by_id_prefix(&spawned.task_id.to_string())
+            .maybe_find_by_id_prefix(&spawned.task_id.to_string())
             .await
             .unwrap()
             .unwrap();
@@ -1272,7 +1272,7 @@ prompt = "deploy to {{ env }}"
         let task = service
             .store()
             .tasks
-            .find_by_id_prefix(&spawned.task_id.to_string())
+            .maybe_find_by_id_prefix(&spawned.task_id.to_string())
             .await
             .unwrap()
             .unwrap();
@@ -1295,7 +1295,7 @@ prompt = "deploy to {{ env }}"
         let task = service
             .store()
             .tasks
-            .find_by_id_prefix(&spawned.task_id.to_string())
+            .maybe_find_by_id_prefix(&spawned.task_id.to_string())
             .await
             .unwrap()
             .unwrap();
@@ -1391,7 +1391,7 @@ prompt = "deploy to {{ env }}"
         let task = service
             .store()
             .tasks
-            .find_by_id_prefix(&output.task_id.to_string())
+            .maybe_find_by_id_prefix(&output.task_id.to_string())
             .await
             .unwrap()
             .unwrap();

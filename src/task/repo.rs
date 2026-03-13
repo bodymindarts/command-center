@@ -37,7 +37,7 @@ impl TaskRepo {
     }
 
     /// Find a task by ID prefix. Returns None if no match, errors if ambiguous.
-    pub async fn find_by_id_prefix(&self, prefix: &str) -> anyhow::Result<Option<Task>> {
+    pub async fn maybe_find_by_id_prefix(&self, prefix: &str) -> anyhow::Result<Option<Task>> {
         let pattern = format!("{prefix}%");
         let (tasks, _) = es_query!(
             "SELECT id FROM tasks WHERE id LIKE $1 AND deleted = FALSE LIMIT 2",

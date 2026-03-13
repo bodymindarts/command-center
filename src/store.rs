@@ -205,7 +205,7 @@ mod tests {
 
         let loaded = store
             .tasks
-            .find_by_id_prefix(&task.id.to_string())
+            .maybe_find_by_id_prefix(&task.id.to_string())
             .await
             .unwrap()
             .unwrap();

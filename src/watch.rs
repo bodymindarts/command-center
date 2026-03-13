@@ -1,10 +1,40 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use job::{Job, JobCompletion, JobId, JobInitializer, JobRunner, JobSpawner, JobSvcConfig, Jobs};
 use sqlx::SqlitePool;
 
-use crate::task::TaskRepo;
+use crate::app::ClatApp;
+use crate::runtime::Runtime;
+
+// ── Trait-object interface ────────────────────────────────────────────
+
+/// Operations the watch service needs from the application layer.
+///
+/// Mirrors `ClatApp::send()` but erases the `Runtime` generic so the
+/// job runner can hold a dyn reference.
+pub(crate) trait WatchApp: Send + Sync {
+    fn send_to_task<'a>(
+        &'a self,
+        task_id: &'a str,
+        message: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+}
+
+impl<R: Runtime + Send + Sync + 'static> WatchApp for ClatApp<R> {
+    fn send_to_task<'a>(
+        &'a self,
+        task_id: &'a str,
+        message: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            self.send(task_id, message).await?;
+            Ok(())
+        })
+    }
+}
 
 // ── Config (serialized into the job row) ──────────────────────────────
 
@@ -22,14 +52,14 @@ pub struct WatchService {
 }
 
 impl WatchService {
-    pub async fn init(pool: &SqlitePool) -> anyhow::Result<Self> {
+    pub async fn init(pool: &SqlitePool, app: Arc<dyn WatchApp>) -> anyhow::Result<Self> {
         let config = JobSvcConfig::builder()
             .pool(pool.clone())
             .exec_migrations(true)
             .build()
             .map_err(|e| anyhow::anyhow!("failed to build job config: {e}"))?;
         let mut jobs = Jobs::init(config).await?;
-        let timer_spawner = jobs.add_initializer(TimerJobInitializer::new(TaskRepo::new(pool)));
+        let timer_spawner = jobs.add_initializer(TimerJobInitializer::new(app));
         jobs.start_poll().await?;
         Ok(Self {
             _jobs: jobs,
@@ -59,14 +89,12 @@ impl WatchService {
 // ── Initializer ───────────────────────────────────────────────────────
 
 struct TimerJobInitializer {
-    tasks: Arc<TaskRepo>,
+    app: Arc<dyn WatchApp>,
 }
 
 impl TimerJobInitializer {
-    fn new(tasks: TaskRepo) -> Self {
-        Self {
-            tasks: Arc::new(tasks),
-        }
+    fn new(app: Arc<dyn WatchApp>) -> Self {
+        Self { app }
     }
 }
 
@@ -85,7 +113,7 @@ impl JobInitializer for TimerJobInitializer {
         let config: TimerConfig = job.config()?;
         Ok(Box::new(TimerJobRunner {
             config,
-            tasks: Arc::clone(&self.tasks),
+            app: Arc::clone(&self.app),
         }))
     }
 }
@@ -94,7 +122,7 @@ impl JobInitializer for TimerJobInitializer {
 
 struct TimerJobRunner {
     config: TimerConfig,
-    tasks: Arc<TaskRepo>,
+    app: Arc<dyn WatchApp>,
 }
 
 #[async_trait]
@@ -103,32 +131,8 @@ impl JobRunner for TimerJobRunner {
         &self,
         _current_job: job::CurrentJob,
     ) -> Result<JobCompletion, Box<dyn std::error::Error>> {
-        let task = self
-            .tasks
-            .find_by_id_prefix(&self.config.task_id)
-            .await
-            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-
-        let Some(task) = task else {
-            tracing::warn!(
-                task_id = %self.config.task_id,
-                label = %self.config.label,
-                "timer fired but task not found, completing anyway"
-            );
-            return Ok(JobCompletion::Complete);
-        };
-
-        let Some(ref pane_id) = task.tmux_pane else {
-            tracing::warn!(
-                task_id = %self.config.task_id,
-                label = %self.config.label,
-                "timer fired but task has no pane, completing anyway"
-            );
-            return Ok(JobCompletion::Complete);
-        };
-
         let message = format!("[Watch: {}] Timer fired.", self.config.label);
-        if let Err(e) = deliver_to_pane(pane_id.as_str(), &message) {
+        if let Err(e) = self.app.send_to_task(&self.config.task_id, &message).await {
             tracing::warn!(
                 task_id = %self.config.task_id,
                 label = %self.config.label,
@@ -139,31 +143,4 @@ impl JobRunner for TimerJobRunner {
 
         Ok(JobCompletion::Complete)
     }
-}
-
-// ── Delivery helper ───────────────────────────────────────────────────
-
-/// Send a message to a tmux pane by shelling out directly.
-fn deliver_to_pane(pane_id: &str, message: &str) -> anyhow::Result<()> {
-    use std::process::Command;
-
-    let output = Command::new("tmux")
-        .args(["send-keys", "-t", pane_id, "-l", message])
-        .output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("tmux send-keys failed: {stderr}");
-    }
-
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    let output = Command::new("tmux")
-        .args(["send-keys", "-t", pane_id, "Enter"])
-        .output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("tmux send-keys Enter failed: {stderr}");
-    }
-
-    Ok(())
 }

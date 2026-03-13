@@ -124,9 +124,12 @@ async fn cmd_dash<R: Runtime + Send + Sync + 'static>(
 
     // Initialize WatchService (job scheduler for background timers).
     let watch_service = Arc::new(
-        watch::WatchService::init(app.store().pool())
-            .await
-            .context("failed to initialize watch service")?,
+        watch::WatchService::init(
+            app.store().pool(),
+            Arc::clone(&app) as Arc<dyn watch::WatchApp>,
+        )
+        .await
+        .context("failed to initialize watch service")?,
     );
 
     // Start MCP server on localhost.
