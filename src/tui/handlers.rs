@@ -1078,30 +1078,24 @@ fn handle_hook_permission(
         if req.tool_name == "AskUserQuestion"
             && let Some((question, options)) = parse_ask_user_options(req.tool_input.as_ref())
         {
-            if tx
-                .send(telegram::TgOutbound::NewQuestion {
-                    perm_id,
-                    task_name: task_name.to_string(),
-                    question,
-                    options,
-                })
-                .is_err()
-            {
-                telegram::tg_log(&format!(
-                    "WARN: question {perm_id} ({task_name}): mpsc channel closed, bot thread may have crashed"
-                ));
-            }
-        } else if tx
-            .send(telegram::TgOutbound::NewPermission {
+            if let Err(e) = tx.send(telegram::TgOutbound::NewQuestion {
                 perm_id,
                 task_name: task_name.to_string(),
-                tool_name: req.tool_name.clone(),
-                tool_input_summary: req.tool_input_summary.clone(),
-            })
-            .is_err()
-        {
+                question,
+                options,
+            }) {
+                telegram::tg_log(&format!(
+                    "WARN: question {perm_id} ({task_name}): failed to send to bot thread: {e}"
+                ));
+            }
+        } else if let Err(e) = tx.send(telegram::TgOutbound::NewPermission {
+            perm_id,
+            task_name: task_name.to_string(),
+            tool_name: req.tool_name.clone(),
+            tool_input_summary: req.tool_input_summary.clone(),
+        }) {
             telegram::tg_log(&format!(
-                "WARN: permission {perm_id} ({task_name}): mpsc channel closed, bot thread may have crashed"
+                "WARN: permission {perm_id} ({task_name}): failed to send to bot thread: {e}"
             ));
         }
         tg_perm_ids.insert(perm_id);
