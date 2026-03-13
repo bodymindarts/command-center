@@ -71,6 +71,13 @@ pub struct CompleteOutput {
 }
 
 #[derive(Debug)]
+pub struct MoveOutput {
+    pub task_id: TaskId,
+    pub task_name: TaskName,
+    pub project_name: String,
+}
+
+#[derive(Debug)]
 pub struct DeleteOutput {
     pub task_id: TaskId,
     pub task_name: TaskName,
@@ -414,6 +421,25 @@ impl<R: Runtime> ClatApp<R> {
         }
 
         Ok(result.window_id)
+    }
+
+    pub async fn move_task(
+        &self,
+        id_prefix: &str,
+        project_name: &str,
+    ) -> anyhow::Result<MoveOutput> {
+        let mut task = self.resolve_task(id_prefix).await?;
+        let project = self.resolve_project(project_name).await?;
+
+        if task.move_to_project(Some(project.id)).did_execute() {
+            self.store.tasks.update(&mut task).await?;
+        }
+
+        Ok(MoveOutput {
+            task_id: task.id,
+            task_name: task.name,
+            project_name: project.name.to_string(),
+        })
     }
 
     pub async fn send(&self, id_prefix: &str, message: &str) -> anyhow::Result<SendOutput> {

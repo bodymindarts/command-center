@@ -82,6 +82,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Log { id } => cmd_log(app, &id).await?,
         Command::Close { id } => cmd_close(app, &id).await?,
         Command::Reopen { id } => cmd_reopen(app, &id).await?,
+        Command::Move { id, project } => cmd_move(app, &id, &project).await?,
         Command::Delete { id } => cmd_delete(app, &id).await?,
         Command::Dash {
             resume, caffeinate, ..
@@ -297,6 +298,17 @@ async fn cmd_delete(app: ClatApp<impl Runtime>, id: &str) -> anyhow::Result<()> 
         "Deleted task {} ({})",
         result.task_name,
         result.task_id.short()
+    );
+    Ok(())
+}
+
+async fn cmd_move(app: ClatApp<impl Runtime>, id: &str, project: &str) -> anyhow::Result<()> {
+    let result = app.move_task(id, project).await?;
+    println!(
+        "Moved task {} ({}) to project '{}'",
+        result.task_name,
+        result.task_id.short(),
+        result.project_name,
     );
     Ok(())
 }

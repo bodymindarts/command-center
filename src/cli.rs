@@ -81,6 +81,15 @@ pub enum Command {
         id: String,
     },
 
+    /// Move a task to a different project
+    Move {
+        /// Task ID (prefix match)
+        id: String,
+
+        /// Project name to move the task to
+        project: String,
+    },
+
     /// Permanently delete a task from the database
     Delete {
         /// Task ID (prefix match)
