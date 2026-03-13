@@ -5,6 +5,9 @@ use crate::primitives::{ProjectId, TaskId, TaskName, TaskStatus};
 
 use super::entity::{Task, TaskEvent};
 
+/// Fetch-all page size — large enough to never paginate, small enough to avoid overflow.
+const ALL: usize = i64::MAX as usize;
+
 #[derive(EsRepo, Debug)]
 #[es_repo(
     entity = "Task",
@@ -13,16 +16,17 @@ use super::entity::{Task, TaskEvent};
     delete = "soft",
     columns(
         name = "TaskName",
-        status(ty = "TaskStatus", create(persist = false)),
-        // NOT NULL in schema — must be persisted on create, but not used for lookup.
-        skill_name(ty = "String", update(persist = false)),
-        params_json(ty = "String", update(persist = false)),
+        status(ty = "TaskStatus", create(persist = false), list_for(by(created_at))),
         started_at(
             ty = "String",
             create(accessor = "started_at()"),
             update(persist = false),
         ),
-        project_id(ty = "Option<ProjectId>", update(persist = false)),
+        project_id(
+            ty = "Option<ProjectId>",
+            update(persist = false),
+            list_for(by(created_at))
+        ),
     )
 )]
 pub struct TaskRepo {
@@ -53,24 +57,31 @@ impl TaskRepo {
 
     /// List all tasks ordered by created_at DESC.
     pub async fn list_all(&self) -> anyhow::Result<Vec<Task>> {
-        let (tasks, _) = es_query!(
-            "SELECT id, created_at FROM tasks WHERE deleted = FALSE ORDER BY created_at DESC",
-        )
-        .fetch_n(self.pool(), usize::MAX)
-        .await?;
-        Ok(tasks)
+        let ret = self
+            .list_by_created_at(
+                PaginatedQueryArgs {
+                    first: ALL,
+                    after: None,
+                },
+                ListDirection::Descending,
+            )
+            .await?;
+        Ok(ret.entities)
     }
 
     /// List tasks with status = 'running'.
     pub async fn list_active(&self) -> anyhow::Result<Vec<Task>> {
-        let status = "running";
-        let (tasks, _) = es_query!(
-            "SELECT id, created_at FROM tasks WHERE status = $1 AND deleted = FALSE ORDER BY created_at DESC",
-            status as &str,
-        )
-        .fetch_n(self.pool(), usize::MAX)
-        .await?;
-        Ok(tasks)
+        let ret = self
+            .list_for_status_by_created_at(
+                TaskStatus::Running,
+                PaginatedQueryArgs {
+                    first: ALL,
+                    after: None,
+                },
+                ListDirection::Descending,
+            )
+            .await?;
+        Ok(ret.entities)
     }
 
     /// List tasks scoped to a project (running tasks sorted first).
@@ -78,29 +89,34 @@ impl TaskRepo {
         &self,
         project_id: Option<&ProjectId>,
     ) -> anyhow::Result<Vec<Task>> {
-        let (tasks, _) = match project_id {
+        let mut tasks = match project_id {
             Some(pid) => {
-                es_query!(
-                    "SELECT id, created_at, CASE WHEN status = 'running' THEN 0 ELSE 1 END AS sort_priority \
-                     FROM tasks \
-                     WHERE project_id = $1 AND deleted = FALSE \
-                     ORDER BY sort_priority, created_at DESC",
-                    pid as &ProjectId,
+                self.list_for_project_id_by_created_at(
+                    Some(*pid),
+                    PaginatedQueryArgs {
+                        first: ALL,
+                        after: None,
+                    },
+                    ListDirection::Descending,
                 )
-                .fetch_n(self.pool(), usize::MAX)
                 .await?
+                .entities
             }
+            // Generated list_for treats NULL as wildcard; use es_query! for IS NULL.
             None => {
-                es_query!(
-                    "SELECT id, created_at, CASE WHEN status = 'running' THEN 0 ELSE 1 END AS sort_priority \
-                     FROM tasks \
+                let (tasks, _) = es_query!(
+                    "SELECT id, created_at FROM tasks \
                      WHERE project_id IS NULL AND deleted = FALSE \
-                     ORDER BY sort_priority, created_at DESC",
+                     ORDER BY created_at DESC",
                 )
-                .fetch_n(self.pool(), usize::MAX)
-                .await?
+                .fetch_n(self.pool(), ALL)
+                .await?;
+                tasks
             }
         };
+
+        // Sort running tasks before non-running (stable sort preserves created_at order).
+        tasks.sort_by_key(|t| if t.status.is_running() { 0 } else { 1 });
         Ok(tasks)
     }
 }
