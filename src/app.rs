@@ -131,7 +131,6 @@ impl<R: Runtime> ClatApp<R> {
     pub async fn init_watch(self: &Arc<Self>) -> anyhow::Result<()> {
         let config = job::JobSvcConfig::builder()
             .pool(self.store.pool().clone())
-            .exec_migrations(true)
             .build()
             .map_err(|e| anyhow::anyhow!("failed to build job config: {e}"))?;
         let mut jobs = job::Jobs::init(config).await?;
@@ -140,7 +139,7 @@ impl<R: Runtime> ClatApp<R> {
         });
         jobs.start_poll().await?;
         self.watch
-            .set(crate::watch::WatchService::new(timer_spawner))
+            .set(crate::watch::WatchService::new(timer_spawner, jobs))
             .map_err(|_| anyhow::anyhow!("watch service already initialized"))?;
         Ok(())
     }

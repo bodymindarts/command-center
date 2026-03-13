@@ -18,11 +18,15 @@ pub struct TimerConfig {
 
 pub struct WatchService {
     timer_spawner: JobSpawner<TimerConfig>,
+    _jobs: job::Jobs,
 }
 
 impl WatchService {
-    pub(crate) fn new(timer_spawner: JobSpawner<TimerConfig>) -> Self {
-        Self { timer_spawner }
+    pub(crate) fn new(timer_spawner: JobSpawner<TimerConfig>, jobs: job::Jobs) -> Self {
+        Self {
+            timer_spawner,
+            _jobs: jobs,
+        }
     }
 
     pub async fn create_timer(

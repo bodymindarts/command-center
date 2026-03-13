@@ -529,6 +529,16 @@ fn setup_worktree_config(
             )?;
             settings["enableAllProjectMcpServers"] = serde_json::json!(true);
 
+            // Auto-allow MCP tools so agents don't need manual approval.
+            if let Some(perms_allow) = settings
+                .get_mut("permissions")
+                .and_then(|p| p.get_mut("allow"))
+                .and_then(|a| a.as_array_mut())
+            {
+                perms_allow.push(serde_json::json!("mcp__clat__clat_spawn"));
+                perms_allow.push(serde_json::json!("mcp__clat__create_watch"));
+            }
+
             // Ensure .mcp.json is gitignored in the worktree.
             let gitignore_path = worktree_path.join(".gitignore");
             let content = std::fs::read_to_string(&gitignore_path).unwrap_or_default();

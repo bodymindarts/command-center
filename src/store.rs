@@ -38,7 +38,9 @@ impl Store {
             .connect("sqlite::memory:")
             .await
             .context("failed to open in-memory database")?;
+        use job::IncludeMigrations;
         sqlx::migrate!()
+            .include_job_migrations()
             .run(&pool)
             .await
             .context("failed to run database migrations")?;
@@ -64,7 +66,9 @@ impl Store {
             .connect_with(options)
             .await
             .with_context(|| format!("failed to open database at {}", db_path.display()))?;
+        use job::IncludeMigrations;
         sqlx::migrate!()
+            .include_job_migrations()
             .run(&pool)
             .await
             .with_context(|| format!("failed to run migrations at {}", db_path.display()))?;
