@@ -43,6 +43,7 @@ pub enum TaskEvent {
         tmux_pane: PaneId,
         tmux_window: WindowId,
     },
+    Deleted,
 }
 
 // ── Entity ───────────────────────────────────────────────────────────
@@ -162,6 +163,9 @@ impl TryFromEvents<TaskEvent> for Task {
                         .tmux_window(Some(tmux_window.clone()))
                         .completed_at(None);
                 }
+                TaskEvent::Deleted => {
+                    // Soft delete — repo-level flag; no entity state change.
+                }
             }
         }
 
@@ -185,12 +189,6 @@ impl NewTask {
     /// Used by EsRepo column accessor for the `started_at` NOT NULL column.
     pub(super) fn started_at(&self) -> String {
         Utc::now().to_rfc3339()
-    }
-
-    /// Used by EsRepo column accessor — wraps the required session_id as Option
-    /// to match the DB column type.
-    pub(super) fn session_id_opt(&self) -> Option<ClaudeSessionId> {
-        Some(self.session_id)
     }
 }
 
@@ -296,6 +294,15 @@ impl Task {
             tmux_window: window,
         });
         Ok(Idempotent::Executed(()))
+    }
+
+    pub fn delete(&mut self) -> Idempotent<()> {
+        idempotency_guard!(
+            self.events.iter_all(),
+            already_applied: TaskEvent::Deleted
+        );
+        self.events.push(TaskEvent::Deleted);
+        Idempotent::Executed(())
     }
 
     // ── Query helpers (not event-sourced) ────────────────────────────

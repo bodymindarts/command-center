@@ -329,13 +329,10 @@ impl<R: Runtime> ClatApp<R> {
     pub async fn delete(&self, task_id: &str) -> anyhow::Result<DeleteOutput> {
         let mut task = self.resolve_task(task_id).await?;
 
-        if task.status.is_running() {
-            if let Some(ref window_id) = task.tmux_window {
-                let _ = self.runtime.kill_tmux_window(window_id.as_str());
-            }
-            if task.close(None).did_execute() {
-                let _ = self.store.tasks.update(&mut task).await;
-            }
+        if task.status.is_running()
+            && let Some(ref window_id) = task.tmux_window
+        {
+            let _ = self.runtime.kill_tmux_window(window_id.as_str());
         }
 
         // Clean up the git worktree if the task used one.
@@ -345,11 +342,19 @@ impl<R: Runtime> ClatApp<R> {
             let _ = self.runtime.remove_worktree(Path::new(work_dir));
         }
 
-        self.store.delete_task_messages(&task.id).await?;
-        self.store.tasks.delete_task(task.id).await?;
+        let output_task_id = task.id;
+        let output_task_name = task.name.clone();
+
+        self.store.delete_task_messages(&output_task_id).await.ok();
+
+        let _ = task.close(None);
+        if task.delete().did_execute() {
+            self.store.tasks.delete(task).await?;
+        }
+
         Ok(DeleteOutput {
-            task_id: task.id,
-            task_name: task.name,
+            task_id: output_task_id,
+            task_name: output_task_name,
         })
     }
 
