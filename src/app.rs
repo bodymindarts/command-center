@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, OnceLock};
 
 use crate::config::Paths;
 use crate::jwt::JwtSigner;
@@ -99,10 +100,11 @@ pub struct ClatApp<R: Runtime> {
     paths: Paths,
     skip_permissions: bool,
     jwt_signer: JwtSigner,
+    watch: OnceLock<crate::watch::WatchService>,
 }
 
 impl<R: Runtime> ClatApp<R> {
-    pub async fn try_new(runtime: R, skip_permissions: bool) -> anyhow::Result<Self> {
+    pub async fn init(runtime: R, skip_permissions: bool) -> anyhow::Result<Self> {
         let paths = Paths::resolve()?;
         paths.ensure_dirs()?;
         let store = Store::open(&paths.db_path).await?;
@@ -118,7 +120,29 @@ impl<R: Runtime> ClatApp<R> {
             paths,
             skip_permissions,
             jwt_signer,
+            watch: OnceLock::new(),
         })
+    }
+
+    pub fn watch(&self) -> &crate::watch::WatchService {
+        self.watch.get().expect("watch service not initialized")
+    }
+
+    pub async fn init_watch(self: &Arc<Self>) -> anyhow::Result<()> {
+        let config = job::JobSvcConfig::builder()
+            .pool(self.store.pool().clone())
+            .exec_migrations(true)
+            .build()
+            .map_err(|e| anyhow::anyhow!("failed to build job config: {e}"))?;
+        let mut jobs = job::Jobs::init(config).await?;
+        let timer_spawner = jobs.add_initializer(crate::watch::TimerJobInitializer {
+            app: Arc::clone(self),
+        });
+        jobs.start_poll().await?;
+        self.watch
+            .set(crate::watch::WatchService::new(timer_spawner))
+            .map_err(|_| anyhow::anyhow!("watch service already initialized"))?;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -130,6 +154,7 @@ impl<R: Runtime> ClatApp<R> {
             paths,
             skip_permissions: false,
             jwt_signer,
+            watch: OnceLock::new(),
         }
     }
 
@@ -145,6 +170,7 @@ impl<R: Runtime> ClatApp<R> {
         &self.jwt_signer
     }
 
+    #[cfg(test)]
     pub fn store(&self) -> &Store {
         &self.store
     }
@@ -682,8 +708,8 @@ impl<R: Runtime> ClatApp<R> {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
     use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
 
     use anyhow::bail;
 
@@ -735,23 +761,23 @@ mod tests {
     }
 
     struct FakeRuntime {
-        calls: RefCell<Vec<Call>>,
+        calls: Mutex<Vec<Call>>,
         worktree_dir: PathBuf,
         spawn_window_id: WindowId,
         spawn_pane_id: PaneId,
-        capture_result: RefCell<Option<String>>,
-        kill_should_fail: RefCell<bool>,
+        capture_result: Mutex<Option<String>>,
+        kill_should_fail: Mutex<bool>,
     }
 
     impl FakeRuntime {
         fn new(worktree_dir: &Path) -> Self {
             Self {
-                calls: RefCell::new(Vec::new()),
+                calls: Mutex::new(Vec::new()),
                 worktree_dir: worktree_dir.to_path_buf(),
                 spawn_window_id: WindowId::from("@fake-win".to_string()),
                 spawn_pane_id: PaneId::from("%fake-pane".to_string()),
-                capture_result: RefCell::new(Some("captured output".to_string())),
-                kill_should_fail: RefCell::new(false),
+                capture_result: Mutex::new(Some("captured output".to_string())),
+                kill_should_fail: Mutex::new(false),
             }
         }
     }
@@ -766,7 +792,7 @@ mod tests {
             _hooks_source: &Path,
             _jwt_token: &str,
         ) -> anyhow::Result<PathBuf> {
-            self.calls.borrow_mut().push(Call::CreateWorktree {
+            self.calls.lock().unwrap().push(Call::CreateWorktree {
                 name: name.to_string(),
             });
             let path = self.worktree_dir.join(name);
@@ -780,7 +806,7 @@ mod tests {
             work_dir: &Path,
             _jwt_token: &str,
         ) -> anyhow::Result<()> {
-            self.calls.borrow_mut().push(Call::RecreateWorktree {
+            self.calls.lock().unwrap().push(Call::RecreateWorktree {
                 work_dir: work_dir.to_path_buf(),
             });
             std::fs::create_dir_all(work_dir)?;
@@ -794,14 +820,14 @@ mod tests {
             _perms: &crate::runtime::SkillPermissions,
             _jwt_token: &str,
         ) -> anyhow::Result<()> {
-            self.calls.borrow_mut().push(Call::SetupDirConfig {
+            self.calls.lock().unwrap().push(Call::SetupDirConfig {
                 work_dir: work_dir.to_path_buf(),
             });
             Ok(())
         }
 
         fn init_scratch_dir(&self, scratch_dir: &Path) -> anyhow::Result<()> {
-            self.calls.borrow_mut().push(Call::InitScratchDir {
+            self.calls.lock().unwrap().push(Call::InitScratchDir {
                 scratch_dir: scratch_dir.to_path_buf(),
             });
             std::fs::create_dir_all(scratch_dir)?;
@@ -809,7 +835,7 @@ mod tests {
         }
 
         fn launch_agent(&self, config: LaunchConfig) -> anyhow::Result<SpawnResult> {
-            self.calls.borrow_mut().push(Call::LaunchAgent {
+            self.calls.lock().unwrap().push(Call::LaunchAgent {
                 task_name: config.task_name.to_string(),
                 has_user_prompt: config.user_prompt.is_some(),
             });
@@ -826,7 +852,7 @@ mod tests {
             work_dir: &Path,
             _skip_permissions: bool,
         ) -> anyhow::Result<SpawnResult> {
-            self.calls.borrow_mut().push(Call::ResumeAgent {
+            self.calls.lock().unwrap().push(Call::ResumeAgent {
                 task_name: task_name.to_string(),
                 work_dir: work_dir.to_path_buf(),
             });
@@ -837,7 +863,7 @@ mod tests {
         }
 
         fn relaunch_agent(&self, task_name: &str, work_dir: &Path) -> anyhow::Result<SpawnResult> {
-            self.calls.borrow_mut().push(Call::ResumeAgent {
+            self.calls.lock().unwrap().push(Call::ResumeAgent {
                 task_name: task_name.to_string(),
                 work_dir: work_dir.to_path_buf(),
             });
@@ -848,7 +874,7 @@ mod tests {
         }
 
         fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> anyhow::Result<()> {
-            self.calls.borrow_mut().push(Call::SendKeys {
+            self.calls.lock().unwrap().push(Call::SendKeys {
                 pane_id: pane_id.to_string(),
                 message: message.to_string(),
             });
@@ -856,34 +882,35 @@ mod tests {
         }
 
         fn capture_pane_output(&self, pane_id: &str) -> anyhow::Result<String> {
-            self.calls.borrow_mut().push(Call::CaptureOutput {
+            self.calls.lock().unwrap().push(Call::CaptureOutput {
                 pane_id: pane_id.to_string(),
             });
             self.capture_result
-                .borrow()
+                .lock()
+                .unwrap()
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("no capture result"))
         }
 
         fn remove_worktree(&self, path: &Path) -> anyhow::Result<()> {
-            self.calls.borrow_mut().push(Call::RemoveWorktree {
+            self.calls.lock().unwrap().push(Call::RemoveWorktree {
                 path: path.to_path_buf(),
             });
             Ok(())
         }
 
         fn kill_tmux_window(&self, window_id: &str) -> anyhow::Result<()> {
-            self.calls.borrow_mut().push(Call::KillWindow {
+            self.calls.lock().unwrap().push(Call::KillWindow {
                 window_id: window_id.to_string(),
             });
-            if *self.kill_should_fail.borrow() {
+            if *self.kill_should_fail.lock().unwrap() {
                 bail!("kill failed");
             }
             Ok(())
         }
 
         fn select_window(&self, window_id: &str) -> anyhow::Result<()> {
-            self.calls.borrow_mut().push(Call::SelectWindow {
+            self.calls.lock().unwrap().push(Call::SelectWindow {
                 window_id: window_id.to_string(),
             });
             Ok(())
@@ -963,7 +990,7 @@ prompt = "noop prompt"
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, MessageRole::System);
 
-        let calls = service.runtime().calls.borrow();
+        let calls = service.runtime().calls.lock().unwrap();
         assert!(matches!(calls[0], Call::CreateWorktree { .. }));
         assert!(matches!(
             calls[1],
@@ -997,7 +1024,7 @@ prompt = "noop prompt"
         assert_eq!(task.status, TaskStatus::Closed);
         assert_eq!(task.output.as_deref(), Some("captured output"));
 
-        let calls = service.runtime().calls.borrow();
+        let calls = service.runtime().calls.lock().unwrap();
         let capture_pos = calls
             .iter()
             .position(|c| matches!(c, Call::CaptureOutput { .. }))
@@ -1034,7 +1061,7 @@ prompt = "noop prompt"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        *runtime.kill_should_fail.borrow_mut() = true;
+        *runtime.kill_should_fail.lock().unwrap() = true;
         let service = ClatApp::new(store, runtime, paths);
 
         let spawned = spawn_test_task(&service).await;
@@ -1059,7 +1086,7 @@ prompt = "noop prompt"
         assert_eq!(result.task_name, "test-task");
 
         {
-            let calls = service.runtime().calls.borrow();
+            let calls = service.runtime().calls.lock().unwrap();
             assert!(calls.iter().any(|c| matches!(c,
                 Call::SendKeys { pane_id, message }
                 if pane_id == "%fake-pane" && message == "hello agent"
@@ -1093,7 +1120,7 @@ prompt = "noop prompt"
         let spawned = spawn_test_task(&service).await;
         service.goto(&spawned.task_id.to_string()).await.unwrap();
 
-        let calls = service.runtime().calls.borrow();
+        let calls = service.runtime().calls.lock().unwrap();
         assert!(calls.iter().any(|c| matches!(c,
             Call::SelectWindow { window_id } if window_id == "@fake-win"
         )));
@@ -1219,7 +1246,7 @@ prompt = "deploy to {{ env }}"
         assert_eq!(window_id, "@fake-win");
 
         {
-            let calls = service.runtime().calls.borrow();
+            let calls = service.runtime().calls.lock().unwrap();
             let resume_call = calls
                 .iter()
                 .find(|c| matches!(c, Call::ResumeAgent { .. }))
@@ -1283,7 +1310,7 @@ prompt = "deploy to {{ env }}"
         assert_eq!(window_id, "@fake-win");
 
         {
-            let calls = service.runtime().calls.borrow();
+            let calls = service.runtime().calls.lock().unwrap();
             assert!(
                 calls
                     .iter()
@@ -1347,7 +1374,7 @@ prompt = "deploy to {{ env }}"
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].name, "nw-task");
 
-        let calls = service.runtime().calls.borrow();
+        let calls = service.runtime().calls.lock().unwrap();
         assert!(
             !calls
                 .iter()
@@ -1400,7 +1427,7 @@ prompt = "deploy to {{ env }}"
             Some(custom_repo.to_str().unwrap())
         );
 
-        let calls = service.runtime().calls.borrow();
+        let calls = service.runtime().calls.lock().unwrap();
         let setup_call = calls
             .iter()
             .find(|c| matches!(c, Call::SetupDirConfig { .. }))
@@ -1444,7 +1471,7 @@ prompt = "deploy to {{ env }}"
             Some(expected_scratch.to_str().unwrap())
         );
 
-        let calls = service.runtime().calls.borrow();
+        let calls = service.runtime().calls.lock().unwrap();
         assert!(
             !calls
                 .iter()

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use job::{Job, JobCompletion, JobId, JobInitializer, JobRunner, JobSpawner, JobSvcConfig, Jobs};
+use job::{Job, JobCompletion, JobInitializer, JobRunner, JobSpawner};
 
 use crate::app::ClatApp;
 use crate::runtime::Runtime;
@@ -17,26 +17,12 @@ pub struct TimerConfig {
 // ── WatchService ──────────────────────────────────────────────────────
 
 pub struct WatchService {
-    _jobs: Jobs,
     timer_spawner: JobSpawner<TimerConfig>,
 }
 
 impl WatchService {
-    pub async fn init<R: Runtime + Send + Sync + 'static>(
-        app: Arc<ClatApp<R>>,
-    ) -> anyhow::Result<Self> {
-        let config = JobSvcConfig::builder()
-            .pool(app.store().pool().clone())
-            .exec_migrations(true)
-            .build()
-            .map_err(|e| anyhow::anyhow!("failed to build job config: {e}"))?;
-        let mut jobs = Jobs::init(config).await?;
-        let timer_spawner = jobs.add_initializer(TimerJobInitializer { app });
-        jobs.start_poll().await?;
-        Ok(Self {
-            _jobs: jobs,
-            timer_spawner,
-        })
+    pub(crate) fn new(timer_spawner: JobSpawner<TimerConfig>) -> Self {
+        Self { timer_spawner }
     }
 
     pub async fn create_timer(
@@ -45,7 +31,7 @@ impl WatchService {
         label: &str,
         delay_seconds: i64,
     ) -> anyhow::Result<String> {
-        let id = JobId::new();
+        let id = job::JobId::new();
         let config = TimerConfig {
             task_id: task_id.to_string(),
             label: label.to_string(),
@@ -60,11 +46,11 @@ impl WatchService {
 
 // ── Initializer ───────────────────────────────────────────────────────
 
-struct TimerJobInitializer<R: Runtime> {
-    app: Arc<ClatApp<R>>,
+pub(crate) struct TimerJobInitializer<R: Runtime> {
+    pub app: Arc<ClatApp<R>>,
 }
 
-impl<R: Runtime + Send + Sync + 'static> JobInitializer for TimerJobInitializer<R> {
+impl<R: Runtime> JobInitializer for TimerJobInitializer<R> {
     type Config = TimerConfig;
 
     fn job_type(&self) -> job::JobType {
@@ -92,7 +78,7 @@ struct TimerJobRunner<R: Runtime> {
 }
 
 #[async_trait]
-impl<R: Runtime + Send + Sync + 'static> JobRunner for TimerJobRunner<R> {
+impl<R: Runtime> JobRunner for TimerJobRunner<R> {
     async fn run(
         &self,
         _current_job: job::CurrentJob,

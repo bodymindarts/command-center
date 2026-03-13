@@ -41,7 +41,7 @@ impl Default for SkillPermissions<'_> {
     }
 }
 
-pub trait Runtime {
+pub trait Runtime: Send + Sync + 'static {
     fn create_worktree(
         &self,
         repo_root: &Path,

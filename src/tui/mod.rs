@@ -119,7 +119,7 @@ fn spawn_caffeinate() -> Option<std::process::Child> {
     }
 }
 
-pub async fn run<R: Runtime + Send + Sync + 'static>(
+pub async fn run<R: Runtime>(
     app: Arc<ClatApp<R>>,
     resume_session: Option<&str>,
     caffeinate: bool,

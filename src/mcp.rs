@@ -13,7 +13,6 @@ use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use crate::app::{ClatApp, PromptMode, SpawnRequest, WorkDirMode};
 use crate::jwt::JwtSigner;
 use crate::runtime::Runtime;
-use crate::watch::WatchService;
 
 // ---------------------------------------------------------------------------
 // MCP server — generic over R: Runtime
@@ -26,22 +25,20 @@ use crate::watch::WatchService;
 #[derive(Clone)]
 pub struct ClatMcpServer<R: Runtime> {
     app: Arc<ClatApp<R>>,
-    _watch_service: Arc<WatchService>,
     tool_router: ToolRouter<Self>,
 }
 
-impl<R: Runtime + Send + Sync + 'static> ClatMcpServer<R> {
-    pub fn new(app: Arc<ClatApp<R>>, watch_service: Arc<WatchService>) -> Self {
+impl<R: Runtime> ClatMcpServer<R> {
+    pub fn new(app: Arc<ClatApp<R>>) -> Self {
         let mut router = Self::tool_router();
-        router.add_route(Self::create_watch_route(Arc::clone(&watch_service)));
+        router.add_route(Self::create_watch_route(Arc::clone(&app)));
         Self {
             app,
-            _watch_service: watch_service,
             tool_router: router,
         }
     }
 
-    fn create_watch_route(watch_service: Arc<WatchService>) -> ToolRoute<Self> {
+    fn create_watch_route(app: Arc<ClatApp<R>>) -> ToolRoute<Self> {
         let schema = serde_json::json!({
             "type": "object",
             "required": ["label", "check"],
@@ -81,7 +78,7 @@ impl<R: Runtime + Send + Sync + 'static> ClatMcpServer<R> {
         ToolRoute::new_dyn(
             tool,
             move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
-                let ws = Arc::clone(&watch_service);
+                let app = Arc::clone(&app);
                 Box::pin(async move {
                     // Extract task_id from JWT claims via request extensions.
                     let task_id = ctx
@@ -103,7 +100,7 @@ impl<R: Runtime + Send + Sync + 'static> ClatMcpServer<R> {
                         .and_then(|v| v.as_i64())
                         .unwrap_or(30);
 
-                    match ws.create_timer(&task_id, label, delay).await {
+                    match app.watch().create_timer(&task_id, label, delay).await {
                         Ok(watch_id) => {
                             let response = serde_json::json!({
                                 "watch_id": watch_id,
@@ -143,7 +140,7 @@ struct SpawnParams {
 }
 
 #[tool_router]
-impl<R: Runtime + Send + Sync + 'static> ClatMcpServer<R> {
+impl<R: Runtime> ClatMcpServer<R> {
     #[tool(
         description = "Spawn a new task agent. Creates a git worktree, loads the skill template, and launches a Claude Code session."
     )]
@@ -221,7 +218,7 @@ impl<R: Runtime + Send + Sync + 'static> ClatMcpServer<R> {
 }
 
 #[tool_handler]
-impl<R: Runtime + Send + Sync + 'static> ServerHandler for ClatMcpServer<R> {
+impl<R: Runtime> ServerHandler for ClatMcpServer<R> {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("clat", env!("CARGO_PKG_VERSION")))
@@ -320,7 +317,7 @@ async fn jwt_auth_middleware(
 /// Start the MCP HTTP server as a background tokio task.
 ///
 /// Returns the URL the server is listening on.
-pub async fn start_mcp_server<R: Runtime + Send + Sync + 'static>(
+pub async fn start_mcp_server<R: Runtime>(
     app: Arc<ClatApp<R>>,
     port: u16,
 ) -> anyhow::Result<String> {
@@ -328,7 +325,7 @@ pub async fn start_mcp_server<R: Runtime + Send + Sync + 'static>(
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
     };
 
-    let watch_service = Arc::new(WatchService::init(Arc::clone(&app)).await?);
+    app.init_watch().await?;
     let jwt_signer = app.jwt_signer().clone();
     let config = StreamableHttpServerConfig {
         stateful_mode: false,
@@ -336,12 +333,7 @@ pub async fn start_mcp_server<R: Runtime + Send + Sync + 'static>(
         ..Default::default()
     };
     let service = StreamableHttpService::new(
-        move || {
-            Ok(ClatMcpServer::new(
-                Arc::clone(&app),
-                Arc::clone(&watch_service),
-            ))
-        },
+        move || Ok(ClatMcpServer::new(Arc::clone(&app))),
         LocalSessionManager::default().into(),
         config,
     );

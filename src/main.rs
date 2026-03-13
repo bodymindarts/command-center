@@ -50,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
         } => *dangerously_skip_permissions,
         _ => false,
     };
-    let app = ClatApp::try_new(TmuxRuntime, skip_permissions).await?;
+    let app = ClatApp::init(TmuxRuntime, skip_permissions).await?;
 
     match command {
         Command::Spawn {
@@ -114,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_dash<R: Runtime + Send + Sync + 'static>(
+async fn cmd_dash<R: Runtime>(
     app: ClatApp<R>,
     resume: Option<&str>,
     caffeinate: bool,
