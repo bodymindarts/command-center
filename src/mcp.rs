@@ -143,10 +143,12 @@ impl ClatMcpServer {
         Extension(parts): Extension<axum::http::request::Parts>,
         Parameters(params): Parameters<SpawnParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let _caller_task_id = parts
-            .extensions
-            .get::<crate::jwt::AgentClaims>()
-            .map(|c| c.sub.as_str());
+        let caller_claims = parts.extensions.get::<crate::jwt::AgentClaims>();
+
+        // Priority: explicit param > JWT project claim > breadcrumb fallback
+        let project = params
+            .project
+            .or_else(|| caller_claims.and_then(|c| c.project.clone()));
 
         let result = self
             .app
@@ -154,7 +156,7 @@ impl ClatMcpServer {
                 name: params.name,
                 task: params.task,
                 skill: params.skill,
-                project: params.project,
+                project,
                 repo: params.repo,
                 branch: params.branch,
                 scratch: params.scratch.unwrap_or(false),
