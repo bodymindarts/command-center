@@ -137,11 +137,24 @@ impl<R: Runtime> ClatApp<R> {
         let timer_spawner = jobs.add_initializer(crate::watch::TimerJobInitializer {
             app: Arc::clone(self),
         });
+        let command_spawner = jobs.add_initializer(crate::watch::CommandJobInitializer {
+            app: Arc::clone(self),
+        });
         jobs.start_poll().await?;
         self.watch
-            .set(crate::watch::WatchService::new(timer_spawner, jobs))
+            .set(crate::watch::WatchService::new(
+                timer_spawner,
+                command_spawner,
+                jobs,
+            ))
             .map_err(|_| anyhow::anyhow!("watch service already initialized"))?;
         Ok(())
+    }
+
+    /// Look up a task's work_dir by id prefix. Used by watch runners to set cwd.
+    pub async fn task_work_dir(&self, id_prefix: &str) -> anyhow::Result<Option<String>> {
+        let task = self.resolve_task(id_prefix).await?;
+        Ok(task.work_dir)
     }
 
     #[cfg(test)]

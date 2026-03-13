@@ -48,21 +48,41 @@ impl<R: Runtime> ClatMcpServer<R> {
                     "description": "Short description of what you're watching for (included in the notification)"
                 },
                 "check": {
-                    "oneOf": [{
-                        "type": "object",
-                        "title": "timer",
-                        "description": "Fire a notification after a delay",
-                        "required": ["name"],
-                        "properties": {
-                            "name": { "const": "timer" }
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "title": "timer",
+                            "description": "Fire a notification after a delay",
+                            "required": ["name"],
+                            "properties": {
+                                "name": { "const": "timer" }
+                            },
+                            "additionalProperties": false
                         },
-                        "additionalProperties": false
-                    }]
+                        {
+                            "type": "object",
+                            "title": "command",
+                            "description": "Run a command after the delay and include its output in the notification",
+                            "required": ["name", "cmd"],
+                            "properties": {
+                                "name": { "const": "command" },
+                                "cmd": {
+                                    "type": "string",
+                                    "description": "Shell command to execute (e.g. 'gh run view 123 --json status')"
+                                }
+                            },
+                            "additionalProperties": false
+                        }
+                    ]
                 },
                 "delay_seconds": {
                     "type": "integer",
                     "minimum": 5,
                     "description": "Seconds to wait before firing the notification"
+                },
+                "context": {
+                    "description": "Arbitrary JSON echoed back in the notification. Use to persist state across sleep cycles.",
+                    "type": "object"
                 }
             },
             "additionalProperties": false
@@ -71,7 +91,7 @@ impl<R: Runtime> ClatMcpServer<R> {
         let input_schema = Arc::new(schema.as_object().unwrap().clone());
         let tool = rmcp::model::Tool::new(
             "create_watch",
-            "Set a background timer. You'll receive a message when it fires. Uses zero LLM tokens while waiting. Returns immediately with a watch ID.",
+            "Set a background watch that fires after a delay. Uses zero LLM tokens while waiting. Returns immediately with a watch ID. Use this to implement polling loops: set a watch, stop, and when the notification arrives, check status and decide whether to watch again or finish.",
             input_schema,
         );
 
@@ -94,13 +114,45 @@ impl<R: Runtime> ClatMcpServer<R> {
                     let label = args
                         .get("label")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("unnamed timer");
+                        .unwrap_or("unnamed watch");
                     let delay = args
                         .get("delay_seconds")
                         .and_then(|v| v.as_i64())
                         .unwrap_or(30);
+                    let context = args.get("context").cloned();
 
-                    match app.watch().create_timer(&task_id, label, delay).await {
+                    let check_name = args
+                        .get("check")
+                        .and_then(|v| v.get("name"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("timer");
+
+                    let result = match check_name {
+                        "command" => {
+                            let cmd = match args
+                                .get("check")
+                                .and_then(|v| v.get("cmd"))
+                                .and_then(|v| v.as_str())
+                            {
+                                Some(cmd) => cmd,
+                                None => {
+                                    return Ok(CallToolResult::error(vec![Content::text(
+                                        "Missing required field 'cmd' in command check",
+                                    )]));
+                                }
+                            };
+                            app.watch()
+                                .create_command(&task_id, label, cmd, delay, context)
+                                .await
+                        }
+                        _ => {
+                            app.watch()
+                                .create_timer(&task_id, label, delay, context)
+                                .await
+                        }
+                    };
+
+                    match result {
                         Ok(watch_id) => {
                             let response = serde_json::json!({
                                 "watch_id": watch_id,
