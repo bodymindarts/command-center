@@ -87,36 +87,21 @@ impl TaskRepo {
     /// List tasks scoped to a project (running tasks sorted first).
     ///
     /// `None` matches tasks with no project (IS NULL).
-    /// Uses es_query! for the NULL case because list_for_project_id generates
-    /// `project_id = ?` which doesn't match NULL (es-entity bug).
     pub async fn list_visible_for_project(
         &self,
         project_id: Option<&ProjectId>,
     ) -> anyhow::Result<Vec<Task>> {
-        let mut tasks = match project_id {
-            Some(pid) => {
-                self.list_for_project_id_by_created_at(
-                    Some(*pid),
-                    PaginatedQueryArgs {
-                        first: ALL,
-                        after: None,
-                    },
-                    ListDirection::Descending,
-                )
-                .await?
-                .entities
-            }
-            None => {
-                let (tasks, _) = es_query!(
-                    "SELECT id, created_at FROM tasks \
-                     WHERE project_id IS NULL AND deleted = FALSE \
-                     ORDER BY created_at DESC",
-                )
-                .fetch_n(self.pool(), ALL)
-                .await?;
-                tasks
-            }
-        };
+        let mut tasks = self
+            .list_for_project_id_by_created_at(
+                project_id.copied(),
+                PaginatedQueryArgs {
+                    first: ALL,
+                    after: None,
+                },
+                ListDirection::Descending,
+            )
+            .await?
+            .entities;
 
         // Sort running tasks before non-running (stable sort preserves created_at order).
         tasks.sort_by_key(|t| if t.status.is_running() { 0 } else { 1 });

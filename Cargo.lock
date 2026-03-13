@@ -779,13 +779,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
 name = "es-entity"
 version = "0.10.28-dev"
-source = "git+https://github.com/galoymoney/es-entity?branch=task%2Fsqlite-backend-019cdf3d#d9fa03e245618d86044016bfe84307ceae21123f"
+source = "git+https://github.com/galoymoney/es-entity?branch=task%2Fsqlite-backend-019cdf3d#ff1808d3bf6b6a1df1eb690737b90b26ed8e46b4"
 dependencies = [
  "chrono",
  "derive_builder",
@@ -804,7 +804,7 @@ dependencies = [
 [[package]]
 name = "es-entity-macros-sqlite"
 version = "0.10.28-dev"
-source = "git+https://github.com/galoymoney/es-entity?branch=task%2Fsqlite-backend-019cdf3d#d9fa03e245618d86044016bfe84307ceae21123f"
+source = "git+https://github.com/galoymoney/es-entity?branch=task%2Fsqlite-backend-019cdf3d#ff1808d3bf6b6a1df1eb690737b90b26ed8e46b4"
 dependencies = [
  "convert_case",
  "darling 0.23.0",
@@ -2213,7 +2213,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2873,10 +2873,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.2",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
