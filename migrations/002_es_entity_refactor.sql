@@ -19,14 +19,14 @@ ALTER TABLE tasks ADD COLUMN deleted INTEGER DEFAULT 0;
 UPDATE tasks SET created_at = started_at WHERE created_at IS NULL;
 
 -- Migrate existing tasks into task_events.
--- For each task, create a Spawned event (sequence 1).
+-- For each task, create an Initialized event (sequence 1).
 INSERT INTO task_events (id, sequence, event_type, event, recorded_at)
 SELECT
     id,
     1,
-    'spawned',
+    'initialized',
     json_object(
-        'type', 'spawned',
+        'type', 'initialized',
         'id', id,
         'name', name,
         'skill_name', skill_name,

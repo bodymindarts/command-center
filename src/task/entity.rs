@@ -18,7 +18,6 @@ use super::error::TaskError;
 #[serde(tag = "type", rename_all = "snake_case")]
 #[es_event(id = "TaskId")]
 pub enum TaskEvent {
-    #[serde(alias = "spawned")]
     Initialized {
         id: TaskId,
         name: TaskName,
