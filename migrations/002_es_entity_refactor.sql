@@ -1,4 +1,4 @@
--- Event-sourcing tables for tasks (es-entity pattern).
+-- Convert tasks from flat CRUD to event-sourced entity (es-entity pattern).
 
 -- Events table (immutable log).
 CREATE TABLE IF NOT EXISTS task_events (
@@ -6,17 +6,19 @@ CREATE TABLE IF NOT EXISTS task_events (
     sequence    INTEGER NOT NULL,
     event_type  TEXT NOT NULL,
     event       TEXT NOT NULL,
+    context     TEXT DEFAULT NULL,
     recorded_at TEXT NOT NULL,
     UNIQUE(id, sequence)
 );
 
--- Add created_at to the tasks index table (es-entity expects it).
+-- Add columns expected by es-entity on the index table.
 ALTER TABLE tasks ADD COLUMN created_at TEXT;
+ALTER TABLE tasks ADD COLUMN deleted INTEGER DEFAULT 0;
 
 -- Backfill created_at from started_at for existing rows.
 UPDATE tasks SET created_at = started_at WHERE created_at IS NULL;
 
--- Migrate existing tasks into event_events.
+-- Migrate existing tasks into task_events.
 -- For each task, create a Spawned event (sequence 1).
 INSERT INTO task_events (id, sequence, event_type, event, recorded_at)
 SELECT
@@ -79,3 +81,7 @@ SELECT
     COALESCE(completed_at, datetime('now'))
 FROM tasks
 WHERE status = 'closed';
+
+-- Drop columns that now live exclusively in the event log.
+ALTER TABLE tasks DROP COLUMN skill_name;
+ALTER TABLE tasks DROP COLUMN params_json;
