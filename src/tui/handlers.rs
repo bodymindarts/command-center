@@ -1088,7 +1088,7 @@ fn handle_hook_permission(
                 .is_err()
             {
                 telegram::tg_log(&format!(
-                    "WARN: channel closed, could not send question {perm_id}"
+                    "WARN: question {perm_id} ({task_name}): mpsc channel closed, bot thread may have crashed"
                 ));
             }
         } else if tx
@@ -1101,7 +1101,7 @@ fn handle_hook_permission(
             .is_err()
         {
             telegram::tg_log(&format!(
-                "WARN: channel closed, could not send permission {perm_id}"
+                "WARN: permission {perm_id} ({task_name}): mpsc channel closed, bot thread may have crashed"
             ));
         }
         tg_perm_ids.insert(perm_id);
