@@ -42,6 +42,9 @@ pub enum TaskEvent {
         tmux_pane: PaneId,
         tmux_window: WindowId,
     },
+    Moved {
+        project_id: Option<ProjectId>,
+    },
     Deleted,
 }
 
@@ -161,6 +164,9 @@ impl TryFromEvents<TaskEvent> for Task {
                         .tmux_pane(Some(tmux_pane.clone()))
                         .tmux_window(Some(tmux_window.clone()))
                         .completed_at(None);
+                }
+                TaskEvent::Moved { project_id } => {
+                    builder = builder.project_id(*project_id);
                 }
                 TaskEvent::Deleted => {
                     // Soft delete — repo-level flag; no entity state change.
@@ -293,6 +299,15 @@ impl Task {
             tmux_window: window,
         });
         Ok(Idempotent::Executed(()))
+    }
+
+    pub fn move_to_project(&mut self, project_id: Option<ProjectId>) -> Idempotent<()> {
+        if self.project_id == project_id {
+            return Idempotent::AlreadyApplied;
+        }
+        self.project_id = project_id;
+        self.events.push(TaskEvent::Moved { project_id });
+        Idempotent::Executed(())
     }
 
     pub fn delete(&mut self) -> Idempotent<()> {

@@ -22,11 +22,7 @@ const ALL: usize = i64::MAX as usize;
             create(accessor = "started_at()"),
             update(persist = false),
         ),
-        project_id(
-            ty = "Option<ProjectId>",
-            update(persist = false),
-            list_for(by(created_at))
-        ),
+        project_id(ty = "Option<ProjectId>", list_for(by(created_at))),
     )
 )]
 pub struct TaskRepo {
