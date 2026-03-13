@@ -370,10 +370,58 @@ impl Runtime for TmuxRuntime {
     }
 
     fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> anyhow::Result<()> {
-        self.tmux_cmd(&["send-keys", "-t", pane_id, "-l", message])?;
-        // Small delay so Claude Code finishes processing pasted text
-        // before the Enter key arrives to submit it.
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        use std::io::Write as _;
+
+        if message.trim().is_empty() {
+            bail!("refusing to send empty message");
+        }
+
+        // Claude Code uses Ink which enables bracketed paste mode.
+        // `send-keys -l` delivers individual key events without paste
+        // markers, so Ink handles the input unreliably.  Using tmux's
+        // paste buffer with `-p` wraps content in bracketed paste
+        // escapes (\e[200~ … \e[201~) so Ink receives a proper paste
+        // event.
+        //
+        // Named buffers keyed to pane ID prevent concurrent sends to
+        // different agents from clobbering each other's paste content.
+        let buf_name = format!("cc-{pane_id}");
+
+        let mut child = Command::new("tmux")
+            .args(["load-buffer", "-b", &buf_name, "-"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .context("failed to spawn tmux load-buffer")?;
+
+        let mut stdin = child
+            .stdin
+            .take()
+            .context("stdin not available despite Stdio::piped()")?;
+        stdin.write_all(message.as_bytes())?;
+        drop(stdin); // close → EOF for tmux
+
+        let status = child.wait().context("tmux load-buffer failed")?;
+        if !status.success() {
+            bail!("tmux load-buffer exited with non-zero status");
+        }
+
+        // Paste with bracketed-paste markers (-p), suppress LF→CR
+        // substitution (-r), and delete the buffer afterwards (-d).
+        self.tmux_cmd(&[
+            "paste-buffer",
+            "-p",
+            "-r",
+            "-d",
+            "-b",
+            &buf_name,
+            "-t",
+            pane_id,
+        ])?;
+
+        // Brief pause for Ink to process the paste event.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Submit the pasted text.
         self.tmux_cmd(&["send-keys", "-t", pane_id, "Enter"])?;
         Ok(())
     }
