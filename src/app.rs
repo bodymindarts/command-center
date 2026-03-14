@@ -709,7 +709,17 @@ impl<R: Runtime> ClatApp<R> {
         })
     }
 
-    async fn resolve_task(&self, id_prefix: &str) -> anyhow::Result<Task> {
+    /// Insert a message into an arbitrary chat (project, task, or exo).
+    pub async fn insert_chat_message(
+        &self,
+        chat: &ChatId,
+        role: MessageRole,
+        content: &str,
+    ) -> anyhow::Result<()> {
+        self.store.insert_message(chat, role, content).await
+    }
+
+    pub async fn resolve_task(&self, id_prefix: &str) -> anyhow::Result<Task> {
         self.store
             .tasks
             .maybe_find_by_id_prefix(id_prefix)
