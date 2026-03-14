@@ -5,7 +5,9 @@ use chrono::{DateTime, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 
-use crate::primitives::{ChatId, MessageRole, TaskId};
+#[cfg(test)]
+use crate::primitives::TaskId;
+use crate::primitives::{ChatId, MessageRole};
 use crate::project::ProjectRepo;
 use crate::task::{TaskMessage, TaskRepo};
 
@@ -132,14 +134,6 @@ impl Store {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(row_to_message).collect()
-    }
-
-    pub async fn delete_task_messages(&self, task_id: &TaskId) -> anyhow::Result<()> {
-        sqlx::query("DELETE FROM task_messages WHERE task_id = ?")
-            .bind(task_id.to_string())
-            .execute(&self.pool)
-            .await?;
-        Ok(())
     }
 }
 

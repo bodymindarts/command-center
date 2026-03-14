@@ -401,8 +401,6 @@ impl<R: Runtime> ClatApp<R> {
         let output_task_id = task.id;
         let output_task_name = task.name.clone();
 
-        self.store.delete_task_messages(&output_task_id).await.ok();
-
         let _ = task.close(None);
         if task.delete().did_execute() {
             self.store.tasks.delete(task).await?;
@@ -697,7 +695,6 @@ impl<R: Runtime> ClatApp<R> {
             {
                 let _ = self.runtime.remove_worktree(Path::new(work_dir));
             }
-            self.store.delete_task_messages(&task.id).await.ok();
             let _ = task.close(None);
             if task.delete().did_execute() {
                 self.store.tasks.delete(task).await?;
