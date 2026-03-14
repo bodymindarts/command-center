@@ -66,13 +66,15 @@ pub struct SendOutput {
     pub task_name: TaskName,
 }
 
-/// Result of `send_from_agent` — either delivered to a task or recorded for PM.
+/// Result of `send_from_agent` — either delivered to a task or recorded for PM/ExO.
 #[derive(Debug)]
 pub enum AgentSendOutput {
     /// Message was sent to a running task's tmux pane and recorded.
     Task(SendOutput),
     /// Message was recorded in the project chat for PM visibility.
     Pm { project: String },
+    /// Message was recorded in the ExO chat (task has no project).
+    Exo,
 }
 
 #[derive(Debug)]
@@ -718,39 +720,48 @@ impl<R: Runtime> ClatApp<R> {
         })
     }
 
-    /// Send a message from one agent to another task or to the PM.
+    /// Send a message from one agent to another task or to the PM/ExO.
     ///
-    /// Enforces project scoping: the caller must have a project, and the
-    /// target task must belong to the same project. The special target "pm"
-    /// records the message in the project chat for PM/ExO visibility.
+    /// When target is "pm": routes to the project PM chat if the caller has a
+    /// project, or to the ExO chat if it doesn't (ExO is the PM for unassigned
+    /// tasks). For task targets, enforces project scoping.
     pub async fn send_from_agent(
         &self,
         claims: &crate::jwt::AgentClaims,
         target: &str,
         message: &str,
     ) -> anyhow::Result<AgentSendOutput> {
-        let caller_project = claims
-            .project
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("agents without a project cannot use send_message"))?;
-
-        // The JWT project claim may be a project name (from spawn) or a
-        // ProjectId string (from reopen). Try name resolution first.
-        let caller_project_id = match self.resolve_project_id(caller_project).await {
-            Ok(id) => id,
-            Err(_) => caller_project.parse::<ProjectId>()?,
-        };
-
         if target == "pm" {
-            let chat = ChatId::Project(caller_project_id);
             let content = format!("[from agent {} ({})] {message}", claims.sub, claims.role);
-            self.store
-                .insert_message(&chat, MessageRole::User, &content)
-                .await?;
-            Ok(AgentSendOutput::Pm {
-                project: caller_project.to_string(),
-            })
+            if let Some(caller_project) = claims.project.as_deref() {
+                // Route to project PM
+                let caller_project_id = match self.resolve_project_id(caller_project).await {
+                    Ok(id) => id,
+                    Err(_) => caller_project.parse::<ProjectId>()?,
+                };
+                let chat = ChatId::Project(caller_project_id);
+                self.store
+                    .insert_message(&chat, MessageRole::User, &content)
+                    .await?;
+                Ok(AgentSendOutput::Pm {
+                    project: caller_project.to_string(),
+                })
+            } else {
+                // No project — route to ExO
+                self.store
+                    .insert_message(&EXO_CHAT, MessageRole::User, &content)
+                    .await?;
+                Ok(AgentSendOutput::Exo)
+            }
         } else {
+            let caller_project = claims
+                .project
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("agents without a project can only send to 'pm'"))?;
+            let caller_project_id = match self.resolve_project_id(caller_project).await {
+                Ok(id) => id,
+                Err(_) => caller_project.parse::<ProjectId>()?,
+            };
             let task = self.resolve_task(target).await?;
             if task.project_id != Some(caller_project_id) {
                 anyhow::bail!(

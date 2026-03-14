@@ -191,7 +191,7 @@ impl<R: Runtime> ClatMcpServer<R> {
         let input_schema = Arc::new(schema.as_object().unwrap().clone());
         let tool = rmcp::model::Tool::new(
             "send_message",
-            "Send a message to another running task or to the PM/ExO session. Messages to tasks are delivered to their tmux pane. Messages to 'pm' are recorded in the project chat for the PM to retrieve. Caller must have a project set, and can only message tasks in the same project.",
+            "Send a message to another running task or to the PM/ExO session. Messages to tasks are delivered to their tmux pane. Target 'pm' routes to the project PM chat if the caller has a project, or to the ExO chat if it doesn't. Task targets require the caller and target to be in the same project.",
             input_schema,
         );
 
@@ -240,6 +240,16 @@ impl<R: Runtime> ClatMcpServer<R> {
                                 "target": "pm",
                                 "project": project,
                                 "note": "Message recorded in project chat. The PM will see it when reviewing project messages."
+                            });
+                            Ok(CallToolResult::success(vec![Content::text(
+                                serde_json::to_string_pretty(&response).unwrap(),
+                            )]))
+                        }
+                        Ok(AgentSendOutput::Exo) => {
+                            let response = serde_json::json!({
+                                "status": "recorded",
+                                "target": "exo",
+                                "note": "Message recorded in ExO chat. ExO will see it when reviewing messages."
                             });
                             Ok(CallToolResult::success(vec![Content::text(
                                 serde_json::to_string_pretty(&response).unwrap(),
