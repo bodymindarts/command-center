@@ -25,6 +25,9 @@ pub struct ScreenState {
     last_project_id: Option<ProjectId>,
 
     pub project_list: ProjectListState,
+    /// Whether ExO prefers to show the project list (true) or task list (false).
+    /// Persists across navigation so returning to ExO restores the right panel.
+    exo_show_project_list: bool,
     should_quit: bool,
     pub(in crate::tui) focus: Focus,
     pub permissions: PermissionStore,
@@ -52,6 +55,7 @@ impl ScreenState {
             active_project_name: None,
             last_project_id: None,
             project_list: ProjectListState::new(),
+            exo_show_project_list: true,
             should_quit: false,
             focus: Focus::ChatInput,
             permissions: PermissionStore::new(),
@@ -86,6 +90,10 @@ impl ScreenState {
 
     pub fn focus_on_tasks(&mut self) {
         self.project_list.hide();
+        // When in ExO, remember that the user switched to task view
+        if self.active_project_id.is_none() {
+            self.exo_show_project_list = false;
+        }
         self.focus = Focus::TaskList;
     }
 
@@ -575,12 +583,25 @@ impl ScreenState {
         tasks: Vec<Task>,
         focus_task: Option<&TaskName>,
     ) {
+        // Save ExO's project-list preference before leaving
+        if self.active_project_id.is_none() {
+            self.exo_show_project_list = self.project_list.is_visible();
+        }
+
         // Remember current project for Ctrl+R
         self.last_project_id = self.active_project_id.take();
         self.active_project_name = project.as_ref().map(|(n, _)| n.clone());
         self.active_project_id = project.map(|(_, id)| id);
+
         self.project_list.hide();
-        self.focus = Focus::ChatInput;
+
+        // Restore ExO's project-list preference when returning to ExO
+        if self.active_project_id.is_none() && self.exo_show_project_list {
+            self.project_list.set_visible(true);
+            self.focus = Focus::ProjectList;
+        } else {
+            self.focus = Focus::ChatInput;
+        }
 
         // Load tasks into target workspace
         let active = self.active_state_mut();
@@ -604,6 +625,10 @@ impl ScreenState {
     pub fn show_project_list(&mut self, projects: Vec<Project>) {
         self.project_list.show(projects);
         self.sync_active_to_selected_project();
+        // When in ExO, remember that the user switched to project list
+        if self.active_project_id.is_none() {
+            self.exo_show_project_list = true;
+        }
         self.focus = Focus::ProjectList;
     }
 

@@ -41,6 +41,10 @@ impl ProjectListState {
         self.show_projects
     }
 
+    pub fn set_visible(&mut self, visible: bool) {
+        self.show_projects = visible;
+    }
+
     // ── Projects ─────────────────────────────────────────────────────
 
     pub fn set_projects(&mut self, projects: Vec<Project>) {
