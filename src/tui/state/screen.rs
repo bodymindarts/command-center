@@ -279,11 +279,11 @@ impl ScreenState {
     // ── Cycle next/prev (Tab / Shift-Tab) ──────────────────────────────
 
     /// Cycle to the next item in whichever list is active.
-    /// Projects list visible → next project. Task detail open → next task.
-    /// Otherwise → open first task detail.
+    /// Projects list visible → next project (linear, ExO reachable).
+    /// Task detail open → next task. Otherwise → open first task detail.
     pub fn cycle_next(&mut self) {
         if self.project_list.is_visible() {
-            self.next_project();
+            self.navigate_to_adjacent_project(true);
         } else if self.active_state().task_list.is_detail_visible() {
             self.navigate_to_adjacent_task(true);
         } else {
@@ -292,11 +292,11 @@ impl ScreenState {
     }
 
     /// Cycle to the previous item in whichever list is active.
-    /// Projects list visible → previous project. Task detail open → previous task.
-    /// Otherwise → open last task detail.
+    /// Projects list visible → previous project (linear, ExO reachable).
+    /// Task detail open → previous task. Otherwise → open last task detail.
     pub fn cycle_prev(&mut self) {
         if self.project_list.is_visible() {
-            self.previous_project();
+            self.navigate_to_adjacent_project(false);
         } else if self.active_state().task_list.is_detail_visible() {
             self.navigate_to_adjacent_task(false);
         } else {
@@ -717,6 +717,54 @@ impl ScreenState {
         self.sync_active_to_selected_project();
     }
 
+    /// Linear project navigation for Tab cycling. Going past the last project
+    /// returns to ExO; going past the first project also returns to ExO.
+    /// From ExO, forward goes to the first project, backward to the last.
+    fn navigate_to_adjacent_project(&mut self, forward: bool) {
+        let len = self.project_list.projects().len();
+        if len == 0 {
+            return;
+        }
+        let current = self.project_list.list_state.selected();
+        if forward {
+            match current {
+                None => {
+                    // On ExO → advance to first project
+                    self.project_list.list_state.select(Some(0));
+                    self.sync_active_to_selected_project();
+                }
+                Some(i) if i + 1 < len => {
+                    self.project_list.list_state.select(Some(i + 1));
+                    self.sync_active_to_selected_project();
+                }
+                Some(_) => {
+                    // Past last project → return to ExO
+                    self.project_list.list_state.select(None);
+                    self.active_project_id = None;
+                    self.active_project_name = None;
+                }
+            }
+        } else {
+            match current {
+                None => {
+                    // On ExO → go to last project
+                    self.project_list.list_state.select(Some(len - 1));
+                    self.sync_active_to_selected_project();
+                }
+                Some(0) => {
+                    // Past first project → return to ExO
+                    self.project_list.list_state.select(None);
+                    self.active_project_id = None;
+                    self.active_project_name = None;
+                }
+                Some(i) => {
+                    self.project_list.list_state.select(Some(i - 1));
+                    self.sync_active_to_selected_project();
+                }
+            }
+        }
+    }
+
     fn sync_active_to_selected_project(&mut self) {
         if let Some(project) = self.project_list.selected_project() {
             self.active_project_id = Some(project.id);
@@ -1127,25 +1175,85 @@ mod tests {
     // ── cycle_next / cycle_prev ───────────────────────────────────
 
     #[test]
-    fn cycle_next_with_project_list_cycles_projects() {
+    fn cycle_next_with_project_list_advances_project() {
         let mut s = state_with_tasks(3);
         s.show_project_list(vec![make_project("a"), make_project("b")]);
         s.project_list.list_state.select(Some(0));
+        s.sync_active_to_selected_project();
 
         s.cycle_next();
 
         assert_eq!(s.project_list.list_state.selected(), Some(1));
+        assert!(s.active_project_id.is_some());
     }
 
     #[test]
-    fn cycle_prev_with_project_list_cycles_projects() {
+    fn cycle_prev_with_project_list_goes_back() {
         let mut s = state_with_tasks(3);
         s.show_project_list(vec![make_project("a"), make_project("b")]);
         s.project_list.list_state.select(Some(1));
+        s.sync_active_to_selected_project();
 
         s.cycle_prev();
 
         assert_eq!(s.project_list.list_state.selected(), Some(0));
+        assert!(s.active_project_id.is_some());
+    }
+
+    #[test]
+    fn cycle_next_past_last_project_returns_to_exo() {
+        let mut s = state_with_tasks(0);
+        s.show_project_list(vec![make_project("a"), make_project("b")]);
+        s.project_list.list_state.select(Some(1));
+        s.sync_active_to_selected_project();
+
+        s.cycle_next();
+
+        assert_eq!(s.project_list.list_state.selected(), None);
+        assert!(s.active_project_id.is_none());
+        assert!(s.active_project_name.is_none());
+    }
+
+    #[test]
+    fn cycle_prev_past_first_project_returns_to_exo() {
+        let mut s = state_with_tasks(0);
+        s.show_project_list(vec![make_project("a"), make_project("b")]);
+        s.project_list.list_state.select(Some(0));
+        s.sync_active_to_selected_project();
+
+        s.cycle_prev();
+
+        assert_eq!(s.project_list.list_state.selected(), None);
+        assert!(s.active_project_id.is_none());
+        assert!(s.active_project_name.is_none());
+    }
+
+    #[test]
+    fn cycle_next_from_exo_goes_to_first_project() {
+        let mut s = state_with_tasks(0);
+        s.show_project_list(vec![make_project("a"), make_project("b")]);
+        s.project_list.list_state.select(None);
+        s.active_project_id = None;
+        s.active_project_name = None;
+
+        s.cycle_next();
+
+        assert_eq!(s.project_list.list_state.selected(), Some(0));
+        assert!(s.active_project_id.is_some());
+    }
+
+    #[test]
+    fn cycle_prev_from_exo_goes_to_last_project() {
+        let mut s = state_with_tasks(0);
+        s.show_project_list(vec![make_project("a"), make_project("b")]);
+        s.project_list.list_state.select(None);
+        s.active_project_id = None;
+        s.active_project_name = None;
+
+        s.cycle_prev();
+
+        assert_eq!(s.project_list.list_state.selected(), Some(1));
+        assert!(s.active_project_id.is_some());
     }
 
     #[test]
