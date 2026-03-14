@@ -169,8 +169,7 @@ pub async fn run<R: Runtime>(
     let mut project_contexts: HashMap<ProjectId, ProjectContext> = HashMap::new();
 
     // Boot all PM sessions eagerly so they warm up in the background.
-    // Also start ExO with the project list visible.
-    if let Ok(projects) = app.list_projects().await {
+    let boot_projects = if let Ok(projects) = app.list_projects().await {
         for project in &projects {
             project_contexts.insert(
                 project.id,
@@ -185,8 +184,10 @@ pub async fn run<R: Runtime>(
                 .await,
             );
         }
-        state.show_project_list(projects);
-    }
+        projects
+    } else {
+        Vec::new()
+    };
 
     // Hook event socket listener — async via tokio::net::UnixListener
     let (hook_tx, mut hook_rx) = mpsc::unbounded_channel::<(HookEvent, UnixStream)>();
@@ -286,6 +287,7 @@ pub async fn run<R: Runtime>(
         &mut tg_rx,
         assistant_tx,
         skip_permissions,
+        boot_projects,
     )
     .await;
 
@@ -339,6 +341,7 @@ async fn run_loop<R: Runtime>(
     tg_rx: &mut Option<mpsc::UnboundedReceiver<telegram::TgInbound>>,
     assistant_tx: mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
     skip_permissions: bool,
+    boot_projects: Vec<crate::project::Project>,
 ) -> anyhow::Result<()> {
     let mut event_stream = crossterm::event::EventStream::new();
     let mut last_tick = Instant::now();
@@ -347,7 +350,7 @@ async fn run_loop<R: Runtime>(
         counter: 0,
     };
 
-    state.render_loop_starting();
+    state.render_loop_starting(boot_projects);
 
     // Populate global_task_work_dirs before the main loop so that hook events
     // arriving early can resolve CWDs to task names correctly.

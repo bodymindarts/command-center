@@ -142,10 +142,16 @@ impl ScreenState {
         self.global_task_projects.get(name)
     }
 
-    pub fn render_loop_starting(&mut self) {
+    pub fn render_loop_starting(&mut self, projects: Vec<Project>) {
         self.exo.reset_tasks_to_idle();
         for project in self.projects.values_mut() {
             project.reset_tasks_to_idle();
+        }
+        // Show project list on startup if ExO prefers it (default: true).
+        if self.exo_show_project_list && !projects.is_empty() {
+            self.show_project_list(projects);
+            // Override focus — start in chat, not project list.
+            self.focus = Focus::ChatInput;
         }
     }
 
@@ -647,7 +653,7 @@ impl ScreenState {
         // Skip when focusing a specific task (e.g. cycling permissions).
         if self.active_project_id.is_none() && self.exo_show_project_list && focus_task.is_none() {
             self.project_list.set_visible(true);
-            self.sync_active_to_selected_project();
+            // Don't sync active project — keep ExO chat visible.
             self.focus = Focus::ProjectList;
         } else {
             self.focus = Focus::ChatInput;
@@ -657,11 +663,13 @@ impl ScreenState {
     // ── Project list ─────────────────────────────────────────────────
 
     /// Show the project list overlay, replacing the task list.
+    /// Does NOT change the active project — ExO chat stays visible.
+    /// Navigation (j/k) syncs the active project via next_project/previous_project.
     pub fn show_project_list(&mut self, projects: Vec<Project>) {
-        // Record ExO preference BEFORE sync changes active_project_id.
+        // Record ExO preference BEFORE any state changes.
         self.exo_show_project_list = true;
         self.project_list.show(projects);
-        self.sync_active_to_selected_project();
+        // Don't sync active project — keep ExO chat visible until user navigates.
         self.focus = Focus::ProjectList;
     }
 
