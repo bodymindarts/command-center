@@ -683,6 +683,17 @@ impl ScreenState {
         // Record ExO preference BEFORE any state changes.
         self.exo_show_project_list = true;
         self.project_list.show(projects);
+        // Sync selection to the currently active project so the `>` indicator
+        // highlights the right row instead of always defaulting to index 0.
+        if let Some(pid) = &self.active_project_id
+            && let Some(idx) = self
+                .project_list
+                .projects()
+                .iter()
+                .position(|p| p.id == *pid)
+        {
+            self.project_list.list_state.select(Some(idx));
+        }
         // Don't sync active project — keep ExO chat visible until user navigates.
         self.focus = Focus::ProjectList;
     }
@@ -1042,6 +1053,24 @@ mod tests {
         assert!(s.project_list.is_visible());
         assert!(matches!(s.focus, Focus::ProjectList));
         assert_eq!(s.project_list.list_state.selected(), None);
+    }
+
+    #[test]
+    fn show_project_list_selects_active_project() {
+        let mut s = state_with_tasks(0);
+        let projects = vec![
+            make_project("alpha"),
+            make_project("beta"),
+            make_project("gamma"),
+        ];
+        // Simulate being inside "beta" (index 1)
+        s.active_project_id = Some(projects[1].id);
+        s.active_project_name = Some(projects[1].name.clone());
+
+        s.show_project_list(projects);
+
+        assert!(s.project_list.is_visible());
+        assert_eq!(s.project_list.list_state.selected(), Some(1));
     }
 
     // ── refresh_projects ────────────────────────────────────────────
