@@ -181,7 +181,7 @@ pub(super) async fn handle_global_keys<R: Runtime>(
 
     // Permission keys — global so they work regardless of focus (ChatInput, ChatHistory, TaskList)
     // while a task detail is showing. Guarded by show_detail + permissions.peek().
-    let show_detail = state.active_state().task_list.is_detail_visible();
+    let show_detail = state.is_detail_visible();
 
     if kb.perm_approve.matches(&key)
         && show_detail
@@ -293,7 +293,7 @@ async fn handle_cycle_permissions<R: Runtime>(state: &mut ScreenState, app: &Cla
                 state.switch_to_project(None, tasks, Some(&name));
             }
         }
-    } else if let Some(idx) = state.active_state().task_list.list_state.selected() {
+    } else if let Some(idx) = state.selected_task_index() {
         state.open_task_detail(idx);
     }
     true
@@ -324,7 +324,7 @@ fn handle_askuser_select(
 
 async fn handle_goto_project<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
     // If in a project's task detail, go back to PM chat
-    if state.active_state().task_list.is_detail_visible() && state.active_project_id.is_some() {
+    if state.is_detail_visible() && state.active_project_id.is_some() {
         state.close_task_detail();
     // If in ExO view, restore last active project (or first project)
     } else if state.active_project_id.is_none() {
@@ -355,27 +355,14 @@ async fn handle_goto_project<R: Runtime>(state: &mut ScreenState, app: &ClatApp<
             state.switch_to_project(Some((name, id)), tasks, None);
         }
     // If in a project PM view, cycle to next project
-    } else if state.active_project_id.is_some()
-        && !state.active_state().task_list.is_detail_visible()
-    {
+    } else if state.active_project_id.is_some() && !state.is_detail_visible() {
         if let Ok(projects) = app.list_projects().await {
             state.project_list.set_projects(projects);
         }
-        let cur_idx = state.active_project_id.as_ref().and_then(|pid| {
-            state
-                .project_list
-                .projects()
-                .iter()
-                .position(|p| p.id == *pid)
-        });
-        if let Some(ci) = cur_idx {
-            let next_idx = (ci + 1) % state.project_list.projects().len();
-            let next = &state.project_list.projects()[next_idx];
-            let next_id = next.id;
-            let next_name = next.name.clone();
-            if let Ok(tasks) = app.list_visible(Some(&next_id)).await {
-                state.switch_to_project(Some((next_name, next_id)), tasks, None);
-            }
+        if let Some((next_name, next_id)) = state.cycle_to_next_project()
+            && let Ok(tasks) = app.list_visible(Some(&next_id)).await
+        {
+            state.switch_to_project(Some((next_name, next_id)), tasks, None);
         }
     }
 }
@@ -393,7 +380,7 @@ pub(super) async fn handle_focus_key<R: Runtime>(
         Focus::TaskList => handle_task_list_key(state, key, app).await,
         Focus::ListSearch => handle_task_search_key(state, key),
         Focus::ProjectList => handle_project_list_key(state, key, app).await,
-        Focus::ChatInput if state.active_state().task_list.is_detail_visible() => {
+        Focus::ChatInput if state.is_detail_visible() => {
             handle_task_chat_input_key(state, key, app).await
         }
         Focus::ChatInput => {
@@ -573,57 +560,36 @@ async fn handle_chat_enter<R: Runtime>(
     exo_session: &mut AssistantSession,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
 ) {
-    let active = state.active_state_mut();
-    active.chat_view.reset_scroll();
-    if active.input.is_empty() {
-        return;
-    }
     if let Some(pid) = state.active_project_id {
         let Some(ctx) = project_contexts.get_mut(&pid) else {
             state.set_status_error("PM session not initialized".to_string());
             return;
         };
-        let active = state.active_state_mut();
-        let chat = &mut active.chat_view.assistant;
-        if chat.streaming {
-            chat.finish_streaming();
-            if let Some(msg) = chat.messages.last()
-                && matches!(msg.role, MessageRole::Assistant)
-                && msg.has_text()
-            {
-                let _ = app
-                    .insert_session_message(Some(&pid), MessageRole::Assistant, &msg.text_content())
-                    .await;
-            }
+        let ps = state.active_state_mut();
+        let Some((msg, to_persist)) = ps.prepare_chat_send() else {
+            return;
+        };
+        let session_id = ps.session_id().map(|s| s.to_string());
+        if let Some((role, text)) = to_persist {
+            let _ = app.insert_session_message(Some(&pid), role, &text).await;
         }
-        let msg = active.input.take();
         let _ = app
             .insert_session_message(Some(&pid), MessageRole::User, &msg)
             .await;
-        chat.add_user_message(msg.clone());
-        ctx.session.send_message(&msg, chat.session_id.as_deref());
-        active.chat_view.reset_scroll();
+        ctx.session.send_message(&msg, session_id.as_deref());
     } else {
-        let active = state.active_state_mut();
-        let chat = &mut active.chat_view.assistant;
-        if chat.streaming {
-            chat.finish_streaming();
-            if let Some(msg) = chat.messages.last()
-                && matches!(msg.role, MessageRole::Assistant)
-                && msg.has_text()
-            {
-                let _ = app
-                    .insert_session_message(None, MessageRole::Assistant, &msg.text_content())
-                    .await;
-            }
+        let ps = state.active_state_mut();
+        let Some((msg, to_persist)) = ps.prepare_chat_send() else {
+            return;
+        };
+        let session_id = ps.session_id().map(|s| s.to_string());
+        if let Some((role, text)) = to_persist {
+            let _ = app.insert_session_message(None, role, &text).await;
         }
-        let msg = active.input.take();
         let _ = app
             .insert_session_message(None, MessageRole::User, &msg)
             .await;
-        chat.add_user_message(msg.clone());
-        exo_session.send_message(&msg, chat.session_id.as_deref());
-        active.chat_view.reset_scroll();
+        exo_session.send_message(&msg, session_id.as_deref());
     }
 }
 
@@ -682,7 +648,7 @@ async fn handle_confirm_close_task_key<R: Runtime>(
             state.close_task_detail();
         }
         KeyCode::Char('n') | KeyCode::Esc => {
-            let f = if state.active_state().task_list.is_detail_visible() {
+            let f = if state.is_detail_visible() {
                 Focus::ChatInput
             } else {
                 Focus::TaskList
@@ -842,8 +808,8 @@ async fn handle_session_event<R: Runtime>(
 ) {
     match ev {
         AssistantEvent::TextDelta(text) => {
-            if ps.chat_view.assistant.streaming {
-                ps.chat_view.assistant.append_text(&text);
+            if ps.is_streaming() {
+                ps.append_text(&text);
                 if is_viewing {
                     ps.chat_view.reset_scroll();
                 }
@@ -855,8 +821,8 @@ async fn handle_session_event<R: Runtime>(
             }
         }
         AssistantEvent::ToolStart(name) => {
-            if ps.chat_view.assistant.streaming {
-                ps.chat_view.assistant.add_tool_activity(name);
+            if ps.is_streaming() {
+                ps.add_tool_activity(name);
             }
         }
         AssistantEvent::SessionId(id) => {
@@ -864,17 +830,13 @@ async fn handle_session_event<R: Runtime>(
                 None => app.write_exo_session_id(&id),
                 Some(pid) => app.write_project_session_id(pid, &id),
             }
-            ps.chat_view.assistant.session_id = Some(id.clone());
+            ps.set_session_id(id.clone());
             session.set_session_id(id);
         }
         AssistantEvent::TurnDone => {
-            ps.chat_view.assistant.finish_streaming();
-            if let Some(msg) = ps.chat_view.assistant.messages.last()
-                && matches!(msg.role, MessageRole::Assistant)
-                && msg.has_text()
-            {
+            if let Some(text) = ps.finish_streaming() {
                 let _ = app
-                    .insert_session_message(project_id, MessageRole::Assistant, &msg.text_content())
+                    .insert_session_message(project_id, MessageRole::Assistant, &text)
                     .await;
             }
             if project_id.is_none()
@@ -884,24 +846,15 @@ async fn handle_session_event<R: Runtime>(
             }
         }
         AssistantEvent::ProcessExited => {
-            ps.chat_view.assistant.had_process_error = false;
+            let label = if project_id.is_none() { "Claude" } else { "PM" };
+            ps.mark_process_exited(label);
             session.mark_exited();
-            if ps.chat_view.assistant.streaming {
-                let label = if project_id.is_none() { "Claude" } else { "PM" };
-                ps.chat_view
-                    .assistant
-                    .add_error(&format!("{label} process exited unexpectedly"));
-            }
         }
         AssistantEvent::Error(e) => {
-            ps.chat_view.assistant.had_process_error = true;
-            ps.chat_view.assistant.add_error(&e);
-            if let Some(msg) = ps.chat_view.assistant.messages.last()
-                && matches!(msg.role, MessageRole::Assistant)
-                && msg.has_text()
-            {
+            ps.set_process_error();
+            if let Some(text) = ps.add_error(&e) {
                 let _ = app
-                    .insert_session_message(project_id, MessageRole::Assistant, &msg.text_content())
+                    .insert_session_message(project_id, MessageRole::Assistant, &text)
                     .await;
             }
         }
@@ -1042,25 +995,19 @@ async fn handle_hook_pm_message<R: Runtime>(
         return;
     };
 
-    let chat = &mut ps.chat_view.assistant;
-    if chat.streaming {
-        chat.finish_streaming();
-        if let Some(msg) = chat.messages.last()
-            && matches!(msg.role, MessageRole::Assistant)
-            && msg.has_text()
-        {
-            let _ = app
-                .insert_session_message(Some(&pid), MessageRole::Assistant, &msg.text_content())
-                .await;
-        }
+    if ps.is_streaming()
+        && let Some(text) = ps.finish_streaming()
+    {
+        let _ = app
+            .insert_session_message(Some(&pid), MessageRole::Assistant, &text)
+            .await;
     }
     let _ = app
         .insert_session_message(Some(&pid), MessageRole::User, message)
         .await;
-    chat.add_user_message(message.to_string());
-    ctx.session
-        .send_message(message, chat.session_id.as_deref());
-    ps.chat_view.reset_scroll();
+    let session_id = ps.session_id().map(|s| s.to_string());
+    ps.add_user_message(message.to_string());
+    ctx.session.send_message(message, session_id.as_deref());
 
     let resp = serde_json::json!({"ok": true});
     let _ = write!(&stream, "{resp}");
@@ -1075,24 +1022,20 @@ async fn handle_hook_exo_message<R: Runtime>(
 ) {
     use std::io::Write;
 
-    let chat = &mut state.exo.chat_view.assistant;
-    if chat.streaming {
-        chat.finish_streaming();
-        if let Some(msg) = chat.messages.last()
-            && matches!(msg.role, MessageRole::Assistant)
-            && msg.has_text()
-        {
-            let _ = app
-                .insert_session_message(None, MessageRole::Assistant, &msg.text_content())
-                .await;
-        }
+    let ps = &mut state.exo;
+    if ps.is_streaming()
+        && let Some(text) = ps.finish_streaming()
+    {
+        let _ = app
+            .insert_session_message(None, MessageRole::Assistant, &text)
+            .await;
     }
     let _ = app
         .insert_session_message(None, MessageRole::User, message)
         .await;
-    chat.add_user_message(message.to_string());
-    exo_session.send_message(message, chat.session_id.as_deref());
-    state.exo.chat_view.reset_scroll();
+    let session_id = ps.session_id().map(|s| s.to_string());
+    ps.add_user_message(message.to_string());
+    exo_session.send_message(message, session_id.as_deref());
 
     let resp = serde_json::json!({"ok": true});
     let _ = write!(&stream, "{resp}");
@@ -1204,24 +1147,20 @@ pub(super) async fn dispatch_telegram_event<R: Runtime>(
             }
         }
         telegram::TgInbound::ExoMessage { text } => {
-            state.exo.chat_view.reset_scroll();
-            let chat = &mut state.exo.chat_view.assistant;
-            if chat.streaming {
-                chat.finish_streaming();
-                if let Some(msg) = chat.messages.last()
-                    && matches!(msg.role, MessageRole::Assistant)
-                    && msg.has_text()
-                {
-                    let _ = app
-                        .insert_session_message(None, MessageRole::Assistant, &msg.text_content())
-                        .await;
-                }
+            let ps = &mut state.exo;
+            if ps.is_streaming()
+                && let Some(persist_text) = ps.finish_streaming()
+            {
+                let _ = app
+                    .insert_session_message(None, MessageRole::Assistant, &persist_text)
+                    .await;
             }
             let _ = app
                 .insert_session_message(None, MessageRole::User, &text)
                 .await;
-            chat.add_user_message(text.clone());
-            exo_session.send_message(&text, chat.session_id.as_deref());
+            let session_id = ps.session_id().map(|s| s.to_string());
+            ps.add_user_message(text.clone());
+            exo_session.send_message(&text, session_id.as_deref());
         }
     }
 }

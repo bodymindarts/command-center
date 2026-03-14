@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::primitives::{TaskId, TaskName};
+use crate::primitives::{MessageRole, TaskId, TaskName};
 use crate::task::Task;
 use crate::tui::chat::AssistantChat;
 
@@ -102,5 +102,100 @@ impl ProjectState {
         }
         let new_text = self.task_inputs.remove(new_id).unwrap_or_default();
         self.input.set(&new_text);
+    }
+
+    // ── AssistantChat delegates ─────────────────────────────────────
+
+    pub fn is_streaming(&self) -> bool {
+        self.chat_view.assistant.streaming
+    }
+
+    pub fn append_text(&mut self, text: &str) {
+        self.chat_view.assistant.append_text(text);
+    }
+
+    pub fn add_tool_activity(&mut self, tool: String) {
+        self.chat_view.assistant.add_tool_activity(tool);
+    }
+
+    pub fn set_session_id(&mut self, id: String) {
+        self.chat_view.assistant.session_id = Some(id);
+    }
+
+    pub fn session_id(&self) -> Option<&str> {
+        self.chat_view.assistant.session_id.as_deref()
+    }
+
+    pub fn set_process_error(&mut self) {
+        self.chat_view.assistant.had_process_error = true;
+    }
+
+    /// Finish streaming and return the last assistant message text
+    /// if it should be persisted.
+    pub fn finish_streaming(&mut self) -> Option<String> {
+        self.chat_view.assistant.finish_streaming();
+        self.last_assistant_text()
+    }
+
+    /// Add an error to the chat and return the last assistant message text
+    /// if it should be persisted.
+    pub fn add_error(&mut self, error: &str) -> Option<String> {
+        self.chat_view.assistant.add_error(error);
+        self.last_assistant_text()
+    }
+
+    /// Handle process exit: clear error flag, and if streaming, add an
+    /// error message.
+    pub fn mark_process_exited(&mut self, label: &str) {
+        self.chat_view.assistant.had_process_error = false;
+        if self.chat_view.assistant.streaming {
+            self.chat_view
+                .assistant
+                .add_error(&format!("{label} process exited unexpectedly"));
+        }
+    }
+
+    /// Add a user message to the chat and reset scroll.
+    pub fn add_user_message(&mut self, content: String) {
+        self.chat_view.assistant.add_user_message(content);
+        self.chat_view.reset_scroll();
+    }
+
+    /// Take the current input, add it as a user message, reset scroll,
+    /// and return the message text.
+    pub fn add_user_message_and_take_input(&mut self) -> String {
+        let msg = self.input.take();
+        self.add_user_message(msg.clone());
+        msg
+    }
+
+    /// Prepare for sending a chat message.
+    /// Resets scroll, finishes streaming if needed, takes input,
+    /// adds user message. Returns `(user_message, optional_persist_message)`.
+    /// Returns `None` if input is empty.
+    pub fn prepare_chat_send(&mut self) -> Option<(String, Option<(MessageRole, String)>)> {
+        self.chat_view.reset_scroll();
+        if self.input.is_empty() {
+            return None;
+        }
+        let to_persist = if self.is_streaming() {
+            self.finish_streaming()
+                .map(|text| (MessageRole::Assistant, text))
+        } else {
+            None
+        };
+        let msg = self.add_user_message_and_take_input();
+        Some((msg, to_persist))
+    }
+
+    /// Return the text content of the last message if it's an assistant
+    /// message with text.
+    fn last_assistant_text(&self) -> Option<String> {
+        self.chat_view
+            .assistant
+            .messages
+            .last()
+            .filter(|msg| matches!(msg.role, MessageRole::Assistant) && msg.has_text())
+            .map(|msg| msg.text_content())
     }
 }

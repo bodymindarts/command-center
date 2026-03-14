@@ -89,7 +89,7 @@ async fn init_project_context<R: Runtime>(
     skip_permissions: bool,
 ) -> ProjectContext {
     let project_state = build_project_state(app, project_id).await;
-    let session_id = project_state.chat_view.assistant.session_id.clone();
+    let session_id = project_state.session_id().map(|s| s.to_string());
     state.add_project(*project_id, project_state);
     let prompt = crate::assistant::project_system_prompt(project_name);
     let session_key = SessionKey::Project(*project_id);
@@ -158,7 +158,7 @@ pub async fn run<R: Runtime>(
 
     let mut exo_session = AssistantSession::new(
         SessionKey::Exo,
-        state.exo.chat_view.assistant.session_id.as_deref(),
+        state.exo.session_id(),
         Arc::clone(&cancel),
         EXO_SYSTEM_PROMPT,
         assistant_tx.clone(),

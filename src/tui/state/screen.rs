@@ -233,11 +233,7 @@ impl ScreenState {
 
     /// Whether any project (including ExO) is currently streaming.
     pub fn any_streaming(&self) -> bool {
-        self.exo.chat_view.assistant.streaming
-            || self
-                .projects
-                .values()
-                .any(|ps| ps.chat_view.assistant.streaming)
+        self.exo.is_streaming() || self.projects.values().any(|ps| ps.is_streaming())
     }
 
     // ── Active state accessors ───────────────────────────────────────
@@ -351,8 +347,18 @@ impl ScreenState {
         self.active_state().task_list.selected_filtered_task_index()
     }
 
+    /// Returns the selected task index in the active project's task list.
+    pub fn selected_task_index(&self) -> Option<usize> {
+        self.active_state().task_list.list_state.selected()
+    }
+
+    /// Whether the active project's task detail panel is visible.
+    pub fn is_detail_visible(&self) -> bool {
+        self.active_state().task_list.is_detail_visible()
+    }
+
     pub fn open_selected_task(&mut self) {
-        if let Some(idx) = self.active_state().task_list.list_state.selected() {
+        if let Some(idx) = self.selected_task_index() {
             self.open_task_detail(idx);
         }
     }
@@ -425,9 +431,8 @@ impl ScreenState {
             self.focus = Focus::ProjectList;
         } else {
             self.focus = Focus::TaskList;
-            let active = self.active_state_mut();
-            if active.task_list.list_state.selected().is_some() {
-                active.task_list.show_detail();
+            if self.selected_task_index().is_some() {
+                self.active_state_mut().task_list.show_detail();
             }
         }
     }
@@ -459,8 +464,8 @@ impl ScreenState {
     /// If the active chat is streaming, finish it. Reset scroll regardless.
     pub fn cancel_streaming(&mut self) {
         let active = self.active_state_mut();
-        if active.chat_view.assistant.streaming {
-            active.chat_view.assistant.finish_streaming();
+        if active.is_streaming() {
+            active.finish_streaming();
         }
         active.chat_view.reset_scroll();
     }
@@ -669,6 +674,26 @@ impl ScreenState {
         self.project_list.show(projects);
         // Don't sync active project — keep ExO chat visible until user navigates.
         self.focus = Focus::ProjectList;
+    }
+
+    /// Find the next project by cycling from `active_project_id`.
+    /// Returns `None` if there are no projects or no active project.
+    pub fn cycle_to_next_project(&self) -> Option<(ProjectName, ProjectId)> {
+        let cur_idx = self.active_project_id.as_ref().and_then(|pid| {
+            self.project_list
+                .projects()
+                .iter()
+                .position(|p| p.id == *pid)
+        });
+        cur_idx.and_then(|ci| {
+            let projects = self.project_list.projects();
+            if projects.is_empty() {
+                return None;
+            }
+            let next_idx = (ci + 1) % projects.len();
+            let next = &projects[next_idx];
+            Some((next.name.clone(), next.id))
+        })
     }
 
     pub fn next_project(&mut self) {
