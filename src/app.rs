@@ -71,9 +71,9 @@ pub struct SendOutput {
 pub enum AgentSendOutput {
     /// Message was sent to a running task's tmux pane and recorded.
     Task(SendOutput),
-    /// Message was recorded in the project chat for PM visibility.
+    /// Message was forwarded to the project PM session via socket.
     Pm { project: String },
-    /// Message was recorded in the ExO chat (task has no project).
+    /// Message was forwarded to the ExO session via socket.
     Exo,
 }
 
@@ -734,21 +734,18 @@ impl<R: Runtime> ClatApp<R> {
         if target == "pm" {
             let content = format!("[from agent {} ({})] {message}", claims.sub, claims.role);
             if let Some(caller_project) = claims.project.as_deref() {
-                // Route to project PM
-                let caller_project_id = match self.resolve_project_id(caller_project).await {
-                    Ok(id) => id,
-                    Err(_) => caller_project.parse::<ProjectId>()?,
-                };
-                let chat = ChatId::Project(caller_project_id);
-                self.store
-                    .insert_message(&chat, MessageRole::User, &content)
-                    .await?;
+                // Forward to project PM session via socket (mirrors cmd_project_send)
+                let _ = crate::permission::send_pm_message(
+                    self.project_root(),
+                    caller_project,
+                    &content,
+                );
                 Ok(AgentSendOutput::Pm {
                     project: caller_project.to_string(),
                 })
             } else {
-                // No project — route to ExO.
-                // DB insert happens in handle_hook_exo_message (via socket).
+                // Forward to ExO session via socket (mirrors cmd_exo_send)
+                let _ = crate::permission::send_exo_message(self.project_root(), &content);
                 Ok(AgentSendOutput::Exo)
             }
         } else {

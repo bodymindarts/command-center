@@ -236,23 +236,18 @@ impl<R: Runtime> ClatMcpServer<R> {
                     match app.send_from_agent(&claims, target, message).await {
                         Ok(AgentSendOutput::Pm { project }) => {
                             let response = serde_json::json!({
-                                "status": "recorded",
+                                "status": "delivered",
                                 "target": "pm",
                                 "project": project,
-                                "note": "Message recorded in project chat. The PM will see it when reviewing project messages."
+                                "note": "Message delivered to PM session."
                             });
                             Ok(CallToolResult::success(vec![Content::text(
                                 serde_json::to_string_pretty(&response).unwrap(),
                             )]))
                         }
                         Ok(AgentSendOutput::Exo) => {
-                            // Also forward through the socket so ExO session wakes up
-                            let content =
-                                format!("[from agent {} ({})] {message}", claims.sub, claims.role);
-                            let _ =
-                                crate::permission::send_exo_message(app.project_root(), &content);
                             let response = serde_json::json!({
-                                "status": "recorded",
+                                "status": "delivered",
                                 "target": "exo",
                                 "note": "Message delivered to ExO chat."
                             });
