@@ -1188,11 +1188,34 @@ pub(super) async fn dispatch_telegram_event<R: Runtime>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn tick_refresh<R: Runtime>(
     state: &mut ScreenState,
+    project_contexts: &mut HashMap<ProjectId, ProjectContext>,
     app: &ClatApp<R>,
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
+    assistant_tx: &mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
+    skip_permissions: bool,
 ) {
+    // Initialize PM sessions for any newly created projects.
+    if let Ok(projects) = app.list_projects().await {
+        for project in &projects {
+            if let std::collections::hash_map::Entry::Vacant(e) = project_contexts.entry(project.id)
+            {
+                let ctx = super::init_project_context(
+                    state,
+                    app,
+                    &project.id,
+                    project.name.as_str(),
+                    assistant_tx.clone(),
+                    skip_permissions,
+                )
+                .await;
+                e.insert(ctx);
+            }
+        }
+    }
+
     if let Ok(tasks) = app.list_visible(state.active_project_id.as_ref()).await {
         state.refresh_tasks(tasks);
     }
