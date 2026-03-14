@@ -92,7 +92,12 @@ appears directly in ExO's chat — don't just print it here.
 2. Break into tasks, spawn agents
 3. React to agent callbacks as they report back
 4. Coordinate — unblock stuck agents, spawn follow-ups
-5. Report results to ExO via `clat send exo \"<summary>\"`"
+5. Report results to ExO via `clat send exo \"<summary>\"`
+
+## CI monitoring
+When an engineer opens a draft PR, immediately spawn a monitor task to watch CI. \
+If any checks fail, spawn an engineer to investigate and fix. Don't wait for ExO \
+to tell you — this is your default post-PR workflow."
     )
 }
 
