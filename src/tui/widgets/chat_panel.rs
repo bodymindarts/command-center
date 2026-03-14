@@ -13,13 +13,16 @@ pub(in crate::tui) fn render_chat(
     focus: &Focus,
     active: &ProjectState,
     active_project_name: Option<&str>,
+    project_list_visible: bool,
     area: Rect,
 ) {
     let task_list = &active.task_list;
     let chat_view = &active.chat_view;
     let searching = matches!(focus, Focus::ListSearch);
-    let in_task_chat =
-        !searching && task_list.is_detail_visible() && task_list.selected_task().is_some();
+    let in_task_chat = !project_list_visible
+        && !searching
+        && task_list.is_detail_visible()
+        && task_list.selected_task().is_some();
 
     let title = if in_task_chat {
         let name = task_list

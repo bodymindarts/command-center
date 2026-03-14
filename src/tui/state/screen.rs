@@ -89,6 +89,14 @@ impl ScreenState {
         self.focus = Focus::TaskList;
     }
 
+    pub fn focus_right(&mut self) {
+        if self.project_list.is_visible() {
+            self.focus = Focus::ProjectList;
+        } else {
+            self.focus = Focus::TaskList;
+        }
+    }
+
     // ── Last project ────────────────────────────────────────────────
 
     pub fn last_project_id(&self) -> Option<&ProjectId> {
@@ -226,6 +234,14 @@ impl ScreenState {
         }
     }
 
+    /// State to display in the chat panel. When the project list is visible
+    /// and a project is highlighted, show that project's PM chat instead of
+    /// the active task chat.
+    pub fn chat_display_state(&self) -> (&ProjectState, Option<&str>) {
+        let name = self.active_project_name.as_ref().map(|n| n.as_str());
+        (self.active_state(), name)
+    }
+
     /// Get a mutable reference to the active project state.
     pub fn active_state_mut(&mut self) -> &mut ProjectState {
         match &self.active_project_id {
@@ -361,10 +377,14 @@ impl ScreenState {
 
     /// Focus the task list. If a task is selected, show its detail panel.
     pub fn focus_task_list_with_detail(&mut self) {
-        self.focus = Focus::TaskList;
-        let active = self.active_state_mut();
-        if active.task_list.list_state.selected().is_some() {
-            active.task_list.show_detail();
+        if self.project_list.is_visible() {
+            self.focus = Focus::ProjectList;
+        } else {
+            self.focus = Focus::TaskList;
+            let active = self.active_state_mut();
+            if active.task_list.list_state.selected().is_some() {
+                active.task_list.show_detail();
+            }
         }
     }
 
@@ -583,15 +603,25 @@ impl ScreenState {
     /// Show the project list overlay, replacing the task list.
     pub fn show_project_list(&mut self, projects: Vec<Project>) {
         self.project_list.show(projects);
+        self.sync_active_to_selected_project();
         self.focus = Focus::ProjectList;
     }
 
     pub fn next_project(&mut self) {
         self.project_list.next_project();
+        self.sync_active_to_selected_project();
     }
 
     pub fn previous_project(&mut self) {
         self.project_list.previous_project();
+        self.sync_active_to_selected_project();
+    }
+
+    fn sync_active_to_selected_project(&mut self) {
+        if let Some(project) = self.project_list.selected_project() {
+            self.active_project_id = Some(project.id);
+            self.active_project_name = Some(project.name.clone());
+        }
     }
 
     // ── Search ───────────────────────────────────────────────────────

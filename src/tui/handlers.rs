@@ -484,6 +484,8 @@ async fn handle_project_list_key<R: Runtime>(
             let name = project.name.clone();
             state.set_focus(Focus::ConfirmDeleteProject(name));
         }
+    } else if kb.focus_chat.matches(&key) {
+        state.focus_left();
     } else if kb.back.matches(&key) {
         state.focus_on_tasks();
     }
@@ -511,7 +513,7 @@ async fn handle_task_chat_input_key<R: Runtime>(
             state.set_focus(Focus::ConfirmCloseTask(id));
         }
     } else if kb.focus_tasks.matches(&key) {
-        state.focus_on_tasks();
+        state.focus_right();
     } else if kb.goto_window.matches(&key) {
         goto_task_window(state, app).await;
     } else if kb.send.matches(&key) {

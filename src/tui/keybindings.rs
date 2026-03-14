@@ -304,6 +304,7 @@ pub struct ProjectListBindings {
     pub select: Binding,
     pub delete: Binding,
     pub back: Binding,
+    pub focus_chat: Binding,
 }
 
 impl Default for ProjectListBindings {
@@ -323,6 +324,10 @@ impl Default for ProjectListBindings {
             back: Binding::keys(vec![
                 KeyCombo::new(KeyCode::Char('p'), KeyModifiers::empty()),
                 KeyCombo::new(KeyCode::Esc, KeyModifiers::empty()),
+            ]),
+            focus_chat: Binding::keys(vec![
+                KeyCombo::new(KeyCode::Tab, KeyModifiers::empty()),
+                KeyCombo::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
             ]),
         }
     }
