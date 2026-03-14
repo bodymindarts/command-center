@@ -747,10 +747,8 @@ impl<R: Runtime> ClatApp<R> {
                     project: caller_project.to_string(),
                 })
             } else {
-                // No project — route to ExO
-                self.store
-                    .insert_message(&EXO_CHAT, MessageRole::User, &content)
-                    .await?;
+                // No project — route to ExO.
+                // DB insert happens in handle_hook_exo_message (via socket).
                 Ok(AgentSendOutput::Exo)
             }
         } else {
