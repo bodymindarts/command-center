@@ -132,13 +132,15 @@ pub enum Command {
         dangerously_skip_permissions: bool,
     },
 
-    /// Send a message to a running agent's tmux pane
+    /// Send a message to a running agent's tmux pane or a project PM
     Send {
-        /// Task ID (prefix match)
-        id: String,
+        /// Send to a project's PM session instead of a task
+        #[arg(long)]
+        project: Option<String>,
 
-        /// Message to send
-        message: String,
+        /// [ID] <message> — task ID is required unless --project is provided
+        #[arg(required = true, num_args = 1..=2)]
+        args: Vec<String>,
     },
 
     /// Manage available skills

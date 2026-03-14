@@ -93,7 +93,15 @@ async fn main() -> anyhow::Result<()> {
             resume, caffeinate, ..
         } => cmd_start(resume.as_deref(), caffeinate, skip_permissions)?,
         Command::Goto { id } => cmd_goto(app, &id).await?,
-        Command::Send { id, message } => cmd_send(app, &id, &message).await?,
+        Command::Send { project, args } => match (project, args.len()) {
+            (None, 2) => cmd_send(app, &args[0], &args[1]).await?,
+            (Some(name), 1) => cmd_project_send(&app, &name, &args[0]).await?,
+            (None, 1) => bail!("missing message: usage: clat send <ID> <message>"),
+            (Some(_), n) if n >= 2 => {
+                bail!("unexpected task ID when --project is provided")
+            }
+            _ => unreachable!(),
+        },
         Command::Skill { action } => cmd_skill(action, app)?,
         Command::Project { action } => cmd_project(action, app).await?,
         Command::Agent { action } => match action {
