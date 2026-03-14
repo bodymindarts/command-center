@@ -35,6 +35,14 @@ Guidelines:
 - Include all relevant findings, design decisions, and constraints in the task description
 - For multi-step work, spawn separate parallel tasks for independent pieces
 
+## Reporting back
+When your research is complete, use the `send_message` MCP tool to notify your
+project manager with a brief summary of findings:
+```
+send_message(target="pm", message="Research complete: <key findings summary>")
+```
+Also send a message if you're blocked or need clarification.
+
 ## Constraints
 - All dependencies are declared in flake.nix — never assume binaries are installed
 - If working in a worktree, never access files outside your working directory

@@ -40,6 +40,14 @@ Examples of markers:
 - `# @@ this should be extracted to a helper`
 - `// @@ I don't like this approach, try X instead`
 
+## Reporting back
+When your task is complete (committed and checks pass), use the `send_message` MCP
+tool to notify your project manager:
+```
+send_message(target="pm", message="Done: <one-line summary of what was done>")
+```
+Also send a message if you're blocked or need clarification.
+
 ## Constraints
 - All dependencies are declared in flake.nix — never assume binaries are installed
 - Clippy runs with --deny warnings — no dead code, no unused imports

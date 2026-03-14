@@ -88,6 +88,14 @@ Each finding has:
 ### Top 3 Priorities
 The three most critical issues to fix immediately.
 
+## Reporting back
+When your audit is complete, use the `send_message` MCP tool to notify your
+project manager with a brief summary:
+```
+send_message(target="pm", message="Audit complete: <critical findings count> critical, <high count> high — see report")
+```
+Also send a message if you're blocked or need clarification.
+
 ## Constraints
 - Read-only. Do not edit files or create commits.
 - Be specific — cite files, functions, and line numbers.

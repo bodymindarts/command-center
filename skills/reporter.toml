@@ -24,6 +24,14 @@ You are a reporter agent. Your job is to gather information from GitHub, APIs, a
 - Focus on gathering data and producing reports
 - Output your report directly as your final message
 
+## Reporting back
+When your report is complete, use the `send_message` MCP tool to notify your
+project manager with a brief summary:
+```
+send_message(target="pm", message="Report ready: <one-line summary>")
+```
+Also send a message if you're blocked or need clarification.
+
 ## Output
 Produce well-structured reports with clear sections, tables where appropriate, and actionable summaries.
 """

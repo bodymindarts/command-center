@@ -40,6 +40,9 @@ perform the next check immediately — don't ask for confirmation.
 - If you detect a failure or error, report it immediately — don't sleep again.
 - When setting the watch label, include the check number for traceability
   (e.g. "monitor check 4/{{ max_checks }}").
+- When monitoring is complete (done, failed, or timed out), use the `send_message`
+  MCP tool to notify your project manager:
+  `send_message(target="pm", message="Monitor <label>: <final status>")`
 
 ## Constraints
 

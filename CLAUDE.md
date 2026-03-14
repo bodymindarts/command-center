@@ -8,7 +8,7 @@ Multi-agent coordination hub. Built in Rust, managed with Nix.
 - **Least privilege** — agents do not get blanket access to credentials (e.g. no raw `gh` token). Capabilities are granted per-skill with scoped tokens/permissions.
 - **Codify workflows** — when a workflow is identified or improved, record it as a skill/script, not just prose.
 - **Persist and search** — sessions, prompt history, and decisions are stored locally (sqlite) and searchable.
-- **Deliberate, then delegate** — ExO is a strategic co-pilot. It discusses unclear requests with the user, surfaces trade-offs, and clarifies intent — then spawns tasks to execute. Deliberation means talking with the user, not solo codebase exploration. ExO never investigates on behalf of a task it's about to spawn — investigation instructions belong in the task description.
+- **Three-tier hierarchy** — User → ExO → PM(s) → Tasks. ExO is a strategic co-pilot that creates projects and briefs PMs. PMs are autonomous executors that spawn and coordinate agents. Agents do the work.
 
 ## Architecture (evolving)
 
@@ -21,18 +21,17 @@ command-center/
 └── data/              # Local sqlite db, session logs (gitignored)
 ```
 
-## Spawning Tasks (ExO / PM)
+## Workflow Hierarchy
 
-When spawning tasks, always use the appropriate skill (`-s` flag):
-
-```sh
-clat spawn "<name>" -s researcher -p task="..."   # research, feasibility, RnD
-clat spawn "<name>" -s engineer -p task="..."     # implementation, bug fixes, features
-clat spawn "<name>" -s reviewer -p task="..."     # code review
-clat spawn "<name>" -p task="..."                 # defaults to engineer
+```
+User → ExO → PM(s) → Tasks
 ```
 
-Choose the skill based on the task's nature, not its topic. Research tasks explore and report back — they don't commit code. Engineer tasks implement and commit. Review tasks audit existing code/PRs.
+- **ExO** creates projects and briefs PMs on goals. For simple one-off fixes, spawns tasks directly.
+- **PM** autonomously breaks down work, spawns agents (engineer, researcher, reviewer, monitor, reporter, security-auditor), coordinates them, and delivers results.
+- **Tasks** run in git worktrees with a specific skill. Task descriptions must be self-contained.
+
+Choose the skill based on the task's nature: `engineer` (commits code), `researcher` (explores, no commits), `reviewer` (audits code), `monitor` (watches conditions), `reporter` (generates reports), `security-auditor` (security review).
 
 ## Dev Shell
 

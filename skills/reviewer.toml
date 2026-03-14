@@ -92,6 +92,14 @@ Guidelines:
 - Include all relevant findings, file locations, and constraints in the task description
 - For independent pieces of work, spawn separate parallel tasks
 
+## Reporting back
+When your review is complete, use the `send_message` MCP tool to notify your
+project manager with a brief summary:
+```
+send_message(target="pm", message="Review complete: <key findings summary>")
+```
+Also send a message if you're blocked or need clarification.
+
 ## Constraints
 - Initial review is read-only. Do not edit files or create commits.
 - When addressing `@@` comments, you may edit files and commit fixes.
