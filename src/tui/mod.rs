@@ -169,6 +169,7 @@ pub async fn run<R: Runtime>(
     let mut project_contexts: HashMap<ProjectId, ProjectContext> = HashMap::new();
 
     // Boot all PM sessions eagerly so they warm up in the background.
+    // Also start ExO with the project list visible.
     if let Ok(projects) = app.list_projects().await {
         for project in &projects {
             project_contexts.insert(
@@ -184,6 +185,7 @@ pub async fn run<R: Runtime>(
                 .await,
             );
         }
+        state.show_project_list(projects);
     }
 
     // Hook event socket listener — async via tokio::net::UnixListener

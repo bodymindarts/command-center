@@ -89,9 +89,11 @@ impl ScreenState {
     }
 
     pub fn focus_on_tasks(&mut self) {
+        // Check visibility before hiding so we can update the ExO preference.
+        let was_project_list = self.project_list.is_visible();
         self.project_list.hide();
-        // When in ExO, remember that the user switched to task view
-        if self.active_project_id.is_none() {
+        // Update ExO preference: either closing project list or already in ExO.
+        if was_project_list || self.active_project_id.is_none() {
             self.exo_show_project_list = false;
         }
         self.focus = Focus::TaskList;
@@ -258,6 +260,34 @@ impl ScreenState {
                 self.projects.get_mut(&pid).unwrap_or(&mut self.exo)
             }
             None => &mut self.exo,
+        }
+    }
+
+    // ── Cycle next/prev (Tab / Shift-Tab) ──────────────────────────────
+
+    /// Cycle to the next item in whichever list is active.
+    /// Projects list visible → next project. Task detail open → next task.
+    /// Otherwise → open first task detail.
+    pub fn cycle_next(&mut self) {
+        if self.project_list.is_visible() {
+            self.next_project();
+        } else if self.active_state().task_list.is_detail_visible() {
+            self.navigate_to_adjacent_task(true);
+        } else {
+            self.open_first_task_detail();
+        }
+    }
+
+    /// Cycle to the previous item in whichever list is active.
+    /// Projects list visible → previous project. Task detail open → previous task.
+    /// Otherwise → open last task detail.
+    pub fn cycle_prev(&mut self) {
+        if self.project_list.is_visible() {
+            self.previous_project();
+        } else if self.active_state().task_list.is_detail_visible() {
+            self.navigate_to_adjacent_task(false);
+        } else {
+            self.open_last_task_detail();
         }
     }
 
@@ -583,8 +613,11 @@ impl ScreenState {
         tasks: Vec<Task>,
         focus_task: Option<&TaskName>,
     ) {
-        // Save ExO's project-list preference before leaving
-        if self.active_project_id.is_none() {
+        // Save ExO's project-list preference before leaving.
+        // When the project list is visible, sync_active_to_selected_project may
+        // have set active_project_id, but we're still in ExO context.
+        let leaving_exo = self.active_project_id.is_none() || self.project_list.is_visible();
+        if leaving_exo {
             self.exo_show_project_list = self.project_list.is_visible();
         }
 
@@ -595,15 +628,7 @@ impl ScreenState {
 
         self.project_list.hide();
 
-        // Restore ExO's project-list preference when returning to ExO
-        if self.active_project_id.is_none() && self.exo_show_project_list {
-            self.project_list.set_visible(true);
-            self.focus = Focus::ProjectList;
-        } else {
-            self.focus = Focus::ChatInput;
-        }
-
-        // Load tasks into target workspace
+        // Load tasks into target workspace (before restore may change active via sync)
         let active = self.active_state_mut();
         active.task_list.hide_detail();
         active.chat_view.reset_scroll();
@@ -617,18 +642,26 @@ impl ScreenState {
                 active.task_list.show_detail();
             }
         }
+
+        // Restore ExO's project-list preference when returning to ExO.
+        // Skip when focusing a specific task (e.g. cycling permissions).
+        if self.active_project_id.is_none() && self.exo_show_project_list && focus_task.is_none() {
+            self.project_list.set_visible(true);
+            self.sync_active_to_selected_project();
+            self.focus = Focus::ProjectList;
+        } else {
+            self.focus = Focus::ChatInput;
+        }
     }
 
     // ── Project list ─────────────────────────────────────────────────
 
     /// Show the project list overlay, replacing the task list.
     pub fn show_project_list(&mut self, projects: Vec<Project>) {
+        // Record ExO preference BEFORE sync changes active_project_id.
+        self.exo_show_project_list = true;
         self.project_list.show(projects);
         self.sync_active_to_selected_project();
-        // When in ExO, remember that the user switched to project list
-        if self.active_project_id.is_none() {
-            self.exo_show_project_list = true;
-        }
         self.focus = Focus::ProjectList;
     }
 
@@ -1047,5 +1080,133 @@ mod tests {
         assert_eq!(s.project_list.list_state.selected(), Some(2)); // real index
         assert!(matches!(s.focus, Focus::ProjectList));
         assert!(s.project_list.filtered_indices().is_empty());
+    }
+
+    // ── cycle_next / cycle_prev ───────────────────────────────────
+
+    #[test]
+    fn cycle_next_with_project_list_cycles_projects() {
+        let mut s = state_with_tasks(3);
+        s.show_project_list(vec![make_project("a"), make_project("b")]);
+        s.project_list.list_state.select(Some(0));
+
+        s.cycle_next();
+
+        assert_eq!(s.project_list.list_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn cycle_prev_with_project_list_cycles_projects() {
+        let mut s = state_with_tasks(3);
+        s.show_project_list(vec![make_project("a"), make_project("b")]);
+        s.project_list.list_state.select(Some(1));
+
+        s.cycle_prev();
+
+        assert_eq!(s.project_list.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn cycle_next_without_projects_opens_first_task() {
+        let mut s = state_with_tasks(3);
+        s.project_list.hide();
+
+        s.cycle_next();
+
+        assert!(s.active_state().task_list.is_detail_visible());
+        assert_eq!(s.active_state().task_list.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn cycle_prev_without_projects_opens_last_task() {
+        let mut s = state_with_tasks(3);
+        s.project_list.hide();
+
+        s.cycle_prev();
+
+        assert!(s.active_state().task_list.is_detail_visible());
+        assert_eq!(s.active_state().task_list.list_state.selected(), Some(2));
+    }
+
+    #[test]
+    fn cycle_next_with_detail_navigates_tasks() {
+        let mut s = state_with_tasks(3);
+        s.project_list.hide();
+        s.open_task_detail(0);
+
+        s.cycle_next();
+
+        assert_eq!(s.active_state().task_list.list_state.selected(), Some(1));
+        assert!(s.active_state().task_list.is_detail_visible());
+    }
+
+    // ── switch_to_project restores project list ───────────────────
+
+    #[test]
+    fn switch_to_project_saves_and_restores_exo_project_list() {
+        let mut s = state_with_tasks(0);
+        let projects = vec![make_project("alpha"), make_project("beta")];
+        let project_id = projects[0].id;
+        let project_name = projects[0].name.clone();
+
+        // Show project list in ExO
+        s.show_project_list(projects);
+        assert!(s.project_list.is_visible());
+
+        // Navigate to a project (simulates Enter on project list)
+        s.switch_to_project(Some((project_name, project_id)), vec![], None);
+        assert!(!s.project_list.is_visible());
+
+        // Return to ExO via Ctrl+O
+        s.switch_to_project(None, vec![], None);
+        assert!(s.project_list.is_visible());
+        assert!(matches!(s.focus, Focus::ProjectList));
+    }
+
+    #[test]
+    fn switch_to_project_no_restore_when_tasks_were_shown() {
+        let mut s = state_with_tasks(0);
+        let projects = vec![make_project("alpha")];
+        let project_id = projects[0].id;
+        let project_name = projects[0].name.clone();
+
+        // Show project list then close it (user prefers tasks)
+        s.show_project_list(projects);
+        s.focus_on_tasks();
+        assert!(!s.exo_show_project_list);
+
+        // Navigate to a project
+        s.switch_to_project(Some((project_name, project_id)), vec![], None);
+
+        // Return to ExO — should NOT show project list
+        s.switch_to_project(None, vec![], None);
+        assert!(!s.project_list.is_visible());
+        assert!(matches!(s.focus, Focus::ChatInput));
+    }
+
+    // ── focus_on_tasks updates ExO preference ─────────────────────
+
+    #[test]
+    fn focus_on_tasks_clears_exo_preference() {
+        let mut s = state_with_tasks(0);
+        s.show_project_list(vec![make_project("a")]);
+        assert!(s.exo_show_project_list);
+
+        s.focus_on_tasks();
+
+        assert!(!s.exo_show_project_list);
+        assert!(!s.project_list.is_visible());
+    }
+
+    // ── show_project_list sets ExO preference ─────────────────────
+
+    #[test]
+    fn show_project_list_sets_exo_preference() {
+        let mut s = state_with_tasks(0);
+        s.exo_show_project_list = false;
+
+        s.show_project_list(vec![make_project("a")]);
+
+        assert!(s.exo_show_project_list);
     }
 }

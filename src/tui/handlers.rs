@@ -500,9 +500,9 @@ async fn handle_task_chat_input_key<R: Runtime>(
     if kb.close_detail.matches(&key) {
         state.close_task_detail();
     } else if kb.next_task.matches(&key) {
-        state.navigate_to_adjacent_task(true);
+        state.cycle_next();
     } else if kb.prev_task.matches(&key) {
-        state.navigate_to_adjacent_task(false);
+        state.cycle_prev();
     } else if kb.focus_history.matches(&key) {
         state.set_focus(Focus::ChatHistory);
     } else if kb.close_task.matches(&key) {
@@ -551,9 +551,9 @@ async fn handle_chat_input_key<R: Runtime>(
     if kb.cancel_streaming.matches(&key) {
         state.cancel_streaming();
     } else if kb.open_first_task.matches(&key) {
-        state.open_first_task_detail();
+        state.cycle_next();
     } else if kb.open_last_task.matches(&key) {
-        state.open_last_task_detail();
+        state.cycle_prev();
     } else if kb.focus_up.matches(&key) {
         state.move_focus_up();
     } else if kb.close_project.matches(&key) && state.is_project_selected() {
