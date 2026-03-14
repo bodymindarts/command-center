@@ -282,6 +282,8 @@ pub async fn run<R: Runtime>(
         &mut hook_rx,
         tg_tx.as_ref(),
         &mut tg_rx,
+        assistant_tx,
+        skip_permissions,
     )
     .await;
 
@@ -333,6 +335,8 @@ async fn run_loop<R: Runtime>(
     hook_rx: &mut mpsc::UnboundedReceiver<(HookEvent, UnixStream)>,
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
     tg_rx: &mut Option<mpsc::UnboundedReceiver<telegram::TgInbound>>,
+    assistant_tx: mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
+    skip_permissions: bool,
 ) -> anyhow::Result<()> {
     let mut event_stream = crossterm::event::EventStream::new();
     let mut last_tick = Instant::now();
@@ -345,7 +349,15 @@ async fn run_loop<R: Runtime>(
 
     // Populate global_task_work_dirs before the main loop so that hook events
     // arriving early can resolve CWDs to task names correctly.
-    handlers::tick_refresh(state, app, tg_tx).await;
+    handlers::tick_refresh(
+        state,
+        project_contexts,
+        app,
+        tg_tx,
+        &assistant_tx,
+        skip_permissions,
+    )
+    .await;
 
     loop {
         let tick_rate = if state.any_streaming() {
@@ -433,7 +445,15 @@ async fn run_loop<R: Runtime>(
 
         // Periodic refresh
         if last_tick.elapsed() >= tick_rate {
-            handlers::tick_refresh(state, app, tg_tx).await;
+            handlers::tick_refresh(
+                state,
+                project_contexts,
+                app,
+                tg_tx,
+                &assistant_tx,
+                skip_permissions,
+            )
+            .await;
             handlers::detect_vanished_perms(state, tg_tx, &mut tg_perm.ids);
             last_tick = Instant::now();
         }
