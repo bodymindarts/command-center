@@ -66,6 +66,15 @@ pub struct SendOutput {
     pub task_name: TaskName,
 }
 
+/// Result of `send_from_agent` — either delivered to a task or recorded for PM.
+#[derive(Debug)]
+pub enum AgentSendOutput {
+    /// Message was sent to a running task's tmux pane and recorded.
+    Task(SendOutput),
+    /// Message was recorded in the project chat for PM visibility.
+    Pm { project: String },
+}
+
 #[derive(Debug)]
 pub struct CompleteOutput {
     pub task_id: TaskId,
@@ -709,17 +718,52 @@ impl<R: Runtime> ClatApp<R> {
         })
     }
 
-    /// Insert a message into an arbitrary chat (project, task, or exo).
-    pub async fn insert_chat_message(
+    /// Send a message from one agent to another task or to the PM.
+    ///
+    /// Enforces project scoping: the caller must have a project, and the
+    /// target task must belong to the same project. The special target "pm"
+    /// records the message in the project chat for PM/ExO visibility.
+    pub async fn send_from_agent(
         &self,
-        chat: &ChatId,
-        role: MessageRole,
-        content: &str,
-    ) -> anyhow::Result<()> {
-        self.store.insert_message(chat, role, content).await
+        claims: &crate::jwt::AgentClaims,
+        target: &str,
+        message: &str,
+    ) -> anyhow::Result<AgentSendOutput> {
+        let caller_project = claims
+            .project
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("agents without a project cannot use send_message"))?;
+
+        // The JWT project claim may be a project name (from spawn) or a
+        // ProjectId string (from reopen). Try name resolution first.
+        let caller_project_id = match self.resolve_project_id(caller_project).await {
+            Ok(id) => id,
+            Err(_) => caller_project.parse::<ProjectId>()?,
+        };
+
+        if target == "pm" {
+            let chat = ChatId::Project(caller_project_id);
+            let content = format!("[from agent {} ({})] {message}", claims.sub, claims.role);
+            self.store
+                .insert_message(&chat, MessageRole::User, &content)
+                .await?;
+            Ok(AgentSendOutput::Pm {
+                project: caller_project.to_string(),
+            })
+        } else {
+            let task = self.resolve_task(target).await?;
+            if task.project_id != Some(caller_project_id) {
+                anyhow::bail!(
+                    "target task '{}' does not belong to the same project",
+                    task.name
+                );
+            }
+            let output = self.send(target, message).await?;
+            Ok(AgentSendOutput::Task(output))
+        }
     }
 
-    pub async fn resolve_task(&self, id_prefix: &str) -> anyhow::Result<Task> {
+    async fn resolve_task(&self, id_prefix: &str) -> anyhow::Result<Task> {
         self.store
             .tasks
             .maybe_find_by_id_prefix(id_prefix)

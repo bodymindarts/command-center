@@ -10,9 +10,8 @@ use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, S
 use rmcp::schemars;
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 
-use crate::app::{ClatApp, PromptMode, SpawnRequest, WorkDirMode};
+use crate::app::{AgentSendOutput, ClatApp, PromptMode, SpawnRequest, WorkDirMode};
 use crate::jwt::JwtSigner;
-use crate::primitives::{ChatId, MessageRole, ProjectId};
 use crate::runtime::Runtime;
 
 // ---------------------------------------------------------------------------
@@ -201,14 +200,12 @@ impl<R: Runtime> ClatMcpServer<R> {
             move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
                 let app = Arc::clone(&app);
                 Box::pin(async move {
-                    // Extract JWT claims from request extensions.
                     let claims = ctx
                         .request_context
                         .extensions
                         .get::<axum::http::request::Parts>()
                         .and_then(|parts| parts.extensions.get::<crate::jwt::AgentClaims>())
                         .cloned();
-
                     let claims = match claims {
                         Some(c) => c,
                         None => {
@@ -218,18 +215,9 @@ impl<R: Runtime> ClatMcpServer<R> {
                         }
                     };
 
-                    let caller_project = match claims.project {
-                        Some(ref p) => p.clone(),
-                        None => {
-                            return Ok(CallToolResult::error(vec![Content::text(
-                                "Agents without a project cannot use send_message",
-                            )]));
-                        }
-                    };
-
                     let args = ctx.arguments.unwrap_or_default();
                     let target = match args.get("target").and_then(|v| v.as_str()) {
-                        Some(t) => t.to_string(),
+                        Some(t) => t,
                         None => {
                             return Ok(CallToolResult::error(vec![Content::text(
                                 "Missing required field 'target'",
@@ -237,7 +225,7 @@ impl<R: Runtime> ClatMcpServer<R> {
                         }
                     };
                     let message = match args.get("message").and_then(|v| v.as_str()) {
-                        Some(m) => m.to_string(),
+                        Some(m) => m,
                         None => {
                             return Ok(CallToolResult::error(vec![Content::text(
                                 "Missing required field 'message'",
@@ -245,81 +233,31 @@ impl<R: Runtime> ClatMcpServer<R> {
                         }
                     };
 
-                    // Resolve caller's project to a ProjectId.
-                    // The JWT project claim may be a project name or a ProjectId string
-                    // (the latter happens for reopened tasks).
-                    let caller_project_id =
-                        match app.resolve_project_id(&caller_project).await.or_else(|_| {
-                            caller_project
-                                .parse::<ProjectId>()
-                                .map_err(anyhow::Error::from)
-                        }) {
-                            Ok(id) => id,
-                            Err(e) => {
-                                return Ok(CallToolResult::error(vec![Content::text(format!(
-                                    "Failed to resolve caller project '{caller_project}': {e}"
-                                ))]));
-                            }
-                        };
-
-                    if target == "pm" {
-                        // Store message in the project chat for PM visibility.
-                        let chat = ChatId::Project(caller_project_id);
-                        let label = format!("[from agent {} ({})]", claims.sub, claims.role);
-                        let content = format!("{label} {message}");
-                        match app
-                            .insert_chat_message(&chat, MessageRole::User, &content)
-                            .await
-                        {
-                            Ok(_) => {
-                                let response = serde_json::json!({
-                                    "status": "recorded",
-                                    "target": "pm",
-                                    "project": caller_project,
-                                    "note": "Message recorded in project chat. The PM will see it when reviewing project messages."
-                                });
-                                Ok(CallToolResult::success(vec![Content::text(
-                                    serde_json::to_string_pretty(&response).unwrap(),
-                                )]))
-                            }
-                            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                                "Failed to record message: {e}"
-                            ))])),
+                    match app.send_from_agent(&claims, target, message).await {
+                        Ok(AgentSendOutput::Pm { project }) => {
+                            let response = serde_json::json!({
+                                "status": "recorded",
+                                "target": "pm",
+                                "project": project,
+                                "note": "Message recorded in project chat. The PM will see it when reviewing project messages."
+                            });
+                            Ok(CallToolResult::success(vec![Content::text(
+                                serde_json::to_string_pretty(&response).unwrap(),
+                            )]))
                         }
-                    } else {
-                        // Regular task target: resolve, verify project, then send.
-                        let task = match app.resolve_task(&target).await {
-                            Ok(t) => t,
-                            Err(e) => {
-                                return Ok(CallToolResult::error(vec![Content::text(format!(
-                                    "Failed to resolve target task '{target}': {e}"
-                                ))]));
-                            }
-                        };
-
-                        // Verify same project.
-                        if task.project_id != Some(caller_project_id) {
-                            return Ok(CallToolResult::error(vec![Content::text(format!(
-                                "Target task '{}' does not belong to the same project",
-                                task.name
-                            ))]));
+                        Ok(AgentSendOutput::Task(output)) => {
+                            let response = serde_json::json!({
+                                "status": "sent",
+                                "target_task_id": output.task_id.to_string(),
+                                "target_task_name": output.task_name.as_str(),
+                            });
+                            Ok(CallToolResult::success(vec![Content::text(
+                                serde_json::to_string_pretty(&response).unwrap(),
+                            )]))
                         }
-
-                        match app.send(&target, &message).await {
-                            Ok(output) => {
-                                let response = serde_json::json!({
-                                    "status": "sent",
-                                    "target_task_id": output.task_id.to_string(),
-                                    "target_task_name": output.task_name.as_str(),
-                                });
-                                Ok(CallToolResult::success(vec![Content::text(
-                                    serde_json::to_string_pretty(&response).unwrap(),
-                                )]))
-                            }
-                            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                                "Failed to send message: {e}"
-                            ))])),
-                        }
+                        Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                            "Failed to send message: {e}"
+                        ))])),
                     }
                 })
             },
