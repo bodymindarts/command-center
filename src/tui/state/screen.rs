@@ -650,14 +650,12 @@ impl ScreenState {
         }
 
         // Restore ExO's project-list preference when returning to ExO.
-        // Skip when focusing a specific task (e.g. cycling permissions).
+        // The project list is shown but focus stays on chat — the user pressed
+        // Ctrl+O to "go home", so they land in the chat input, not the list.
         if self.active_project_id.is_none() && self.exo_show_project_list && focus_task.is_none() {
             self.project_list.set_visible(true);
-            // Don't sync active project — keep ExO chat visible.
-            self.focus = Focus::ProjectList;
-        } else {
-            self.focus = Focus::ChatInput;
         }
+        self.focus = Focus::ChatInput;
     }
 
     // ── Project list ─────────────────────────────────────────────────
@@ -1168,7 +1166,7 @@ mod tests {
         // Return to ExO via Ctrl+O
         s.switch_to_project(None, vec![], None);
         assert!(s.project_list.is_visible());
-        assert!(matches!(s.focus, Focus::ProjectList));
+        assert!(matches!(s.focus, Focus::ChatInput));
     }
 
     #[test]
