@@ -84,6 +84,10 @@ pub enum HookEvent {
         project: String,
         message: String,
     },
+    /// A message sent from the CLI (or a PM) to the ExO session.
+    ExoMessage {
+        message: String,
+    },
     /// Catch-all for hook messages we don't recognise.
     #[allow(dead_code)]
     Unknown(Value),
@@ -125,6 +129,12 @@ impl<'de> serde::Deserialize<'de> for HookEvent {
             let project = value["project"].as_str().unwrap_or("").to_string();
             let message = value["message"].as_str().unwrap_or("").to_string();
             return Ok(HookEvent::PmMessage { project, message });
+        }
+
+        // ExO message from the CLI or a PM
+        if value.get("_exo_message").and_then(|v| v.as_bool()) == Some(true) {
+            let message = value["message"].as_str().unwrap_or("").to_string();
+            return Ok(HookEvent::ExoMessage { message });
         }
 
         // Legacy events: boolean flag discriminators
@@ -293,6 +303,38 @@ pub fn send_pm_message(
         .context("failed to read response from socket")?;
 
     // Check for error response
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&response)
+        && let Some(err) = val.get("error").and_then(|v| v.as_str())
+    {
+        anyhow::bail!("{err}");
+    }
+
+    Ok(())
+}
+
+/// Send a message to the ExO session via the dashboard socket.
+pub fn send_exo_message(project_root: &std::path::Path, message: &str) -> anyhow::Result<()> {
+    let sock = read_socket_breadcrumb(project_root)
+        .map(PathBuf::from)
+        .unwrap_or_else(session_socket_path);
+
+    let payload = serde_json::json!({
+        "_exo_message": true,
+        "message": message,
+    });
+
+    let mut stream = UnixStream::connect(&sock).context("dashboard is not running")?;
+    stream
+        .write_all(payload.to_string().as_bytes())
+        .context("failed to write to socket")?;
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .context("failed to shutdown write")?;
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .context("failed to read response from socket")?;
+
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&response)
         && let Some(err) = val.get("error").and_then(|v| v.as_str())
     {
@@ -772,6 +814,24 @@ mod tests {
     #[test]
     fn hook_event_pm_message_false_is_unknown() {
         let json = r#"{"_pm_message": false, "project": "lana", "message": "hello"}"#;
+        assert!(matches!(deser(json), HookEvent::Unknown(_)));
+    }
+
+    #[test]
+    fn hook_event_exo_message() {
+        let json = r#"{"_exo_message": true, "message": "hello ExO"}"#;
+        let event = deser(json);
+        match event {
+            HookEvent::ExoMessage { message } => {
+                assert_eq!(message, "hello ExO");
+            }
+            _ => panic!("expected ExoMessage variant"),
+        }
+    }
+
+    #[test]
+    fn hook_event_exo_message_false_is_unknown() {
+        let json = r#"{"_exo_message": false, "message": "hello"}"#;
         assert!(matches!(deser(json), HookEvent::Unknown(_)));
     }
 

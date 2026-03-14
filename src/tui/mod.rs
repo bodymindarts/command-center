@@ -428,6 +428,7 @@ async fn run_loop<R: Runtime>(
                     handlers::dispatch_hook_event(
                         state,
                         project_contexts,
+                        exo_session,
                         app,
                         hook_event,
                         stream,

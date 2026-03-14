@@ -94,6 +94,7 @@ async fn main() -> anyhow::Result<()> {
         } => cmd_start(resume.as_deref(), caffeinate, skip_permissions)?,
         Command::Goto { id } => cmd_goto(app, &id).await?,
         Command::Send { project, args } => match (project, args.len()) {
+            (None, 2) if args[0] == "exo" => cmd_exo_send(&app, &args[1])?,
             (None, 2) => cmd_send(app, &args[0], &args[1]).await?,
             (Some(name), 1) => cmd_project_send(&app, &name, &args[0]).await?,
             (None, 1) => bail!("missing message: usage: clat send <ID> <message>"),
@@ -558,6 +559,12 @@ async fn cmd_project_log(
         println!();
     }
 
+    Ok(())
+}
+
+fn cmd_exo_send(app: &ClatApp<impl Runtime>, message: &str) -> anyhow::Result<()> {
+    crate::permission::send_exo_message(app.project_root(), message)?;
+    println!("Sent message to ExO");
     Ok(())
 }
 

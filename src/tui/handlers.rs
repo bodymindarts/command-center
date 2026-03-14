@@ -919,6 +919,7 @@ pub(super) struct TgPermState {
 pub(super) async fn dispatch_hook_event<R: Runtime>(
     state: &mut ScreenState,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
+    exo_session: &mut AssistantSession,
     app: &ClatApp<R>,
     event: HookEvent,
     stream: UnixStream,
@@ -958,6 +959,9 @@ pub(super) async fn dispatch_hook_event<R: Runtime>(
         }
         HookEvent::PmMessage { project, message } => {
             handle_hook_pm_message(state, project_contexts, app, stream, &project, &message).await;
+        }
+        HookEvent::ExoMessage { message } => {
+            handle_hook_exo_message(state, exo_session, app, stream, &message).await;
         }
         HookEvent::Unknown(_) => {}
     }
@@ -1057,6 +1061,38 @@ async fn handle_hook_pm_message<R: Runtime>(
     ctx.session
         .send_message(message, chat.session_id.as_deref());
     ps.chat_view.reset_scroll();
+
+    let resp = serde_json::json!({"ok": true});
+    let _ = write!(&stream, "{resp}");
+}
+
+async fn handle_hook_exo_message<R: Runtime>(
+    state: &mut ScreenState,
+    exo_session: &mut AssistantSession,
+    app: &ClatApp<R>,
+    stream: UnixStream,
+    message: &str,
+) {
+    use std::io::Write;
+
+    let chat = &mut state.exo.chat_view.assistant;
+    if chat.streaming {
+        chat.finish_streaming();
+        if let Some(msg) = chat.messages.last()
+            && matches!(msg.role, MessageRole::Assistant)
+            && msg.has_text()
+        {
+            let _ = app
+                .insert_session_message(None, MessageRole::Assistant, &msg.text_content())
+                .await;
+        }
+    }
+    let _ = app
+        .insert_session_message(None, MessageRole::User, message)
+        .await;
+    chat.add_user_message(message.to_string());
+    exo_session.send_message(message, chat.session_id.as_deref());
+    state.exo.chat_view.reset_scroll();
 
     let resp = serde_json::json!({"ok": true});
     let _ = write!(&stream, "{resp}");

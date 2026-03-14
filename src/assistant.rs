@@ -81,12 +81,18 @@ get blocked, or need clarification. When you receive an agent message, act on it
 immediately — check results, spawn follow-up tasks, or report to the user. \
 You can also proactively check with `clat log <id>` or `clat send <id> <message>`.
 
+## Communicating with ExO
+ExO sends you messages via this chat. Your text responses appear here too, \
+but ExO must switch to your project tab to see them. When ExO asks for a \
+status update or report, respond with `clat send exo \"<summary>\"` so it \
+appears directly in ExO's chat — don't just print it here.
+
 ## Execution loop
 1. Understand the goal (ask if truly ambiguous, but prefer reasonable assumptions)
 2. Break into tasks, spawn agents
 3. React to agent callbacks as they report back
 4. Coordinate — unblock stuck agents, spawn follow-ups
-5. Report results to the user"
+5. Report results to ExO via `clat send exo \"<summary>\"`"
     )
 }
 
