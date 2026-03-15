@@ -32,6 +32,8 @@ impl<R: Runtime> ClatMcpServer<R> {
     pub fn new(app: Arc<ClatApp<R>>) -> Self {
         let mut router = Self::tool_router();
         router.add_route(Self::create_watch_route(Arc::clone(&app)));
+        router.add_route(Self::cancel_watch_route(Arc::clone(&app)));
+        router.add_route(Self::list_watches_route(Arc::clone(&app)));
         router.add_route(Self::send_message_route(Arc::clone(&app)));
         router.add_route(Self::list_tasks_route(Arc::clone(&app)));
         router.add_route(Self::task_log_route(Arc::clone(&app)));
@@ -49,6 +51,10 @@ impl<R: Runtime> ClatMcpServer<R> {
                 "label": {
                     "type": "string",
                     "description": "Short description of what you're watching for (included in the notification)"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Optional watch name. If a watch with this name already exists for your task, it will be replaced. Use this to prevent watch stacking in polling loops."
                 },
                 "check": {
                     "oneOf": [
@@ -123,6 +129,7 @@ impl<R: Runtime> ClatMcpServer<R> {
                         .and_then(|v| v.as_i64())
                         .unwrap_or(30);
                     let context = args.get("context").cloned();
+                    let watch_name = args.get("name").and_then(|v| v.as_str());
 
                     let check_name = args
                         .get("check")
@@ -145,12 +152,12 @@ impl<R: Runtime> ClatMcpServer<R> {
                                 }
                             };
                             app.watch()
-                                .create_command(&task_id, label, cmd, delay, context)
+                                .create_command(&task_id, label, cmd, delay, context, watch_name)
                                 .await
                         }
                         _ => {
                             app.watch()
-                                .create_timer(&task_id, label, delay, context)
+                                .create_timer(&task_id, label, delay, context, watch_name)
                                 .await
                         }
                     };
@@ -174,6 +181,110 @@ impl<R: Runtime> ClatMcpServer<R> {
             },
         )
     }
+    fn cancel_watch_route(app: Arc<ClatApp<R>>) -> ToolRoute<Self> {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["watch_id"],
+            "properties": {
+                "watch_id": {
+                    "type": "string",
+                    "description": "The watch ID (or prefix) to cancel"
+                }
+            },
+            "additionalProperties": false
+        });
+
+        let input_schema = Arc::new(schema.as_object().unwrap().clone());
+        let tool = rmcp::model::Tool::new(
+            "cancel_watch",
+            "Cancel an active watch. No notification will be sent.",
+            input_schema,
+        );
+
+        ToolRoute::new_dyn(
+            tool,
+            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
+                let app = Arc::clone(&app);
+                Box::pin(async move {
+                    let task_id = ctx
+                        .request_context
+                        .extensions
+                        .get::<axum::http::request::Parts>()
+                        .and_then(|parts| parts.extensions.get::<crate::jwt::AgentClaims>())
+                        .map(|c| c.sub.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+
+                    let args = ctx.arguments.unwrap_or_default();
+                    let watch_id = match args.get("watch_id").and_then(|v| v.as_str()) {
+                        Some(id) => id,
+                        None => {
+                            return Ok(CallToolResult::error(vec![Content::text(
+                                "Missing required field 'watch_id'",
+                            )]));
+                        }
+                    };
+
+                    match app.watch().cancel_watch(&task_id, watch_id).await {
+                        Ok(()) => {
+                            let response = serde_json::json!({
+                                "status": "cancelled",
+                                "watch_id": watch_id,
+                            });
+                            Ok(CallToolResult::success(vec![Content::text(
+                                serde_json::to_string_pretty(&response).unwrap(),
+                            )]))
+                        }
+                        Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                            "Failed to cancel watch: {e}"
+                        ))])),
+                    }
+                })
+            },
+        )
+    }
+
+    fn list_watches_route(app: Arc<ClatApp<R>>) -> ToolRoute<Self> {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+        });
+
+        let input_schema = Arc::new(schema.as_object().unwrap().clone());
+        let tool = rmcp::model::Tool::new(
+            "list_watches",
+            "List all active watches for your task. Returns watch IDs, names, labels, and scheduled fire times.",
+            input_schema,
+        );
+
+        ToolRoute::new_dyn(
+            tool,
+            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
+                let app = Arc::clone(&app);
+                Box::pin(async move {
+                    let task_id = ctx
+                        .request_context
+                        .extensions
+                        .get::<axum::http::request::Parts>()
+                        .and_then(|parts| parts.extensions.get::<crate::jwt::AgentClaims>())
+                        .map(|c| c.sub.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+
+                    match app.watch().list_watches(&task_id).await {
+                        Ok(watches) => Ok(CallToolResult::success(vec![Content::text(
+                            serde_json::to_string_pretty(&watches).unwrap(),
+                        )])),
+                        Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                            "Failed to list watches: {e}"
+                        ))])),
+                    }
+                })
+            },
+        )
+    }
+
     fn send_message_route(app: Arc<ClatApp<R>>) -> ToolRoute<Self> {
         let schema = serde_json::json!({
             "type": "object",

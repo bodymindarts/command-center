@@ -1,9 +1,18 @@
+mod entity;
+mod error;
+mod repo;
+
+pub use entity::*;
+pub use repo::*;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::Utc;
 use job::{Job, JobCompletion, JobInitializer, JobRunner, JobSpawner};
 
 use crate::app::ClatApp;
+use crate::primitives::WatchId;
 use crate::runtime::Runtime;
 
 /// Commands allowed in the `command` check variant.
@@ -46,11 +55,24 @@ pub struct CommandConfig {
     pub context: Option<serde_json::Value>,
 }
 
+// ── WatchSummary (returned by list_watches) ──────────────────────────
+
+#[derive(Debug, serde::Serialize)]
+pub struct WatchSummary {
+    pub id: String,
+    pub name: Option<String>,
+    pub label: String,
+    pub check_type: String,
+    pub fires_at: String,
+    pub status: String,
+}
+
 // ── WatchService ──────────────────────────────────────────────────────
 
 pub struct WatchService {
     timer_spawner: JobSpawner<TimerConfig>,
     command_spawner: JobSpawner<CommandConfig>,
+    watches: WatchRepo,
     _jobs: job::Jobs,
 }
 
@@ -58,11 +80,13 @@ impl WatchService {
     pub(crate) fn new(
         timer_spawner: JobSpawner<TimerConfig>,
         command_spawner: JobSpawner<CommandConfig>,
+        watches: WatchRepo,
         jobs: job::Jobs,
     ) -> Self {
         Self {
             timer_spawner,
             command_spawner,
+            watches,
             _jobs: jobs,
         }
     }
@@ -73,18 +97,40 @@ impl WatchService {
         label: &str,
         delay_seconds: i64,
         context: Option<serde_json::Value>,
+        name: Option<&str>,
     ) -> anyhow::Result<String> {
-        let id = job::JobId::new();
+        let watch_id = WatchId::new();
+        let job_id = job::JobId::new();
+        let scheduled_at = Utc::now() + chrono::Duration::seconds(delay_seconds);
+
+        // Replace semantics: if a named watch already exists, mark it as replaced.
+        if let Some(watch_name) = name {
+            self.replace_existing(task_id, watch_name, watch_id).await?;
+        }
+
+        // Create the Watch entity.
+        let new_watch = NewWatch {
+            id: watch_id,
+            task_id: task_id.to_string(),
+            name: name.map(|s| s.to_string()),
+            label: label.to_string(),
+            job_id: job_id.to_string(),
+            check_type: "timer".to_string(),
+            fires_at: scheduled_at,
+        };
+        self.watches.create(new_watch).await?;
+
+        // Spawn the job.
         let config = TimerConfig {
             task_id: task_id.to_string(),
             label: label.to_string(),
             context,
         };
-        let scheduled_at = chrono::Utc::now() + chrono::Duration::seconds(delay_seconds);
         self.timer_spawner
-            .spawn_at(id, config, scheduled_at)
+            .spawn_at(job_id, config, scheduled_at)
             .await?;
-        Ok(id.to_string())
+
+        Ok(watch_id.to_string())
     }
 
     pub async fn create_command(
@@ -94,20 +140,118 @@ impl WatchService {
         cmd: &str,
         delay_seconds: i64,
         context: Option<serde_json::Value>,
+        name: Option<&str>,
     ) -> anyhow::Result<String> {
         validate_command(cmd)?;
-        let id = job::JobId::new();
+
+        let watch_id = WatchId::new();
+        let job_id = job::JobId::new();
+        let scheduled_at = Utc::now() + chrono::Duration::seconds(delay_seconds);
+
+        // Replace semantics: if a named watch already exists, mark it as replaced.
+        if let Some(watch_name) = name {
+            self.replace_existing(task_id, watch_name, watch_id).await?;
+        }
+
+        // Create the Watch entity.
+        let new_watch = NewWatch {
+            id: watch_id,
+            task_id: task_id.to_string(),
+            name: name.map(|s| s.to_string()),
+            label: label.to_string(),
+            job_id: job_id.to_string(),
+            check_type: "command".to_string(),
+            fires_at: scheduled_at,
+        };
+        self.watches.create(new_watch).await?;
+
+        // Spawn the job.
         let config = CommandConfig {
             task_id: task_id.to_string(),
             label: label.to_string(),
             cmd: cmd.to_string(),
             context,
         };
-        let scheduled_at = chrono::Utc::now() + chrono::Duration::seconds(delay_seconds);
         self.command_spawner
-            .spawn_at(id, config, scheduled_at)
+            .spawn_at(job_id, config, scheduled_at)
             .await?;
-        Ok(id.to_string())
+
+        Ok(watch_id.to_string())
+    }
+
+    /// Cancel a specific watch by ID prefix (scoped to the calling task).
+    pub async fn cancel_watch(&self, task_id: &str, watch_id_prefix: &str) -> anyhow::Result<()> {
+        let mut watch = self
+            .watches
+            .maybe_find_by_id_prefix(watch_id_prefix)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("watch not found: {watch_id_prefix}"))?;
+
+        if watch.task_id != task_id {
+            anyhow::bail!("watch does not belong to this task");
+        }
+
+        if !watch.status.is_active() {
+            anyhow::bail!("watch is not active (status: {})", watch.status);
+        }
+
+        let _ = watch.cancel("cancelled by agent");
+        self.watches.update(&mut watch).await?;
+        Ok(())
+    }
+
+    /// List all active watches for a task.
+    pub async fn list_watches(&self, task_id: &str) -> anyhow::Result<Vec<WatchSummary>> {
+        let watches = self.watches.list_active_for_task(task_id).await?;
+        Ok(watches
+            .into_iter()
+            .map(|w| WatchSummary {
+                id: w.id.short(),
+                name: w.name,
+                label: w.label,
+                check_type: w.check_type,
+                fires_at: w.fires_at.to_rfc3339(),
+                status: w.status.as_str().to_string(),
+            })
+            .collect())
+    }
+
+    /// Check if a watch (by job_id) is still active. Used by runners before delivery.
+    pub async fn check_and_fire(&self, job_id: &str) -> anyhow::Result<bool> {
+        let watch = self.watches.find_by_job_id(job_id.to_string()).await.ok();
+        match watch {
+            Some(mut w) if w.status.is_active() => match w.fire() {
+                Ok(_) => {
+                    self.watches.update(&mut w).await?;
+                    Ok(true)
+                }
+                Err(_) => Ok(false),
+            },
+            Some(_) => Ok(false), // Watch exists but not active — skip delivery
+            None => {
+                // No watch entity found — legacy job or data inconsistency. Deliver anyway.
+                tracing::warn!(job_id, "no watch entity found for job, delivering anyway");
+                Ok(true)
+            }
+        }
+    }
+
+    /// Replace an existing active watch with the given (task_id, name).
+    async fn replace_existing(
+        &self,
+        task_id: &str,
+        name: &str,
+        replaced_by: WatchId,
+    ) -> anyhow::Result<()> {
+        if let Some(mut existing) = self
+            .watches
+            .find_active_by_task_and_name(task_id, name)
+            .await?
+        {
+            let _ = existing.replace(replaced_by);
+            self.watches.update(&mut existing).await?;
+        }
+        Ok(())
     }
 }
 
@@ -131,6 +275,7 @@ impl<R: Runtime> JobInitializer for TimerJobInitializer<R> {
     ) -> Result<Box<dyn JobRunner>, Box<dyn std::error::Error>> {
         let config: TimerConfig = job.config()?;
         Ok(Box::new(TimerJobRunner {
+            job_id: job.id.to_string(),
             config,
             app: Arc::clone(&self.app),
         }))
@@ -140,6 +285,7 @@ impl<R: Runtime> JobInitializer for TimerJobInitializer<R> {
 // ── Timer Runner ─────────────────────────────────────────────────────
 
 struct TimerJobRunner<R: Runtime> {
+    job_id: String,
     config: TimerConfig,
     app: Arc<ClatApp<R>>,
 }
@@ -150,6 +296,17 @@ impl<R: Runtime> JobRunner for TimerJobRunner<R> {
         &self,
         _current_job: job::CurrentJob,
     ) -> Result<JobCompletion, Box<dyn std::error::Error>> {
+        // Check if the watch is still active before delivering.
+        let should_deliver = self.app.watch().check_and_fire(&self.job_id).await?;
+        if !should_deliver {
+            tracing::info!(
+                job_id = %self.job_id,
+                label = %self.config.label,
+                "watch no longer active, skipping delivery"
+            );
+            return Ok(JobCompletion::Complete);
+        }
+
         let mut message = format!("[Watch: {}] Timer fired.", self.config.label);
         if let Some(ref ctx) = self.config.context {
             message.push_str(&format!("\nContext: {}", ctx));
@@ -188,6 +345,7 @@ impl<R: Runtime> JobInitializer for CommandJobInitializer<R> {
     ) -> Result<Box<dyn JobRunner>, Box<dyn std::error::Error>> {
         let config: CommandConfig = job.config()?;
         Ok(Box::new(CommandJobRunner {
+            job_id: job.id.to_string(),
             config,
             app: Arc::clone(&self.app),
         }))
@@ -197,6 +355,7 @@ impl<R: Runtime> JobInitializer for CommandJobInitializer<R> {
 // ── Command Runner ───────────────────────────────────────────────────
 
 struct CommandJobRunner<R: Runtime> {
+    job_id: String,
     config: CommandConfig,
     app: Arc<ClatApp<R>>,
 }
@@ -207,6 +366,17 @@ impl<R: Runtime> JobRunner for CommandJobRunner<R> {
         &self,
         _current_job: job::CurrentJob,
     ) -> Result<JobCompletion, Box<dyn std::error::Error>> {
+        // Check if the watch is still active before delivering.
+        let should_deliver = self.app.watch().check_and_fire(&self.job_id).await?;
+        if !should_deliver {
+            tracing::info!(
+                job_id = %self.job_id,
+                label = %self.config.label,
+                "watch no longer active, skipping delivery"
+            );
+            return Ok(JobCompletion::Complete);
+        }
+
         // Resolve the task's work_dir for command cwd, if available.
         let work_dir = self
             .app

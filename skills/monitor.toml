@@ -25,9 +25,11 @@ Do not wait for further instructions. Do not say "standing by" or "ready".
 1. Perform an initial check of the process described in your task.
 2. Assess the result: done? failed? still running?
 3. If **still running** → call the `create_watch` MCP tool with `delay_seconds`
-   set to {{ interval }} and a label like "monitor check N/{{ max_checks }}",
-   then **STOP and wait**. Do not send further messages until you receive a
-   `[Watch: ...] Timer fired.` notification.
+   set to {{ interval }}, **name** set to "poll-loop", and a label like
+   "monitor check N/{{ max_checks }}", then **STOP and wait**. Do not send
+   further messages until you receive a `[Watch: ...] Timer fired.` notification.
+   Using a consistent **name** ensures any new watch (including pause watches)
+   auto-replaces the previous one, preventing watch stacking.
 4. If **done or failed** → report the final result clearly and exit.
 
 When the timer notification arrives (it looks like `[Watch: <label>] Timer fired.`),

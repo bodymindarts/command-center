@@ -10,6 +10,7 @@ use crate::primitives::TaskId;
 use crate::primitives::{ChatId, MessageRole};
 use crate::project::ProjectRepo;
 use crate::task::{TaskMessage, TaskRepo};
+use crate::watch::WatchRepo;
 
 // ── Store (wraps TaskRepo + ProjectRepo + message CRUD) ──────────────
 
@@ -30,6 +31,8 @@ pub struct Store {
     pool: SqlitePool,
     pub tasks: TaskRepo,
     pub projects: ProjectRepo,
+    #[allow(dead_code)]
+    pub watches: WatchRepo,
 }
 
 impl Store {
@@ -48,10 +51,12 @@ impl Store {
             .context("failed to run database migrations")?;
         let tasks = TaskRepo::new(&pool);
         let projects = ProjectRepo::new(&pool);
+        let watches = WatchRepo::new(&pool);
         Ok(Self {
             pool,
             tasks,
             projects,
+            watches,
         })
     }
 
@@ -76,10 +81,12 @@ impl Store {
             .with_context(|| format!("failed to run migrations at {}", db_path.display()))?;
         let tasks = TaskRepo::new(&pool);
         let projects = ProjectRepo::new(&pool);
+        let watches = WatchRepo::new(&pool);
         Ok(Self {
             pool,
             tasks,
             projects,
+            watches,
         })
     }
 

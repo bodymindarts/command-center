@@ -86,12 +86,67 @@ macro_rules! entity_id {
     };
 }
 
-entity_id! { TaskId, ProjectId, ClaudeSessionId }
+entity_id! { TaskId, ProjectId, ClaudeSessionId, WatchId }
 
 impl TaskId {
     pub fn short(&self) -> String {
         let s = self.to_string();
         s[..8.min(s.len())].to_string()
+    }
+}
+
+impl WatchId {
+    pub fn short(&self) -> String {
+        let s = self.to_string();
+        s[..8.min(s.len())].to_string()
+    }
+}
+
+// === WatchStatus ===
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[serde(rename_all = "snake_case")]
+#[sqlx(rename_all = "snake_case")]
+pub enum WatchStatus {
+    Active,
+    Fired,
+    Cancelled,
+    Replaced,
+}
+
+impl WatchStatus {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Active => "active",
+            Self::Fired => "fired",
+            Self::Cancelled => "cancelled",
+            Self::Replaced => "replaced",
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        matches!(self, Self::Active)
+    }
+}
+
+impl fmt::Display for WatchStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<String> for WatchStatus {
+    fn from(s: String) -> Self {
+        match s.as_str() {
+            "active" => Self::Active,
+            "fired" => Self::Fired,
+            "cancelled" => Self::Cancelled,
+            "replaced" => Self::Replaced,
+            other => {
+                tracing::warn!(value = other, "unknown WatchStatus, defaulting to Active");
+                Self::Active
+            }
+        }
     }
 }
 

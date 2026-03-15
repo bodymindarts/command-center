@@ -152,10 +152,12 @@ impl<R: Runtime> ClatApp<R> {
             app: Arc::clone(self),
         });
         jobs.start_poll().await?;
+        let watches = crate::watch::WatchRepo::new(self.store.pool());
         self.watch
             .set(crate::watch::WatchService::new(
                 timer_spawner,
                 command_spawner,
+                watches,
                 jobs,
             ))
             .map_err(|_| anyhow::anyhow!("watch service already initialized"))?;
