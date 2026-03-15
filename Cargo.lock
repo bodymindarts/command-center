@@ -1496,7 +1496,7 @@ checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 [[package]]
 name = "job"
 version = "0.6.9-dev"
-source = "git+https://github.com/galoymoney/job?branch=task%2Fjob-sqlite-compat-019ce262#a514a9db5cd1ed829e0f079539b86ffc33f4b59d"
+source = "git+https://github.com/galoymoney/job?branch=task%2Fjob-sqlite-compat-019ce262#4273cf6832e88fd64a35b6d3890deba69d7ac068"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3057,7 +3057,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.59.0",

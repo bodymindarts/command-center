@@ -73,7 +73,7 @@ pub struct WatchService {
     timer_spawner: JobSpawner<TimerConfig>,
     command_spawner: JobSpawner<CommandConfig>,
     watches: WatchRepo,
-    _jobs: job::Jobs,
+    jobs: job::Jobs,
 }
 
 impl WatchService {
@@ -87,7 +87,7 @@ impl WatchService {
             timer_spawner,
             command_spawner,
             watches,
-            _jobs: jobs,
+            jobs,
         }
     }
 
@@ -197,6 +197,9 @@ impl WatchService {
 
         let _ = watch.cancel("cancelled by agent");
         self.watches.update(&mut watch).await?;
+
+        // Best-effort cancel the underlying job.
+        self.try_cancel_job(&watch.job_id).await;
         Ok(())
     }
 
@@ -248,10 +251,23 @@ impl WatchService {
             .find_active_by_task_and_name(task_id, name)
             .await?
         {
+            let job_id = existing.job_id.clone();
             let _ = existing.replace(replaced_by);
             self.watches.update(&mut existing).await?;
+
+            // Best-effort cancel the underlying job.
+            self.try_cancel_job(&job_id).await;
         }
         Ok(())
+    }
+
+    /// Best-effort cancel a job by its string ID.
+    async fn try_cancel_job(&self, job_id: &str) {
+        if let Ok(id) = job_id.parse::<job::JobId>()
+            && let Err(e) = self.jobs.cancel_job(id).await
+        {
+            tracing::debug!(job_id, error = %e, "could not cancel job (may already be running/completed)");
+        }
     }
 }
 
