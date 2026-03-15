@@ -673,10 +673,17 @@ fn base_allowed_tools_full() -> Vec<&'static str> {
         "Bash(git commit:*)",
         "Bash(git branch:*)",
         "Bash(git show:*)",
+        "Bash(git reset:*)",
+        "Bash(git checkout:*)",
+        "Bash(git worktree:*)",
+        "Bash(git cherry-pick:*)",
+        "Bash(git rebase:*)",
         // Nix
         "Bash(nix flake check:*)",
         "Bash(nix develop:*)",
         "Bash(nix build:*)",
+        "Bash(nix log:*)",
+        "Bash(nix run:*)",
         // Cargo (typically run inside nix develop, but allow direct too)
         "Bash(cargo fmt:*)",
         "Bash(cargo clippy:*)",
@@ -692,6 +699,11 @@ fn base_allowed_tools_full() -> Vec<&'static str> {
         "Bash(wc:*)",
         "Bash(which:*)",
         "Bash(pwd)",
+        // GitHub CLI
+        "Bash(gh:*)",
+        // Containers
+        "Bash(podman:*)",
+        "Bash(docker:*)",
     ]
 }
 

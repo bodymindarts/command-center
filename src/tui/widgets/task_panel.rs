@@ -287,18 +287,14 @@ pub(in crate::tui) fn render_project_list(
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color)),
         )
-        .highlight_style(if focused || searching || project_list.is_visible() {
+        .highlight_style(if focused || searching {
             Style::default()
                 .add_modifier(Modifier::BOLD)
                 .fg(Color::White)
         } else {
             Style::default()
         })
-        .highlight_symbol(if focused || searching || project_list.is_visible() {
-            "> "
-        } else {
-            "  "
-        });
+        .highlight_symbol(if focused || searching { "> " } else { "  " });
 
     frame.render_stateful_widget(list, list_area, &mut project_list.list_state);
 
