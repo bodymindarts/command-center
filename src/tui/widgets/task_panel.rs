@@ -247,10 +247,7 @@ pub(in crate::tui) fn render_project_list(
 
     let project_item = |project: &Project| {
         let main_line = Line::from(vec![
-            Span::styled(
-                format!("{:<16} ", project.name.as_str()),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(format!("{:<16} ", project.name.as_str()), Style::default()),
             Span::styled(
                 project.description.clone(),
                 Style::default().fg(Color::DarkGray),
@@ -287,14 +284,18 @@ pub(in crate::tui) fn render_project_list(
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color)),
         )
-        .highlight_style(if focused || searching {
+        .highlight_style(if project_list.list_state.selected().is_some() {
             Style::default()
                 .add_modifier(Modifier::BOLD)
                 .fg(Color::White)
         } else {
             Style::default()
         })
-        .highlight_symbol(if focused || searching { "> " } else { "  " })
+        .highlight_symbol(if project_list.list_state.selected().is_some() {
+            "> "
+        } else {
+            "  "
+        })
         .highlight_spacing(HighlightSpacing::Always);
 
     frame.render_stateful_widget(list, list_area, &mut project_list.list_state);

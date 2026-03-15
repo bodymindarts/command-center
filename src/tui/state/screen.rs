@@ -693,6 +693,9 @@ impl ScreenState {
                 .position(|p| p.id == *pid)
         {
             self.project_list.list_state.select(Some(idx));
+        } else {
+            // ExO is active — no project should be highlighted.
+            self.project_list.list_state.select(None);
         }
         // Don't sync active project — keep ExO chat visible until user navigates.
         self.focus = Focus::ProjectList;
@@ -1040,7 +1043,8 @@ mod tests {
 
         assert!(s.project_list.is_visible());
         assert!(matches!(s.focus, Focus::ProjectList));
-        assert_eq!(s.project_list.list_state.selected(), Some(0));
+        // No active project → no selection (ExO is active).
+        assert_eq!(s.project_list.list_state.selected(), None);
         assert_eq!(s.project_list.projects().len(), 2);
     }
 
