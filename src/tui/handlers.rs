@@ -914,7 +914,7 @@ pub(super) async fn dispatch_hook_event<R: Runtime>(
             handle_hook_pm_message(state, project_contexts, app, stream, &project, &message).await;
         }
         HookEvent::ExoMessage { message } => {
-            handle_hook_exo_message(state, exo_session, app, stream, &message).await;
+            handle_hook_exo_message(state, exo_session, app, stream, &message, tg_tx).await;
         }
         HookEvent::Unknown(_) => {}
     }
@@ -1019,6 +1019,7 @@ async fn handle_hook_exo_message<R: Runtime>(
     app: &ClatApp<R>,
     stream: UnixStream,
     message: &str,
+    tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
 ) {
     use std::io::Write;
 
@@ -1036,6 +1037,12 @@ async fn handle_hook_exo_message<R: Runtime>(
     let session_id = ps.session_id().map(|s| s.to_string());
     ps.add_user_message(message.to_string());
     exo_session.send_message(message, session_id.as_deref());
+
+    if let Some(tx) = tg_tx {
+        let _ = tx.send(telegram::TgOutbound::Notify {
+            text: format!("📨 {message}"),
+        });
+    }
 
     let resp = serde_json::json!({"ok": true});
     let _ = write!(&stream, "{resp}");
