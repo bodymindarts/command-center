@@ -145,9 +145,15 @@ fn render_chat_messages(
 ) {
     for msg in messages {
         let (label, label_color) = match msg.role {
-            MessageRole::User => ("You", Color::Green),
-            MessageRole::Assistant => (assistant_label, Color::Cyan),
-            MessageRole::System => ("System", Color::DarkGray),
+            MessageRole::User => {
+                if let Some(sender) = parse_agent_sender(msg) {
+                    (sender, Color::Yellow)
+                } else {
+                    ("You".to_string(), Color::Green)
+                }
+            }
+            MessageRole::Assistant => (assistant_label.to_string(), Color::Cyan),
+            MessageRole::System => ("System".to_string(), Color::DarkGray),
         };
 
         lines.push(Line::from(Span::styled(
@@ -170,7 +176,9 @@ fn render_chat_messages(
                         if !tool_spans.is_empty() {
                             lines.push(Line::from(std::mem::take(&mut tool_spans)));
                         }
-                        for l in text.trim_start_matches('\n').lines() {
+                        // Strip the "[from agent ...] " prefix since we show it in the label
+                        let display_text = strip_agent_prefix(text);
+                        for l in display_text.trim_start_matches('\n').lines() {
                             lines.push(Line::from(l.to_string()));
                         }
                     }
@@ -188,5 +196,35 @@ fn render_chat_messages(
         }
 
         lines.push(Line::from(""));
+    }
+}
+
+/// Strip the `[from agent ...] ` prefix from message text for display.
+fn strip_agent_prefix(text: &str) -> &str {
+    if let Some(rest) = text.strip_prefix("[from agent ")
+        && let Some(end) = rest.find("] ")
+    {
+        return &rest[end + 2..];
+    }
+    text
+}
+
+/// Extract sender label from agent messages formatted as `[from agent <id> (<role>)] <msg>`.
+/// Returns the display label (e.g. "monitor@019cee84") if the prefix is found.
+fn parse_agent_sender(msg: &ChatMessage) -> Option<String> {
+    let text = match msg.blocks.first()? {
+        ContentBlock::Text(t) => t,
+        _ => return None,
+    };
+    let rest = text.strip_prefix("[from agent ")?;
+    let end = rest.find(']')?;
+    let inner = &rest[..end];
+    // inner is "<uuid> (<role>)"
+    if let Some((id, role_paren)) = inner.split_once(' ') {
+        let role = role_paren.trim_matches(|c| c == '(' || c == ')');
+        let short_id = &id[..id.len().min(8)];
+        Some(format!("{role}@{short_id}"))
+    } else {
+        None
     }
 }
