@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, HighlightSpacing, List, ListItem, Paragraph};
 
 use crate::project::Project;
 use crate::task::DisplayStatus;
@@ -294,7 +294,8 @@ pub(in crate::tui) fn render_project_list(
         } else {
             Style::default()
         })
-        .highlight_symbol(if focused || searching { "> " } else { "  " });
+        .highlight_symbol(if focused || searching { "> " } else { "  " })
+        .highlight_spacing(HighlightSpacing::Always);
 
     frame.render_stateful_widget(list, list_area, &mut project_list.list_state);
 
