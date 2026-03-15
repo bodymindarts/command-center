@@ -33,6 +33,8 @@ impl<R: Runtime> ClatMcpServer<R> {
         let mut router = Self::tool_router();
         router.add_route(Self::create_watch_route(Arc::clone(&app)));
         router.add_route(Self::send_message_route(Arc::clone(&app)));
+        router.add_route(Self::list_tasks_route(Arc::clone(&app)));
+        router.add_route(Self::task_log_route(Arc::clone(&app)));
         Self {
             app,
             tool_router: router,
@@ -269,6 +271,167 @@ impl<R: Runtime> ClatMcpServer<R> {
                             "Failed to send message: {e}"
                         ))])),
                     }
+                })
+            },
+        )
+    }
+
+    fn list_tasks_route(app: Arc<ClatApp<R>>) -> ToolRoute<Self> {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Filter tasks by project name. If omitted, lists all active tasks."
+                }
+            },
+            "additionalProperties": false
+        });
+
+        let input_schema = Arc::new(schema.as_object().unwrap().clone());
+        let tool = rmcp::model::Tool::new(
+            "list_tasks",
+            "List active tasks. Optionally filter by project name. Returns task id, name, skill, status, and activity.",
+            input_schema,
+        );
+
+        ToolRoute::new_dyn(
+            tool,
+            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
+                let app = Arc::clone(&app);
+                Box::pin(async move {
+                    let args = ctx.arguments.unwrap_or_default();
+                    let project = args.get("project").and_then(|v| v.as_str());
+
+                    let tasks = match app.list_tasks(false, project).await {
+                        Ok(t) => t,
+                        Err(e) => {
+                            return Ok(CallToolResult::error(vec![Content::text(format!(
+                                "Failed to list tasks: {e}"
+                            ))]));
+                        }
+                    };
+
+                    // Determine idle/active status for running tasks.
+                    let running_pane_ids: Vec<crate::primitives::PaneId> = tasks
+                        .iter()
+                        .filter(|t| t.status.is_running())
+                        .filter_map(|t| t.tmux_pane.clone())
+                        .collect();
+                    let pane_refs: Vec<&crate::primitives::PaneId> =
+                        running_pane_ids.iter().collect();
+                    let idle = crate::runtime::idle_panes(&pane_refs);
+
+                    let items: Vec<serde_json::Value> = tasks
+                        .iter()
+                        .map(|t| {
+                            let activity = if !t.status.is_running() {
+                                "-"
+                            } else if let Some(ref pane) = t.tmux_pane {
+                                if idle.contains(pane) {
+                                    "idle"
+                                } else {
+                                    "active"
+                                }
+                            } else {
+                                "-"
+                            };
+                            serde_json::json!({
+                                "id": t.id.short(),
+                                "name": t.name.as_str(),
+                                "skill": t.skill_name,
+                                "status": t.status.to_string(),
+                                "activity": activity,
+                            })
+                        })
+                        .collect();
+
+                    Ok(CallToolResult::success(vec![Content::text(
+                        serde_json::to_string_pretty(&items).unwrap(),
+                    )]))
+                })
+            },
+        )
+    }
+
+    fn task_log_route(app: Arc<ClatApp<R>>) -> ToolRoute<Self> {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["task_id"],
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Task ID or prefix to look up"
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Maximum number of messages to return (default: 20)"
+                }
+            },
+            "additionalProperties": false
+        });
+
+        let input_schema = Arc::new(schema.as_object().unwrap().clone());
+        let tool = rmcp::model::Tool::new(
+            "task_log",
+            "Show the message log for a task. Returns recent messages with role, content, and timestamp.",
+            input_schema,
+        );
+
+        ToolRoute::new_dyn(
+            tool,
+            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
+                let app = Arc::clone(&app);
+                Box::pin(async move {
+                    let args = ctx.arguments.unwrap_or_default();
+                    let task_id = match args.get("task_id").and_then(|v| v.as_str()) {
+                        Some(id) => id,
+                        None => {
+                            return Ok(CallToolResult::error(vec![Content::text(
+                                "Missing required field 'task_id'",
+                            )]));
+                        }
+                    };
+                    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+
+                    let log = match app.log(task_id).await {
+                        Ok(l) => l,
+                        Err(e) => {
+                            return Ok(CallToolResult::error(vec![Content::text(format!(
+                                "Failed to fetch task log: {e}"
+                            ))]));
+                        }
+                    };
+
+                    // Take only the last `limit` messages.
+                    let messages = if log.messages.len() > limit {
+                        &log.messages[log.messages.len() - limit..]
+                    } else {
+                        &log.messages
+                    };
+
+                    let items: Vec<serde_json::Value> = messages
+                        .iter()
+                        .map(|m| {
+                            serde_json::json!({
+                                "role": m.role.as_str(),
+                                "content": m.content,
+                                "timestamp": m.created_at.to_rfc3339(),
+                            })
+                        })
+                        .collect();
+
+                    let response = serde_json::json!({
+                        "task_id": task_id,
+                        "task_name": log.task.name.as_str(),
+                        "message_count": items.len(),
+                        "messages": items,
+                    });
+
+                    Ok(CallToolResult::success(vec![Content::text(
+                        serde_json::to_string_pretty(&response).unwrap(),
+                    )]))
                 })
             },
         )
