@@ -49,7 +49,8 @@ send_message(target="pm", message="Done: <one-line summary of what was done>")
 Also send a message if you're blocked or need clarification.
 
 ## Constraints
-- All dependencies are declared in flake.nix — never assume binaries are installed
+- All dependencies are declared in flake.nix — never assume binaries are installed. Only tools declared in flake.nix are available (no python, sed, awk, perl, etc.)
+- **Use the Edit tool for all file modifications** — never write scripts (Python, sed, awk) to edit files
 - Clippy runs with --deny warnings — no dead code, no unused imports
 - Tests run via nextest
 - `git add -A` must happen before `nix flake check` (nix flakes only copy tracked files)

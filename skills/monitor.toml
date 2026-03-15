@@ -8,7 +8,7 @@ params = [
 ]
 
 [agent]
-allowed_tools = ["Read", "Glob", "Grep", "Bash", "WebFetch", "WebSearch"]
+allowed_tools = ["Read", "Glob", "Grep", "WebFetch", "WebSearch"]
 base_tools = "minimal"
 allowed_bash_patterns = ["gh:*", "curl:*", "jq:*", "clat:*"]
 model = "sonnet"
