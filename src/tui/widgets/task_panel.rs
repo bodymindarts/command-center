@@ -219,10 +219,14 @@ pub(in crate::tui) fn render_task_list(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::tui) fn render_project_list(
     frame: &mut ratatui::Frame,
     focus: &Focus,
     project_list: &mut ProjectListState,
+    total_perm: usize,
+    total_askuser: usize,
+    other_perms: &[(String, usize)],
     search_query: &str,
     area: Rect,
     focused: bool,
@@ -267,20 +271,42 @@ pub(in crate::tui) fn render_project_list(
         project_list.projects().iter().map(project_item).collect()
     };
 
-    let title = if searching {
-        format!(
+    let mut title_spans: Vec<Span> = Vec::new();
+    if searching {
+        title_spans.push(Span::raw(format!(
             " Projects ({}/{}) ",
             project_list.filtered_indices().len(),
             project_list.projects().len()
-        )
+        )));
     } else {
-        " Projects ".to_string()
-    };
+        let mut badges = Vec::new();
+        if total_perm > 0 {
+            badges.push(format!("{total_perm} perm"));
+        }
+        if total_askuser > 0 {
+            badges.push(format!("{total_askuser} ask"));
+        }
+        if badges.is_empty() {
+            title_spans.push(Span::raw(" Projects "));
+        } else {
+            title_spans.push(Span::raw(format!(" Projects ({}) ", badges.join(", "))));
+        }
+    }
+    if !other_perms.is_empty() {
+        let parts: Vec<String> = other_perms
+            .iter()
+            .map(|(name, count)| format!("{name}:{count}"))
+            .collect();
+        title_spans.push(Span::styled(
+            format!("[{}]", parts.join(", ")),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
 
     let list = List::new(items)
         .block(
             Block::default()
-                .title(title)
+                .title(Line::from(title_spans))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color)),
         )

@@ -131,21 +131,24 @@ pub(in crate::tui) fn ui(frame: &mut ratatui::Frame, state: &mut ScreenState) {
         Focus::TaskList | Focus::ListSearch | Focus::ProjectList
     );
     let search_query = state.search_input.buffer();
+    let total_askuser = state.current_project_askuser_count();
+    let total_perm = state
+        .current_project_perm_count()
+        .saturating_sub(total_askuser);
+    let other_perms = state.other_project_perm_counts();
     if state.project_list.is_visible() {
         task_panel::render_project_list(
             frame,
             &state.focus,
             &mut state.project_list,
+            total_perm,
+            total_askuser,
+            &other_perms,
             &search_query,
             outer[1],
             focused_task_list,
         );
     } else {
-        let total_askuser = state.current_project_askuser_count();
-        let total_perm = state
-            .current_project_perm_count()
-            .saturating_sub(total_askuser);
-        let other_perms = state.other_project_perm_counts();
         // Use direct field access to avoid borrow conflict with active_project_name
         let active_name = state
             .active_project_name
