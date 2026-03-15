@@ -88,6 +88,8 @@ pub enum HookEvent {
     ExoMessage {
         message: String,
     },
+    /// Signal the dashboard to restart (exit code 42).
+    DashRestart,
     /// Catch-all for hook messages we don't recognise.
     #[allow(dead_code)]
     Unknown(Value),
@@ -135,6 +137,11 @@ impl<'de> serde::Deserialize<'de> for HookEvent {
         if value.get("_exo_message").and_then(|v| v.as_bool()) == Some(true) {
             let message = value["message"].as_str().unwrap_or("").to_string();
             return Ok(HookEvent::ExoMessage { message });
+        }
+
+        // Dashboard restart signal from the CLI
+        if value.get("_dash_restart").and_then(|v| v.as_bool()) == Some(true) {
+            return Ok(HookEvent::DashRestart);
         }
 
         // Legacy events: boolean flag discriminators
@@ -341,6 +348,24 @@ pub fn send_exo_message(project_root: &std::path::Path, message: &str) -> anyhow
         anyhow::bail!("{err}");
     }
 
+    Ok(())
+}
+
+/// Signal the dashboard to restart (exit with code 42) via the socket.
+pub fn send_restart_signal(project_root: &std::path::Path) -> anyhow::Result<()> {
+    let sock = read_socket_breadcrumb(project_root)
+        .map(PathBuf::from)
+        .unwrap_or_else(session_socket_path);
+
+    let payload = serde_json::json!({ "_dash_restart": true });
+
+    let mut stream = UnixStream::connect(&sock).context("dashboard is not running")?;
+    stream
+        .write_all(payload.to_string().as_bytes())
+        .context("failed to write to socket")?;
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .context("failed to shutdown write")?;
     Ok(())
 }
 

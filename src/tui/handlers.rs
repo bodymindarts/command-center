@@ -175,6 +175,11 @@ pub(super) async fn handle_global_keys<R: Runtime>(
         return true;
     }
 
+    if kb.restart.matches(&key) {
+        state.request_restart();
+        return true;
+    }
+
     if kb.cycle_permissions.matches(&key) {
         return handle_cycle_permissions(state, app).await;
     }
@@ -915,6 +920,10 @@ pub(super) async fn dispatch_hook_event<R: Runtime>(
         }
         HookEvent::ExoMessage { message } => {
             handle_hook_exo_message(state, exo_session, app, stream, &message, tg_tx).await;
+        }
+        HookEvent::DashRestart => {
+            drop(stream);
+            state.request_restart();
         }
         HookEvent::Unknown(_) => {}
     }

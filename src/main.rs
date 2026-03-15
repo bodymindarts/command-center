@@ -93,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
             resume, caffeinate, ..
         } => cmd_start(resume.as_deref(), caffeinate, skip_permissions)?,
         Command::Goto { id } => cmd_goto(app, &id).await?,
+        Command::RestartDash => cmd_restart_dash(&app)?,
         Command::Send { project, args } => match (project, args.len()) {
             (None, 2) if args[0] == "exo" => cmd_exo_send(&app, &args[1])?,
             (None, 2) => cmd_send(app, &args[0], &args[1]).await?,
@@ -144,7 +145,11 @@ async fn cmd_dash<R: Runtime>(
 
     let result = tui::run(app, resume, caffeinate).await;
     mcp::remove_mcp_url_breadcrumb(&project_root);
-    result
+    match result {
+        Ok(tui::ExitAction::Restart) => std::process::exit(tui::RESTART_EXIT_CODE),
+        Ok(tui::ExitAction::Quit) => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 struct SpawnOpts {
@@ -389,15 +394,23 @@ fn cmd_start(
         dash_cmd.push_str(" --dangerously-skip-permissions");
     }
 
+    // Wrap the dashboard command in a restart loop: exit code 42 means restart.
+    let restart_code = tui::RESTART_EXIT_CODE;
+    let loop_cmd = format!(
+        "while true; do {dash_cmd}; code=$?; \
+         if [ \"$code\" -ne {restart_code} ]; then exit $code; fi; \
+         echo 'Restarting dashboard...'; sleep 0.2; done"
+    );
+
     if std::env::var("TMUX").is_ok() {
         let top_pane = runtime::tmux_cmd(&["display-message", "-p", "#{pane_id}"])?;
         runtime::tmux_cmd(&["split-window", "-v", "-t", &top_pane])?;
         runtime::tmux_cmd(&["resize-pane", "-t", &top_pane, "-D", "8"])?;
-        runtime::tmux_cmd(&["send-keys", "-t", &top_pane, &dash_cmd, "Enter"])?;
+        runtime::tmux_cmd(&["send-keys", "-t", &top_pane, &loop_cmd, "Enter"])?;
     } else {
         runtime::tmux_cmd(&["new-session", "-d", "-s", "exo", "-n", "exo"])?;
         let top_pane = runtime::tmux_cmd(&["list-panes", "-t", "exo:exo", "-F", "#{pane_id}"])?;
-        runtime::tmux_cmd(&["send-keys", "-t", &top_pane, &dash_cmd, "Enter"])?;
+        runtime::tmux_cmd(&["send-keys", "-t", &top_pane, &loop_cmd, "Enter"])?;
         runtime::tmux_cmd(&["split-window", "-v", "-t", "exo:exo"])?;
         runtime::tmux_cmd(&["resize-pane", "-t", &top_pane, "-D", "8"])?;
 
@@ -410,6 +423,12 @@ fn cmd_start(
         }
     }
 
+    Ok(())
+}
+
+fn cmd_restart_dash(app: &ClatApp<impl Runtime>) -> anyhow::Result<()> {
+    crate::permission::send_restart_signal(app.project_root())?;
+    println!("Restart signal sent to dashboard");
     Ok(())
 }
 

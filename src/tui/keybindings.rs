@@ -69,6 +69,10 @@ fn parse_key_code(s: &str) -> Result<KeyCode, String> {
         "pageup" => Ok(KeyCode::PageUp),
         "pagedown" => Ok(KeyCode::PageDown),
         "space" => Ok(KeyCode::Char(' ')),
+        s if s.starts_with('f') && s.len() >= 2 => s[1..]
+            .parse::<u8>()
+            .map(KeyCode::F)
+            .map_err(|_| format!("unknown key: {s}")),
         s if s.len() == 1 => Ok(KeyCode::Char(s.chars().next().unwrap())),
         other => Err(format!("unknown key: {other}")),
     }
@@ -134,6 +138,7 @@ impl fmt::Display for KeyCombo {
             KeyCode::PageDown => write!(f, "PgDn"),
             KeyCode::Home => write!(f, "Home"),
             KeyCode::End => write!(f, "End"),
+            KeyCode::F(n) => write!(f, "F{n}"),
             _ => write!(f, "?"),
         }
     }
@@ -190,6 +195,7 @@ impl<'de> Deserialize<'de> for Binding {
 #[serde(default)]
 pub struct GlobalBindings {
     pub quit: Binding,
+    pub restart: Binding,
     pub suspend: Binding,
     pub cycle_permissions: Binding,
     pub perm_approve: Binding,
@@ -203,6 +209,7 @@ impl Default for GlobalBindings {
     fn default() -> Self {
         Self {
             quit: Binding::single(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            restart: Binding::single(KeyCode::F(5), KeyModifiers::empty()),
             suspend: Binding::single(KeyCode::Char('z'), KeyModifiers::CONTROL),
             cycle_permissions: Binding::single(KeyCode::Char('p'), KeyModifiers::CONTROL),
             perm_approve: Binding::single(KeyCode::Char('y'), KeyModifiers::CONTROL),

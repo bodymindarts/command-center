@@ -29,6 +29,7 @@ pub struct ScreenState {
     /// Persists across navigation so returning to ExO restores the right panel.
     exo_show_project_list: bool,
     should_quit: bool,
+    should_restart: bool,
     pub(in crate::tui) focus: Focus,
     pub permissions: PermissionStore,
     /// Transient error message shown in the prompt bar. Cleared on next keypress.
@@ -57,6 +58,7 @@ impl ScreenState {
             project_list: ProjectListState::new(),
             exo_show_project_list: true,
             should_quit: false,
+            should_restart: false,
             focus: Focus::ChatInput,
             permissions: PermissionStore::new(),
             status_error: None,
@@ -80,6 +82,15 @@ impl ScreenState {
 
     pub fn should_quit(&self) -> bool {
         self.should_quit
+    }
+
+    pub fn request_restart(&mut self) {
+        self.should_restart = true;
+        self.should_quit = true;
+    }
+
+    pub fn should_restart(&self) -> bool {
+        self.should_restart
     }
 
     // ── Focus ────────────────────────────────────────────────────────
