@@ -132,9 +132,6 @@ pub enum Command {
         dangerously_skip_permissions: bool,
     },
 
-    /// Restart the running dashboard (exit code 42 triggers respawn)
-    RestartDash,
-
     /// Send a message to a running agent's tmux pane or a project PM
     Send {
         /// Send to a project's PM session instead of a task

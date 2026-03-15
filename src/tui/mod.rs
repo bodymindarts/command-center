@@ -23,17 +23,6 @@ use tokio::sync::mpsc;
 
 use crate::app::ClatApp;
 use crate::assistant::{AssistantEvent, AssistantSession, EXO_SYSTEM_PROMPT, SessionKey};
-
-/// Exit code used to signal the wrapper that the dashboard should be restarted.
-pub const RESTART_EXIT_CODE: i32 = 42;
-
-/// What the dashboard decided to do when exiting.
-pub enum ExitAction {
-    /// Normal quit — process should exit 0.
-    Quit,
-    /// Restart requested — process should exit with RESTART_EXIT_CODE.
-    Restart,
-}
 use crate::permission::HookEvent;
 use crate::primitives::ProjectId;
 use crate::runtime::Runtime;
@@ -134,7 +123,7 @@ pub async fn run<R: Runtime>(
     app: Arc<ClatApp<R>>,
     resume_session: Option<&str>,
     caffeinate: bool,
-) -> anyhow::Result<ExitAction> {
+) -> anyhow::Result<()> {
     let skip_permissions = app.skip_permissions();
     let mut caffeinate_child = if caffeinate { spawn_caffeinate() } else { None };
 
@@ -353,7 +342,7 @@ async fn run_loop<R: Runtime>(
     assistant_tx: mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
     skip_permissions: bool,
     boot_projects: Vec<crate::project::Project>,
-) -> anyhow::Result<ExitAction> {
+) -> anyhow::Result<()> {
     let mut event_stream = crossterm::event::EventStream::new();
     let mut last_tick = Instant::now();
     let mut tg_perm = handlers::TgPermState {
@@ -476,11 +465,7 @@ async fn run_loop<R: Runtime>(
         }
 
         if state.should_quit() {
-            return if state.should_restart() {
-                Ok(ExitAction::Restart)
-            } else {
-                Ok(ExitAction::Quit)
-            };
+            return Ok(());
         }
     }
 }
