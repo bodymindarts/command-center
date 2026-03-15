@@ -28,8 +28,8 @@ Do not wait for further instructions. Do not say "standing by" or "ready".
    set to {{ interval }}, **name** set to "poll-loop", and a label like
    "monitor check N/{{ max_checks }}", then **STOP and wait**. Do not send
    further messages until you receive a `[Watch: ...] Timer fired.` notification.
-   Using a consistent **name** ensures any new watch (including pause watches)
-   auto-replaces the previous one, preventing watch stacking.
+   Using a consistent **name** ensures the existing watch is rescheduled
+   in place rather than stacking duplicate watches.
 4. If **done or failed** → report the final result clearly and exit.
 
 When the timer notification arrives (it looks like `[Watch: <label>] Timer fired.`),

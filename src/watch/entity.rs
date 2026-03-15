@@ -3,7 +3,7 @@ use derive_builder::Builder;
 use es_entity::*;
 use serde::{Deserialize, Serialize};
 
-use crate::primitives::{WatchId, WatchStatus};
+use crate::primitives::{CheckType, TaskId, WatchId, WatchStatus};
 
 use super::error::WatchError;
 
@@ -15,19 +15,22 @@ use super::error::WatchError;
 pub enum WatchEvent {
     Initialized {
         id: WatchId,
-        task_id: String,
-        name: Option<String>,
+        task_id: TaskId,
+        name: String,
         label: String,
         job_id: String,
-        check_type: String,
+        check_type: CheckType,
         fires_at: String,
     },
     Fired,
     Cancelled {
         reason: String,
     },
-    Replaced {
-        replaced_by: WatchId,
+    Rescheduled {
+        label: String,
+        job_id: String,
+        check_type: CheckType,
+        fires_at: String,
     },
 }
 
@@ -37,11 +40,11 @@ pub enum WatchEvent {
 #[builder(pattern = "owned", build_fn(error = "EntityHydrationError"))]
 pub struct Watch {
     pub id: WatchId,
-    pub task_id: String,
-    pub name: Option<String>,
+    pub task_id: TaskId,
+    pub name: String,
     pub label: String,
     pub job_id: String,
-    pub check_type: String,
+    pub check_type: CheckType,
     pub fires_at: DateTime<Utc>,
     pub status: WatchStatus,
     #[builder(default)]
@@ -93,11 +96,11 @@ impl TryFromEvents<WatchEvent> for Watch {
                         .with_timezone(&Utc);
                     builder = builder
                         .id(*id)
-                        .task_id(task_id.clone())
+                        .task_id(*task_id)
                         .name(name.clone())
                         .label(label.clone())
                         .job_id(job_id.clone())
-                        .check_type(check_type.clone())
+                        .check_type(*check_type)
                         .fires_at(fires_at_dt)
                         .status(WatchStatus::Active);
                 }
@@ -107,8 +110,21 @@ impl TryFromEvents<WatchEvent> for Watch {
                 WatchEvent::Cancelled { .. } => {
                     builder = builder.status(WatchStatus::Cancelled);
                 }
-                WatchEvent::Replaced { .. } => {
-                    builder = builder.status(WatchStatus::Replaced);
+                WatchEvent::Rescheduled {
+                    label,
+                    job_id,
+                    check_type,
+                    fires_at,
+                } => {
+                    let fires_at_dt = DateTime::parse_from_rfc3339(fires_at)
+                        .unwrap_or_default()
+                        .with_timezone(&Utc);
+                    builder = builder
+                        .label(label.clone())
+                        .job_id(job_id.clone())
+                        .check_type(*check_type)
+                        .fires_at(fires_at_dt)
+                        .status(WatchStatus::Active);
                 }
             }
         }
@@ -121,11 +137,11 @@ impl TryFromEvents<WatchEvent> for Watch {
 
 pub struct NewWatch {
     pub id: WatchId,
-    pub task_id: String,
-    pub name: Option<String>,
+    pub task_id: TaskId,
+    pub name: String,
     pub label: String,
     pub job_id: String,
-    pub check_type: String,
+    pub check_type: CheckType,
     pub fires_at: DateTime<Utc>,
 }
 
@@ -176,12 +192,23 @@ impl Watch {
         Idempotent::Executed(())
     }
 
-    pub fn replace(&mut self, replaced_by: WatchId) -> Idempotent<()> {
-        if !self.status.is_active() {
-            return Idempotent::AlreadyApplied;
-        }
-        self.status = WatchStatus::Replaced;
-        self.events.push(WatchEvent::Replaced { replaced_by });
-        Idempotent::Executed(())
+    pub fn reschedule(
+        &mut self,
+        label: &str,
+        job_id: &str,
+        check_type: CheckType,
+        fires_at: DateTime<Utc>,
+    ) {
+        self.label = label.to_string();
+        self.job_id = job_id.to_string();
+        self.check_type = check_type;
+        self.fires_at = fires_at;
+        self.status = WatchStatus::Active;
+        self.events.push(WatchEvent::Rescheduled {
+            label: label.to_string(),
+            job_id: job_id.to_string(),
+            check_type,
+            fires_at: fires_at.to_rfc3339(),
+        });
     }
 }

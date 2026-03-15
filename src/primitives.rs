@@ -111,7 +111,6 @@ pub enum WatchStatus {
     Active,
     Fired,
     Cancelled,
-    Replaced,
 }
 
 impl WatchStatus {
@@ -120,7 +119,6 @@ impl WatchStatus {
             Self::Active => "active",
             Self::Fired => "fired",
             Self::Cancelled => "cancelled",
-            Self::Replaced => "replaced",
         }
     }
 
@@ -141,10 +139,47 @@ impl From<String> for WatchStatus {
             "active" => Self::Active,
             "fired" => Self::Fired,
             "cancelled" => Self::Cancelled,
-            "replaced" => Self::Replaced,
             other => {
                 tracing::warn!(value = other, "unknown WatchStatus, defaulting to Active");
                 Self::Active
+            }
+        }
+    }
+}
+
+// === CheckType ===
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[serde(rename_all = "snake_case")]
+#[sqlx(rename_all = "snake_case")]
+pub enum CheckType {
+    Timer,
+    Command,
+}
+
+impl CheckType {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Timer => "timer",
+            Self::Command => "command",
+        }
+    }
+}
+
+impl fmt::Display for CheckType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<String> for CheckType {
+    fn from(s: String) -> Self {
+        match s.as_str() {
+            "timer" => Self::Timer,
+            "command" => Self::Command,
+            other => {
+                tracing::warn!(value = other, "unknown CheckType, defaulting to Timer");
+                Self::Timer
             }
         }
     }

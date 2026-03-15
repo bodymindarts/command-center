@@ -1,7 +1,7 @@
 use es_entity::*;
 use sqlx::SqlitePool;
 
-use crate::primitives::{WatchId, WatchStatus};
+use crate::primitives::{TaskId, WatchId, WatchStatus};
 
 use super::entity::{Watch, WatchEvent};
 
@@ -14,8 +14,8 @@ const ALL: usize = i64::MAX as usize;
     tbl = "watches",
     events_tbl = "watch_events",
     columns(
-        task_id(ty = "String", list_for(by(created_at))),
-        name(ty = "Option<String>"),
+        task_id(ty = "TaskId", update(persist = false), list_for(by(created_at))),
+        name(ty = "String", update(persist = false)),
         status(
             ty = "WatchStatus",
             create(accessor = "status()"),
@@ -37,13 +37,13 @@ impl WatchRepo {
     /// Returns None if no active watch with that name exists.
     pub async fn find_active_by_task_and_name(
         &self,
-        task_id: &str,
+        task_id: TaskId,
         name: &str,
     ) -> anyhow::Result<Option<Watch>> {
         let status = WatchStatus::Active;
         let (watches, _) = es_query!(
             "SELECT id FROM watches WHERE task_id = $1 AND name = $2 AND status = $3 LIMIT 1",
-            task_id as &str,
+            task_id as TaskId,
             name as &str,
             status as WatchStatus,
         )
@@ -54,11 +54,11 @@ impl WatchRepo {
     }
 
     /// List all active watches for a given task.
-    pub async fn list_active_for_task(&self, task_id: &str) -> anyhow::Result<Vec<Watch>> {
+    pub async fn list_active_for_task(&self, task_id: TaskId) -> anyhow::Result<Vec<Watch>> {
         let status = WatchStatus::Active;
         let ret = es_query!(
             "SELECT id FROM watches WHERE task_id = $1 AND status = $2 ORDER BY created_at ASC",
-            task_id as &str,
+            task_id as TaskId,
             status as WatchStatus,
         )
         .fetch_n(self.pool(), ALL)

@@ -12,7 +12,7 @@ use chrono::Utc;
 use job::{Job, JobCompletion, JobInitializer, JobRunner, JobSpawner};
 
 use crate::app::ClatApp;
-use crate::primitives::WatchId;
+use crate::primitives::{CheckType, TaskId, WatchId};
 use crate::runtime::Runtime;
 
 /// Commands allowed in the `command` check variant.
@@ -60,9 +60,9 @@ pub struct CommandConfig {
 #[derive(Debug, serde::Serialize)]
 pub struct WatchSummary {
     pub id: String,
-    pub name: Option<String>,
+    pub name: String,
     pub label: String,
-    pub check_type: String,
+    pub check_type: CheckType,
     pub fires_at: String,
     pub status: String,
 }
@@ -72,7 +72,7 @@ pub struct WatchSummary {
 pub struct WatchService {
     timer_spawner: JobSpawner<TimerConfig>,
     command_spawner: JobSpawner<CommandConfig>,
-    watches: WatchRepo,
+    repo: WatchRepo,
     jobs: job::Jobs,
 }
 
@@ -86,41 +86,47 @@ impl WatchService {
         Self {
             timer_spawner,
             command_spawner,
-            watches,
+            repo: watches,
             jobs,
         }
     }
 
     pub async fn create_timer(
         &self,
-        task_id: &str,
+        task_id: TaskId,
         label: &str,
         delay_seconds: i64,
         context: Option<serde_json::Value>,
-        name: Option<&str>,
+        name: &str,
     ) -> anyhow::Result<String> {
-        let watch_id = WatchId::new();
         let job_id = job::JobId::new();
         let scheduled_at = Utc::now() + chrono::Duration::seconds(delay_seconds);
 
-        // Replace semantics: if a named watch already exists, mark it as replaced.
-        if let Some(watch_name) = name {
-            self.replace_existing(task_id, watch_name, watch_id).await?;
-        }
-
-        // Create the Watch entity.
-        let new_watch = NewWatch {
-            id: watch_id,
-            task_id: task_id.to_string(),
-            name: name.map(|s| s.to_string()),
-            label: label.to_string(),
-            job_id: job_id.to_string(),
-            check_type: "timer".to_string(),
-            fires_at: scheduled_at,
+        let watch_id = if let Some(mut existing) = self
+            .repo
+            .find_active_by_task_and_name(task_id, name)
+            .await?
+        {
+            let old_job_id = existing.job_id.clone();
+            existing.reschedule(label, &job_id.to_string(), CheckType::Timer, scheduled_at);
+            self.repo.update(&mut existing).await?;
+            self.try_cancel_job(&old_job_id).await;
+            existing.id
+        } else {
+            let id = WatchId::new();
+            let new_watch = NewWatch {
+                id,
+                task_id,
+                name: name.to_string(),
+                label: label.to_string(),
+                job_id: job_id.to_string(),
+                check_type: CheckType::Timer,
+                fires_at: scheduled_at,
+            };
+            self.repo.create(new_watch).await?;
+            id
         };
-        self.watches.create(new_watch).await?;
 
-        // Spawn the job.
         let config = TimerConfig {
             task_id: task_id.to_string(),
             label: label.to_string(),
@@ -135,37 +141,43 @@ impl WatchService {
 
     pub async fn create_command(
         &self,
-        task_id: &str,
+        task_id: TaskId,
         label: &str,
         cmd: &str,
         delay_seconds: i64,
         context: Option<serde_json::Value>,
-        name: Option<&str>,
+        name: &str,
     ) -> anyhow::Result<String> {
         validate_command(cmd)?;
 
-        let watch_id = WatchId::new();
         let job_id = job::JobId::new();
         let scheduled_at = Utc::now() + chrono::Duration::seconds(delay_seconds);
 
-        // Replace semantics: if a named watch already exists, mark it as replaced.
-        if let Some(watch_name) = name {
-            self.replace_existing(task_id, watch_name, watch_id).await?;
-        }
-
-        // Create the Watch entity.
-        let new_watch = NewWatch {
-            id: watch_id,
-            task_id: task_id.to_string(),
-            name: name.map(|s| s.to_string()),
-            label: label.to_string(),
-            job_id: job_id.to_string(),
-            check_type: "command".to_string(),
-            fires_at: scheduled_at,
+        let watch_id = if let Some(mut existing) = self
+            .repo
+            .find_active_by_task_and_name(task_id, name)
+            .await?
+        {
+            let old_job_id = existing.job_id.clone();
+            existing.reschedule(label, &job_id.to_string(), CheckType::Command, scheduled_at);
+            self.repo.update(&mut existing).await?;
+            self.try_cancel_job(&old_job_id).await;
+            existing.id
+        } else {
+            let id = WatchId::new();
+            let new_watch = NewWatch {
+                id,
+                task_id,
+                name: name.to_string(),
+                label: label.to_string(),
+                job_id: job_id.to_string(),
+                check_type: CheckType::Command,
+                fires_at: scheduled_at,
+            };
+            self.repo.create(new_watch).await?;
+            id
         };
-        self.watches.create(new_watch).await?;
 
-        // Spawn the job.
         let config = CommandConfig {
             task_id: task_id.to_string(),
             label: label.to_string(),
@@ -180,9 +192,9 @@ impl WatchService {
     }
 
     /// Cancel a specific watch by ID prefix (scoped to the calling task).
-    pub async fn cancel_watch(&self, task_id: &str, watch_id_prefix: &str) -> anyhow::Result<()> {
+    pub async fn cancel_watch(&self, task_id: TaskId, watch_id_prefix: &str) -> anyhow::Result<()> {
         let mut watch = self
-            .watches
+            .repo
             .maybe_find_by_id_prefix(watch_id_prefix)
             .await?
             .ok_or_else(|| anyhow::anyhow!("watch not found: {watch_id_prefix}"))?;
@@ -196,7 +208,7 @@ impl WatchService {
         }
 
         let _ = watch.cancel("cancelled by agent");
-        self.watches.update(&mut watch).await?;
+        self.repo.update(&mut watch).await?;
 
         // Best-effort cancel the underlying job.
         self.try_cancel_job(&watch.job_id).await;
@@ -204,8 +216,8 @@ impl WatchService {
     }
 
     /// List all active watches for a task.
-    pub async fn list_watches(&self, task_id: &str) -> anyhow::Result<Vec<WatchSummary>> {
-        let watches = self.watches.list_active_for_task(task_id).await?;
+    pub async fn list_watches(&self, task_id: TaskId) -> anyhow::Result<Vec<WatchSummary>> {
+        let watches = self.repo.list_active_for_task(task_id).await?;
         Ok(watches
             .into_iter()
             .map(|w| WatchSummary {
@@ -221,11 +233,11 @@ impl WatchService {
 
     /// Check if a watch (by job_id) is still active. Used by runners before delivery.
     pub async fn check_and_fire(&self, job_id: &str) -> anyhow::Result<bool> {
-        let watch = self.watches.find_by_job_id(job_id.to_string()).await.ok();
+        let watch = self.repo.find_by_job_id(job_id.to_string()).await.ok();
         match watch {
             Some(mut w) if w.status.is_active() => match w.fire() {
                 Ok(_) => {
-                    self.watches.update(&mut w).await?;
+                    self.repo.update(&mut w).await?;
                     Ok(true)
                 }
                 Err(_) => Ok(false),
@@ -237,28 +249,6 @@ impl WatchService {
                 Ok(true)
             }
         }
-    }
-
-    /// Replace an existing active watch with the given (task_id, name).
-    async fn replace_existing(
-        &self,
-        task_id: &str,
-        name: &str,
-        replaced_by: WatchId,
-    ) -> anyhow::Result<()> {
-        if let Some(mut existing) = self
-            .watches
-            .find_active_by_task_and_name(task_id, name)
-            .await?
-        {
-            let job_id = existing.job_id.clone();
-            let _ = existing.replace(replaced_by);
-            self.watches.update(&mut existing).await?;
-
-            // Best-effort cancel the underlying job.
-            self.try_cancel_job(&job_id).await;
-        }
-        Ok(())
     }
 
     /// Best-effort cancel a job by its string ID.

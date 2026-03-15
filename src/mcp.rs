@@ -46,7 +46,7 @@ impl<R: Runtime> ClatMcpServer<R> {
     fn create_watch_route(app: Arc<ClatApp<R>>) -> ToolRoute<Self> {
         let schema = serde_json::json!({
             "type": "object",
-            "required": ["label", "check"],
+            "required": ["label", "check", "name"],
             "properties": {
                 "label": {
                     "type": "string",
@@ -54,7 +54,7 @@ impl<R: Runtime> ClatMcpServer<R> {
                 },
                 "name": {
                     "type": "string",
-                    "description": "Optional watch name. If a watch with this name already exists for your task, it will be replaced. Use this to prevent watch stacking in polling loops."
+                    "description": "Uniquely identifies the watch. Creating a watch with an existing name reschedules it. Use the same name in polling loops to prevent watch stacking."
                 },
                 "check": {
                     "oneOf": [
@@ -110,14 +110,21 @@ impl<R: Runtime> ClatMcpServer<R> {
                 let app = Arc::clone(&app);
                 Box::pin(async move {
                     // Extract task_id from JWT claims via request extensions.
-                    let task_id = ctx
+                    let task_id_str = ctx
                         .request_context
                         .extensions
                         .get::<axum::http::request::Parts>()
                         .and_then(|parts| parts.extensions.get::<crate::jwt::AgentClaims>())
                         .map(|c| c.sub.as_str())
-                        .unwrap_or("unknown")
-                        .to_string();
+                        .unwrap_or("unknown");
+                    let task_id: crate::primitives::TaskId = match task_id_str.parse() {
+                        Ok(id) => id,
+                        Err(_) => {
+                            return Ok(CallToolResult::error(vec![Content::text(format!(
+                                "Invalid task_id: {task_id_str}"
+                            ))]));
+                        }
+                    };
 
                     let args = ctx.arguments.unwrap_or_default();
                     let label = args
@@ -129,7 +136,14 @@ impl<R: Runtime> ClatMcpServer<R> {
                         .and_then(|v| v.as_i64())
                         .unwrap_or(30);
                     let context = args.get("context").cloned();
-                    let watch_name = args.get("name").and_then(|v| v.as_str());
+                    let watch_name = match args.get("name").and_then(|v| v.as_str()) {
+                        Some(n) => n,
+                        None => {
+                            return Ok(CallToolResult::error(vec![Content::text(
+                                "Missing required field 'name'",
+                            )]));
+                        }
+                    };
 
                     let check_name = args
                         .get("check")
@@ -152,12 +166,12 @@ impl<R: Runtime> ClatMcpServer<R> {
                                 }
                             };
                             app.watch()
-                                .create_command(&task_id, label, cmd, delay, context, watch_name)
+                                .create_command(task_id, label, cmd, delay, context, watch_name)
                                 .await
                         }
                         _ => {
                             app.watch()
-                                .create_timer(&task_id, label, delay, context, watch_name)
+                                .create_timer(task_id, label, delay, context, watch_name)
                                 .await
                         }
                     };
@@ -206,14 +220,21 @@ impl<R: Runtime> ClatMcpServer<R> {
             move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
                 let app = Arc::clone(&app);
                 Box::pin(async move {
-                    let task_id = ctx
+                    let task_id_str = ctx
                         .request_context
                         .extensions
                         .get::<axum::http::request::Parts>()
                         .and_then(|parts| parts.extensions.get::<crate::jwt::AgentClaims>())
                         .map(|c| c.sub.as_str())
-                        .unwrap_or("unknown")
-                        .to_string();
+                        .unwrap_or("unknown");
+                    let task_id: crate::primitives::TaskId = match task_id_str.parse() {
+                        Ok(id) => id,
+                        Err(_) => {
+                            return Ok(CallToolResult::error(vec![Content::text(format!(
+                                "Invalid task_id: {task_id_str}"
+                            ))]));
+                        }
+                    };
 
                     let args = ctx.arguments.unwrap_or_default();
                     let watch_id = match args.get("watch_id").and_then(|v| v.as_str()) {
@@ -225,7 +246,7 @@ impl<R: Runtime> ClatMcpServer<R> {
                         }
                     };
 
-                    match app.watch().cancel_watch(&task_id, watch_id).await {
+                    match app.watch().cancel_watch(task_id, watch_id).await {
                         Ok(()) => {
                             let response = serde_json::json!({
                                 "status": "cancelled",
@@ -263,16 +284,23 @@ impl<R: Runtime> ClatMcpServer<R> {
             move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
                 let app = Arc::clone(&app);
                 Box::pin(async move {
-                    let task_id = ctx
+                    let task_id_str = ctx
                         .request_context
                         .extensions
                         .get::<axum::http::request::Parts>()
                         .and_then(|parts| parts.extensions.get::<crate::jwt::AgentClaims>())
                         .map(|c| c.sub.as_str())
-                        .unwrap_or("unknown")
-                        .to_string();
+                        .unwrap_or("unknown");
+                    let task_id: crate::primitives::TaskId = match task_id_str.parse() {
+                        Ok(id) => id,
+                        Err(_) => {
+                            return Ok(CallToolResult::error(vec![Content::text(format!(
+                                "Invalid task_id: {task_id_str}"
+                            ))]));
+                        }
+                    };
 
-                    match app.watch().list_watches(&task_id).await {
+                    match app.watch().list_watches(task_id).await {
                         Ok(watches) => Ok(CallToolResult::success(vec![Content::text(
                             serde_json::to_string_pretty(&watches).unwrap(),
                         )])),
