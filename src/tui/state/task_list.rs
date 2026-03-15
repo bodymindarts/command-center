@@ -217,11 +217,11 @@ impl TaskListState {
     }
 
     pub fn scroll_down_tasks(&mut self) {
-        self.detail_scroll = self.detail_scroll.saturating_add(10);
+        self.detail_scroll = self.detail_scroll.saturating_sub(10);
     }
 
     pub fn scroll_up_tasks(&mut self) {
-        self.detail_scroll = self.detail_scroll.saturating_sub(10);
+        self.detail_scroll = self.detail_scroll.saturating_add(10);
     }
 
     /// Resolve the currently selected filtered index back to the real task index.

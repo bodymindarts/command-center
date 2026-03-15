@@ -913,31 +913,31 @@ mod tests {
     // ── scroll_up_tasks / scroll_down_tasks ───────────────────────
 
     #[test]
-    fn scroll_down_tasks_increments() {
+    fn scroll_up_tasks_increments() {
         let mut s = state_with_tasks(0);
-        s.scroll_down_tasks();
+        s.scroll_up_tasks();
         assert_eq!(s.active_state().task_list.detail_scroll(), 10);
-        s.scroll_down_tasks();
-        assert_eq!(s.active_state().task_list.detail_scroll(), 20);
-    }
-
-    #[test]
-    fn scroll_up_tasks_decrements() {
-        let mut s = state_with_tasks(0);
-        // Scroll down first to set a value we can decrement
-        s.scroll_down_tasks(); // 10
-        s.scroll_down_tasks(); // 20
-        s.scroll_down_tasks(); // 30 (close enough to 25)
         s.scroll_up_tasks();
         assert_eq!(s.active_state().task_list.detail_scroll(), 20);
     }
 
     #[test]
-    fn scroll_up_tasks_saturates_at_zero() {
+    fn scroll_down_tasks_decrements() {
         let mut s = state_with_tasks(0);
-        s.scroll_down_tasks(); // 10
-        s.scroll_up_tasks(); // 0
-        s.scroll_up_tasks(); // still 0
+        // Scroll up first to set a value we can decrement
+        s.scroll_up_tasks(); // 10
+        s.scroll_up_tasks(); // 20
+        s.scroll_up_tasks(); // 30
+        s.scroll_down_tasks();
+        assert_eq!(s.active_state().task_list.detail_scroll(), 20);
+    }
+
+    #[test]
+    fn scroll_down_tasks_saturates_at_zero() {
+        let mut s = state_with_tasks(0);
+        s.scroll_up_tasks(); // 10
+        s.scroll_down_tasks(); // 0
+        s.scroll_down_tasks(); // still 0
         assert_eq!(s.active_state().task_list.detail_scroll(), 0);
     }
 
