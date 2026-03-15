@@ -199,9 +199,9 @@ fn render_chat_messages(
     }
 }
 
-/// Strip the `[from agent ...] ` prefix from message text for display.
+/// Strip the `[from <name> (<role>)] ` prefix from message text for display.
 fn strip_agent_prefix(text: &str) -> &str {
-    if let Some(rest) = text.strip_prefix("[from agent ")
+    if let Some(rest) = text.strip_prefix("[from ")
         && let Some(end) = rest.find("] ")
     {
         return &rest[end + 2..];
@@ -209,21 +209,19 @@ fn strip_agent_prefix(text: &str) -> &str {
     text
 }
 
-/// Extract sender label from agent messages formatted as `[from agent <id> (<role>)] <msg>`.
-/// Returns the display label (e.g. "monitor@019cee84") if the prefix is found.
+/// Extract sender label from agent messages formatted as `[from <name> (<role>)] <msg>`.
+/// Returns the display label (e.g. "exo-task-monitor") if the prefix is found.
 fn parse_agent_sender(msg: &ChatMessage) -> Option<String> {
     let text = match msg.blocks.first()? {
         ContentBlock::Text(t) => t,
         _ => return None,
     };
-    let rest = text.strip_prefix("[from agent ")?;
+    let rest = text.strip_prefix("[from ")?;
     let end = rest.find(']')?;
     let inner = &rest[..end];
-    // inner is "<uuid> (<role>)"
-    if let Some((id, role_paren)) = inner.split_once(' ') {
-        let role = role_paren.trim_matches(|c| c == '(' || c == ')');
-        let short_id = &id[..id.len().min(8)];
-        Some(format!("{role}@{short_id}"))
+    // inner is "<name> (<role>)"
+    if let Some((name, _role_paren)) = inner.rsplit_once(" (") {
+        Some(name.to_string())
     } else {
         None
     }

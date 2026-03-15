@@ -1039,9 +1039,18 @@ async fn handle_hook_exo_message<R: Runtime>(
     exo_session.send_message(message, session_id.as_deref());
 
     if let Some(tx) = tg_tx {
-        let _ = tx.send(telegram::TgOutbound::Notify {
-            text: format!("📨 {message}"),
-        });
+        // Format: "[from task-name (role)] msg" → "📨 task-name: msg"
+        let tg_text = if let Some(rest) = message.strip_prefix("[from ")
+            && let Some(bracket) = rest.find("] ")
+        {
+            let inner = &rest[..bracket];
+            let name = inner.rsplit_once(" (").map_or(inner, |(n, _)| n);
+            let body = &rest[bracket + 2..];
+            format!("📨 {name}: {body}")
+        } else {
+            format!("📨 {message}")
+        };
+        let _ = tx.send(telegram::TgOutbound::Notify { text: tg_text });
     }
 
     let resp = serde_json::json!({"ok": true});

@@ -754,7 +754,11 @@ impl<R: Runtime> ClatApp<R> {
         message: &str,
     ) -> anyhow::Result<AgentSendOutput> {
         if target == "pm" {
-            let content = format!("[from agent {} ({})] {message}", claims.sub, claims.role);
+            let sender = match self.resolve_task(&claims.sub).await {
+                Ok(task) => task.name.to_string(),
+                Err(_) => claims.sub.clone(),
+            };
+            let content = format!("[from {sender} ({})] {message}", claims.role);
             if let Some(caller_project) = claims.project.as_deref() {
                 // Forward to project PM session via socket (mirrors cmd_project_send)
                 let _ = crate::permission::send_pm_message(
