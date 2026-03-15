@@ -47,4 +47,8 @@ Also send a message if you're blocked or need clarification.
 - All dependencies are declared in flake.nix — never assume binaries are installed
 - If working in a worktree, never access files outside your working directory
 """
-prompt = "{{ task }}"
+prompt = """BEGIN IMMEDIATELY. Do not wait for further instructions. Your research task is:
+
+{{ task }}
+
+Start researching now. When done, report findings via send_message(target="pm", message="Research complete: <summary>")."""

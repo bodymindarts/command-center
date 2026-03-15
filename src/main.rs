@@ -164,12 +164,20 @@ struct SpawnOpts {
 }
 
 async fn cmd_spawn(app: ClatApp<impl Runtime>, opts: SpawnOpts) -> anyhow::Result<()> {
+    // Use Full prompt mode when task params are provided (agent has work to do).
+    // Interactive mode is only for truly interactive sessions (no task).
+    let has_task = opts.params.iter().any(|(k, _)| k == "task");
     let (work_dir_mode, prompt_mode) = if opts.scratch {
         (WorkDirMode::Scratch, PromptMode::Full)
     } else if opts.no_worktree {
+        let pm = if has_task {
+            PromptMode::Full
+        } else {
+            PromptMode::Interactive
+        };
         match opts.repo.as_deref() {
-            Some(dir) => (WorkDirMode::Existing { dir }, PromptMode::Interactive),
-            None => (WorkDirMode::Scratch, PromptMode::Interactive),
+            Some(dir) => (WorkDirMode::Existing { dir }, pm),
+            None => (WorkDirMode::Scratch, pm),
         }
     } else {
         let repo = opts
