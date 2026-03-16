@@ -138,6 +138,10 @@ pub enum Command {
         #[arg(long)]
         project: Option<String>,
 
+        /// Explicit sender name for message attribution (overrides CLAT_SENDER env var)
+        #[arg(long)]
+        sender: Option<String>,
+
         /// [ID] <message> — task ID is required unless --project is provided
         #[arg(required = true, num_args = 1..=2)]
         args: Vec<String>,
@@ -197,6 +201,10 @@ pub enum ProjectAction {
 
         /// Message to send
         message: String,
+
+        /// Explicit sender name for message attribution (overrides CLAT_SENDER env var)
+        #[arg(long)]
+        sender: Option<String>,
     },
 
     /// Show PM conversation log for a project

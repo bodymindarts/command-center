@@ -93,10 +93,14 @@ async fn main() -> anyhow::Result<()> {
             resume, caffeinate, ..
         } => cmd_start(resume.as_deref(), caffeinate, skip_permissions)?,
         Command::Goto { id } => cmd_goto(app, &id).await?,
-        Command::Send { project, args } => match (project, args.len()) {
-            (None, 2) if args[0] == "exo" => cmd_exo_send(&app, &args[1])?,
+        Command::Send {
+            project,
+            sender,
+            args,
+        } => match (project, args.len()) {
+            (None, 2) if args[0] == "exo" => cmd_exo_send(&app, sender.as_deref(), &args[1])?,
             (None, 2) => cmd_send(app, &args[0], &args[1]).await?,
-            (Some(name), 1) => cmd_project_send(&app, &name, &args[0]).await?,
+            (Some(name), 1) => cmd_project_send(&app, sender.as_deref(), &name, &args[0]).await?,
             (None, 1) => bail!("missing message: usage: clat send <ID> <message>"),
             (Some(_), n) if n >= 2 => {
                 bail!("unexpected task ID when --project is provided")
@@ -529,8 +533,12 @@ async fn cmd_project(action: ProjectAction, app: ClatApp<impl Runtime>) -> anyho
             app.delete_project(&name).await?;
             println!("Deleted project '{name}'");
         }
-        ProjectAction::Send { name, message } => {
-            cmd_project_send(&app, &name, &message).await?;
+        ProjectAction::Send {
+            name,
+            message,
+            sender,
+        } => {
+            cmd_project_send(&app, sender.as_deref(), &name, &message).await?;
         }
         ProjectAction::Log { name, last } => {
             cmd_project_log(&app, &name, last).await?;
@@ -562,13 +570,21 @@ async fn cmd_project_log(
     Ok(())
 }
 
-/// Format a message with a `[from sender] ` prefix when CLAT_SENDER is set.
-/// This env var is set by AssistantSession so that PM/ExO `clat send` commands
-/// carry proper attribution (matching the MCP send_message path).
-fn attributed_message(message: &str) -> String {
-    match std::env::var("CLAT_SENDER") {
-        Ok(sender) if !sender.is_empty() => format!("[from {sender}] {message}"),
-        _ => message.to_string(),
+/// Format a message with a `[from sender] ` prefix for attribution.
+///
+/// Resolution order:
+/// 1. Explicit `--sender` CLI flag (when provided)
+/// 2. `CLAT_SENDER` env var (set automatically by AssistantSession for
+///    parent→child identity propagation)
+/// 3. No prefix (unattributed message)
+fn attributed_message(explicit_sender: Option<&str>, message: &str) -> String {
+    let sender = explicit_sender
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("CLAT_SENDER").ok().filter(|s| !s.is_empty()));
+    match sender {
+        Some(sender) => format!("[from {sender}] {message}"),
+        None => message.to_string(),
     }
 }
 
@@ -587,8 +603,12 @@ fn format_message_label<'a>(role: &MessageRole, content: &'a str) -> (String, &'
     }
 }
 
-fn cmd_exo_send(app: &ClatApp<impl Runtime>, message: &str) -> anyhow::Result<()> {
-    let content = attributed_message(message);
+fn cmd_exo_send(
+    app: &ClatApp<impl Runtime>,
+    sender: Option<&str>,
+    message: &str,
+) -> anyhow::Result<()> {
+    let content = attributed_message(sender, message);
     crate::permission::send_exo_message(app.project_root(), &content)?;
     println!("Sent message to ExO");
     Ok(())
@@ -596,12 +616,13 @@ fn cmd_exo_send(app: &ClatApp<impl Runtime>, message: &str) -> anyhow::Result<()
 
 async fn cmd_project_send(
     app: &ClatApp<impl Runtime>,
+    sender: Option<&str>,
     name: &str,
     message: &str,
 ) -> anyhow::Result<()> {
     // Verify the project exists
     let project = app.resolve_project(name).await?;
-    let content = attributed_message(message);
+    let content = attributed_message(sender, message);
     crate::permission::send_pm_message(app.project_root(), project.name.as_str(), &content)?;
     println!("Sent message to PM for project '{}'", project.name);
     Ok(())
@@ -648,26 +669,52 @@ mod tests {
     }
 
     #[test]
-    fn attributed_message_without_env() {
+    fn attributed_message_explicit_sender() {
         // SAFETY: test-only env manipulation; nextest runs each test in its own process.
         unsafe { std::env::remove_var("CLAT_SENDER") };
-        assert_eq!(attributed_message("hello"), "hello");
+        let result = attributed_message(Some("my-task (engineer)"), "done");
+        assert_eq!(result, "[from my-task (engineer)] done");
     }
 
     #[test]
-    fn attributed_message_with_env() {
+    fn attributed_message_explicit_overrides_env() {
         // SAFETY: test-only env manipulation; nextest runs each test in its own process.
         unsafe { std::env::set_var("CLAT_SENDER", "ExO (exo)") };
-        let result = attributed_message("status update");
+        let result = attributed_message(Some("explicit-name"), "hello");
+        assert_eq!(result, "[from explicit-name] hello");
+        unsafe { std::env::remove_var("CLAT_SENDER") };
+    }
+
+    #[test]
+    fn attributed_message_falls_back_to_env() {
+        // SAFETY: test-only env manipulation; nextest runs each test in its own process.
+        unsafe { std::env::set_var("CLAT_SENDER", "ExO (exo)") };
+        let result = attributed_message(None, "status update");
         assert_eq!(result, "[from ExO (exo)] status update");
         unsafe { std::env::remove_var("CLAT_SENDER") };
     }
 
     #[test]
-    fn attributed_message_empty_env() {
+    fn attributed_message_no_sender() {
+        // SAFETY: test-only env manipulation; nextest runs each test in its own process.
+        unsafe { std::env::remove_var("CLAT_SENDER") };
+        assert_eq!(attributed_message(None, "hello"), "hello");
+    }
+
+    #[test]
+    fn attributed_message_empty_explicit_falls_back_to_env() {
+        // SAFETY: test-only env manipulation; nextest runs each test in its own process.
+        unsafe { std::env::set_var("CLAT_SENDER", "ExO (exo)") };
+        let result = attributed_message(Some(""), "hello");
+        assert_eq!(result, "[from ExO (exo)] hello");
+        unsafe { std::env::remove_var("CLAT_SENDER") };
+    }
+
+    #[test]
+    fn attributed_message_empty_env_no_explicit() {
         // SAFETY: test-only env manipulation; nextest runs each test in its own process.
         unsafe { std::env::set_var("CLAT_SENDER", "") };
-        assert_eq!(attributed_message("hello"), "hello");
+        assert_eq!(attributed_message(None, "hello"), "hello");
         unsafe { std::env::remove_var("CLAT_SENDER") };
     }
 }
