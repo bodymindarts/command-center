@@ -68,8 +68,9 @@ pub enum HookEvent {
         payload: Value,
     },
     UserPromptSubmit {
-        #[allow(dead_code)]
         cwd: String,
+        /// Whether this prompt was triggered by a watch notification.
+        watch: bool,
         #[allow(dead_code)]
         payload: Value,
     },
@@ -112,10 +113,17 @@ impl<'de> serde::Deserialize<'de> for HookEvent {
                     cwd,
                     payload: value,
                 }),
-                "UserPromptSubmit" => Ok(HookEvent::UserPromptSubmit {
-                    cwd,
-                    payload: value,
-                }),
+                "UserPromptSubmit" => {
+                    let watch = value
+                        .get("_watch")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    Ok(HookEvent::UserPromptSubmit {
+                        cwd,
+                        watch,
+                        payload: value,
+                    })
+                }
                 "SubagentStop" => Ok(HookEvent::SubagentStop {
                     cwd,
                     payload: value,

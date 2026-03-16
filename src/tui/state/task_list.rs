@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use ratatui::widgets::ListState;
 
@@ -14,8 +14,9 @@ pub struct TaskListState {
     detail_live_output: Option<String>,
     window_numbers: HashMap<WindowId, String>,
     /// Pane IDs that are actively working (hook reported activity).
-    /// Absence from this set means idle (the safe default).
-    active_panes: HashSet<PaneId>,
+    /// The bool value indicates whether the activation was watch-triggered
+    /// (true = watch, false = organic). Absence means idle (the safe default).
+    active_panes: HashMap<PaneId, bool>,
     /// Indices into `tasks` that match the current search query.
     filtered_indices: Vec<usize>,
 }
@@ -34,7 +35,7 @@ impl TaskListState {
             detail_scroll: 0,
             detail_live_output: None,
             window_numbers: HashMap::new(),
-            active_panes: HashSet::new(),
+            active_panes: HashMap::new(),
             filtered_indices: Vec::new(),
         }
     }
@@ -92,40 +93,51 @@ impl TaskListState {
 
     // ── Active panes ────────────────────────────────────────────────
 
-    /// Mark a pane as idle (remove from active set).
-    /// Returns `true` if the pane was previously active.
-    pub fn mark_pane_idle(&mut self, pane: &PaneId) -> bool {
+    /// Mark a pane as idle (remove from active map).
+    /// Returns `Some(watch)` if the pane was previously active, where `watch`
+    /// indicates whether the activation was watch-triggered.
+    pub fn mark_pane_idle(&mut self, pane: &PaneId) -> Option<bool> {
         self.active_panes.remove(pane)
     }
 
-    /// Mark a pane as active (add to active set).
+    /// Mark a pane as active (add to active map).
+    /// `watch` indicates whether the activation is watch-triggered.
     /// Returns `true` if the pane was not already active.
-    pub fn mark_pane_active(&mut self, pane: PaneId) -> bool {
-        self.active_panes.insert(pane)
+    pub fn mark_pane_active(&mut self, pane: PaneId, watch: bool) -> bool {
+        use std::collections::hash_map::Entry;
+        match self.active_panes.entry(pane) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(v) => {
+                v.insert(watch);
+                true
+            }
+        }
     }
 
-    pub fn active_panes(&self) -> &HashSet<PaneId> {
+    pub fn active_panes(&self) -> &HashMap<PaneId, bool> {
         &self.active_panes
     }
 
     /// Mark the pane of the named task as active.
+    /// `watch` indicates whether the activation is watch-triggered.
     /// Returns `true` if the pane was newly marked active.
-    pub fn activate_task_pane(&mut self, name: &TaskName) -> bool {
+    pub fn activate_task_pane(&mut self, name: &TaskName, watch: bool) -> bool {
         if let Some(pane_id) = self
             .tasks
             .iter()
             .find(|t| t.name == *name)
             .and_then(|t| t.tmux_pane.clone())
         {
-            self.mark_pane_active(pane_id)
+            self.mark_pane_active(pane_id, watch)
         } else {
             false
         }
     }
 
     /// Mark the pane of the named task as idle.
-    /// Returns `true` if the pane was newly marked idle (was previously active).
-    pub fn idle_task_pane(&mut self, name: &TaskName) -> bool {
+    /// Returns `Some(watch)` if the pane was previously active, where `watch`
+    /// indicates whether the activation was watch-triggered.
+    pub fn idle_task_pane(&mut self, name: &TaskName) -> Option<bool> {
         if let Some(pane_id) = self
             .tasks
             .iter()
@@ -134,7 +146,7 @@ impl TaskListState {
         {
             self.mark_pane_idle(&pane_id)
         } else {
-            false
+            None
         }
     }
 

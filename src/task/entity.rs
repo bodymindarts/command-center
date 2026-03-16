@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use derive_builder::Builder;
@@ -320,16 +320,16 @@ impl Task {
 
     // ── Query helpers (not event-sourced) ────────────────────────────
 
-    fn is_active(&self, active_panes: &HashSet<PaneId>) -> bool {
+    fn is_active(&self, active_panes: &HashMap<PaneId, bool>) -> bool {
         self.status.is_running()
             && self
                 .tmux_pane
                 .as_ref()
-                .is_some_and(|p| active_panes.contains(p))
+                .is_some_and(|p| active_panes.contains_key(p))
     }
 
-    /// Derive the visual display status from persisted status + active set.
-    pub fn display_status(&self, active_panes: &HashSet<PaneId>) -> DisplayStatus {
+    /// Derive the visual display status from persisted status + active map.
+    pub fn display_status(&self, active_panes: &HashMap<PaneId, bool>) -> DisplayStatus {
         match self.status {
             TaskStatus::Running if self.is_active(active_panes) => DisplayStatus::Active,
             TaskStatus::Running => DisplayStatus::Idle,
