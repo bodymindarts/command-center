@@ -209,8 +209,8 @@ fn strip_agent_prefix(text: &str) -> &str {
     text
 }
 
-/// Extract sender label from agent messages formatted as `[from <name> (<role>)] <msg>`.
-/// Returns the display label (e.g. "exo-task-monitor") if the prefix is found.
+/// Extract sender label from agent messages formatted as `[from <name> (<role>)] <msg>`
+/// or `[from <name>] <msg>`. Returns the display label (e.g. "exo-task-monitor").
 fn parse_agent_sender(msg: &ChatMessage) -> Option<String> {
     let text = match msg.blocks.first()? {
         ContentBlock::Text(t) => t,
@@ -219,10 +219,10 @@ fn parse_agent_sender(msg: &ChatMessage) -> Option<String> {
     let rest = text.strip_prefix("[from ")?;
     let end = rest.find(']')?;
     let inner = &rest[..end];
-    // inner is "<name> (<role>)"
+    // inner is "<name> (<role>)" or just "<name>"
     if let Some((name, _role_paren)) = inner.rsplit_once(" (") {
         Some(name.to_string())
     } else {
-        None
+        Some(inner.to_string())
     }
 }

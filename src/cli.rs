@@ -138,6 +138,10 @@ pub enum Command {
         #[arg(long)]
         project: Option<String>,
 
+        /// Label the message with a sender name (shown in chat as "[from <name>]")
+        #[arg(long)]
+        from: Option<String>,
+
         /// [ID] <message> — task ID is required unless --project is provided
         #[arg(required = true, num_args = 1..=2)]
         args: Vec<String>,

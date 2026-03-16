@@ -93,10 +93,14 @@ async fn main() -> anyhow::Result<()> {
             resume, caffeinate, ..
         } => cmd_start(resume.as_deref(), caffeinate, skip_permissions)?,
         Command::Goto { id } => cmd_goto(app, &id).await?,
-        Command::Send { project, args } => match (project, args.len()) {
-            (None, 2) if args[0] == "exo" => cmd_exo_send(&app, &args[1])?,
+        Command::Send {
+            project,
+            from,
+            args,
+        } => match (project, args.len()) {
+            (None, 2) if args[0] == "exo" => cmd_exo_send(&app, &args[1], from.as_deref())?,
             (None, 2) => cmd_send(app, &args[0], &args[1]).await?,
-            (Some(name), 1) => cmd_project_send(&app, &name, &args[0]).await?,
+            (Some(name), 1) => cmd_project_send(&app, &name, &args[0], from.as_deref()).await?,
             (None, 1) => bail!("missing message: usage: clat send <ID> <message>"),
             (Some(_), n) if n >= 2 => {
                 bail!("unexpected task ID when --project is provided")
@@ -534,7 +538,7 @@ async fn cmd_project(action: ProjectAction, app: ClatApp<impl Runtime>) -> anyho
             println!("Deleted project '{name}'");
         }
         ProjectAction::Send { name, message } => {
-            cmd_project_send(&app, &name, &message).await?;
+            cmd_project_send(&app, &name, &message, None).await?;
         }
         ProjectAction::Log { name, last } => {
             cmd_project_log(&app, &name, last).await?;
@@ -570,8 +574,13 @@ async fn cmd_project_log(
     Ok(())
 }
 
-fn cmd_exo_send(app: &ClatApp<impl Runtime>, message: &str) -> anyhow::Result<()> {
-    crate::permission::send_exo_message(app.project_root(), message)?;
+fn cmd_exo_send(
+    app: &ClatApp<impl Runtime>,
+    message: &str,
+    from: Option<&str>,
+) -> anyhow::Result<()> {
+    let content = format_with_sender(message, from);
+    crate::permission::send_exo_message(app.project_root(), &content)?;
     println!("Sent message to ExO");
     Ok(())
 }
@@ -580,10 +589,18 @@ async fn cmd_project_send(
     app: &ClatApp<impl Runtime>,
     name: &str,
     message: &str,
+    from: Option<&str>,
 ) -> anyhow::Result<()> {
-    // Verify the project exists
     let project = app.resolve_project(name).await?;
-    crate::permission::send_pm_message(app.project_root(), project.name.as_str(), message)?;
+    let content = format_with_sender(message, from);
+    crate::permission::send_pm_message(app.project_root(), project.name.as_str(), &content)?;
     println!("Sent message to PM for project '{}'", project.name);
     Ok(())
+}
+
+fn format_with_sender(message: &str, from: Option<&str>) -> String {
+    match from {
+        Some(name) => format!("[from {name}] {message}"),
+        None => message.to_string(),
+    }
 }
