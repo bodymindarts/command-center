@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use crate::app::ClatApp;
 use crate::assistant::{AssistantEvent, AssistantSession, SessionKey};
 use crate::permission::{HookEvent, PermissionRequest};
-use crate::primitives::{ChatId, MessageRole, ProjectId, TaskName};
+use crate::primitives::{ActivationSource, ChatId, MessageRole, ProjectId, TaskName};
 use crate::runtime::Runtime;
 
 use super::ProjectContext;
@@ -513,7 +513,9 @@ async fn handle_task_chat_input_key<R: Runtime>(
                 match app.send(&task_id, &msg).await {
                     Ok(_) => {
                         if let Some(pane) = pane {
-                            active.task_list.mark_pane_active(pane, false);
+                            active
+                                .task_list
+                                .mark_pane_active(pane, ActivationSource::Organic);
                         }
                     }
                     Err(e) => {
@@ -887,7 +889,7 @@ pub(super) async fn dispatch_hook_event<R: Runtime>(
             handle_hook_idle(state, &cwd, tg_tx);
         }
         HookEvent::Active { cwd } => {
-            handle_hook_active(state, &cwd, tg_tx, false);
+            handle_hook_active(state, &cwd, tg_tx, ActivationSource::Organic);
         }
         HookEvent::Permission(request) => {
             handle_hook_permission(
@@ -902,10 +904,15 @@ pub(super) async fn dispatch_hook_event<R: Runtime>(
         // New hook events — received and dropped for now.
         // No response needed; stream is dropped which closes the connection.
         HookEvent::PreToolUse { cwd, .. } | HookEvent::SubagentStop { cwd, .. } => {
-            handle_hook_active(state, &cwd, tg_tx, false);
+            handle_hook_active(state, &cwd, tg_tx, ActivationSource::Organic);
         }
         HookEvent::UserPromptSubmit { cwd, watch, .. } => {
-            handle_hook_active(state, &cwd, tg_tx, watch);
+            let source = if watch {
+                ActivationSource::Watch
+            } else {
+                ActivationSource::Organic
+            };
+            handle_hook_active(state, &cwd, tg_tx, source);
         }
         HookEvent::Stop { cwd, .. } => {
             handle_hook_idle(state, &cwd, tg_tx);
@@ -940,8 +947,8 @@ fn handle_hook_idle(
     cwd: &str,
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
 ) {
-    if let Some((task_name, watch)) = state.mark_task_idle(cwd)
-        && !watch
+    if let Some((task_name, source)) = state.mark_task_idle(cwd)
+        && source != ActivationSource::Watch
         && let Some(tx) = tg_tx
     {
         let _ = tx.send(telegram::TgOutbound::Notify {
@@ -954,10 +961,10 @@ fn handle_hook_active(
     state: &mut ScreenState,
     cwd: &str,
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
-    watch: bool,
+    source: ActivationSource,
 ) {
-    if let Some(task_name) = state.mark_task_active(cwd, watch)
-        && !watch
+    if let Some(task_name) = state.mark_task_active(cwd, source)
+        && source != ActivationSource::Watch
         && let Some(tx) = tg_tx
     {
         let _ = tx.send(telegram::TgOutbound::Notify {

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::primitives::{ProjectId, ProjectName, TaskName};
+use crate::primitives::{ActivationSource, ProjectId, ProjectName, TaskName};
 use crate::project::Project;
 use crate::task::Task;
 use crate::tui::keybindings::Keybindings;
@@ -188,32 +188,30 @@ impl ScreenState {
     pub fn resolve_permission(&mut self, cwd: &str) -> Option<ActivePermission> {
         let name = self.task_name_for_cwd(cwd)?;
         if let Some(task_list) = self.task_list_for_task_mut(&name) {
-            task_list.activate_task_pane(&name, false);
+            task_list.activate_task_pane(&name, ActivationSource::Organic);
         }
         self.permissions.take(&name)
     }
 
     /// Mark the pane for a task (identified by CWD) as idle.
-    /// Returns `Some((task_name, watch))` if the task was previously active,
-    /// where `watch` indicates whether the activation was watch-triggered.
-    pub fn mark_task_idle(&mut self, cwd: &str) -> Option<(TaskName, bool)> {
+    /// Returns `Some((task_name, source))` if the task was previously active.
+    pub fn mark_task_idle(&mut self, cwd: &str) -> Option<(TaskName, ActivationSource)> {
         if let Some(name) = self.task_name_for_cwd(cwd)
             && let Some(task_list) = self.task_list_for_task_mut(&name)
-            && let Some(watch) = task_list.idle_task_pane(&name)
+            && let Some(source) = task_list.idle_task_pane(&name)
         {
-            Some((name, watch))
+            Some((name, source))
         } else {
             None
         }
     }
 
     /// Mark the pane for a task (identified by CWD) as active.
-    /// `watch` indicates whether the activation is watch-triggered.
     /// Returns `Some(task_name)` if the task was newly marked active (for notification).
-    pub fn mark_task_active(&mut self, cwd: &str, watch: bool) -> Option<TaskName> {
+    pub fn mark_task_active(&mut self, cwd: &str, source: ActivationSource) -> Option<TaskName> {
         if let Some(name) = self.task_name_for_cwd(cwd)
             && let Some(task_list) = self.task_list_for_task_mut(&name)
-            && task_list.activate_task_pane(&name, watch)
+            && task_list.activate_task_pane(&name, source)
         {
             Some(name)
         } else {
@@ -226,10 +224,10 @@ impl ScreenState {
         self.task_name_for_cwd(cwd).unwrap_or(default)
     }
 
-    /// Mark a task's pane as active by task name (always non-watch).
+    /// Mark a task's pane as active by task name (always organic).
     pub fn mark_task_active_by_name(&mut self, name: &TaskName) {
         if let Some(task_list) = self.task_list_for_task_mut(name) {
-            task_list.activate_task_pane(name, false);
+            task_list.activate_task_pane(name, ActivationSource::Organic);
         }
     }
 

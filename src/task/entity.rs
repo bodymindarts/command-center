@@ -6,7 +6,8 @@ use es_entity::*;
 use serde::{Deserialize, Serialize};
 
 use crate::primitives::{
-    ClaudeSessionId, MessageRole, PaneId, ProjectId, TaskId, TaskName, TaskStatus, WindowId,
+    ActivationSource, ClaudeSessionId, MessageRole, PaneId, ProjectId, TaskId, TaskName,
+    TaskStatus, WindowId,
 };
 
 use super::error::TaskError;
@@ -320,7 +321,7 @@ impl Task {
 
     // ── Query helpers (not event-sourced) ────────────────────────────
 
-    fn is_active(&self, active_panes: &HashMap<PaneId, bool>) -> bool {
+    fn is_active(&self, active_panes: &HashMap<PaneId, ActivationSource>) -> bool {
         self.status.is_running()
             && self
                 .tmux_pane
@@ -329,7 +330,10 @@ impl Task {
     }
 
     /// Derive the visual display status from persisted status + active map.
-    pub fn display_status(&self, active_panes: &HashMap<PaneId, bool>) -> DisplayStatus {
+    pub fn display_status(
+        &self,
+        active_panes: &HashMap<PaneId, ActivationSource>,
+    ) -> DisplayStatus {
         match self.status {
             TaskStatus::Running if self.is_active(active_panes) => DisplayStatus::Active,
             TaskStatus::Running => DisplayStatus::Idle,

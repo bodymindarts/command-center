@@ -795,6 +795,33 @@ mod tests {
     }
 
     #[test]
+    fn hook_event_user_prompt_submit_watch() {
+        let json = r#"{"_hook":"UserPromptSubmit","cwd":"/workspace","_watch":true}"#;
+        match deser(json) {
+            HookEvent::UserPromptSubmit { watch, .. } => assert!(watch),
+            _ => panic!("expected UserPromptSubmit"),
+        }
+    }
+
+    #[test]
+    fn hook_event_user_prompt_submit_watch_false() {
+        let json = r#"{"_hook":"UserPromptSubmit","cwd":"/workspace","_watch":false}"#;
+        match deser(json) {
+            HookEvent::UserPromptSubmit { watch, .. } => assert!(!watch),
+            _ => panic!("expected UserPromptSubmit"),
+        }
+    }
+
+    #[test]
+    fn hook_event_user_prompt_submit_watch_absent() {
+        let json = r#"{"_hook":"UserPromptSubmit","cwd":"/workspace"}"#;
+        match deser(json) {
+            HookEvent::UserPromptSubmit { watch, .. } => assert!(!watch),
+            _ => panic!("expected UserPromptSubmit"),
+        }
+    }
+
+    #[test]
     fn hook_event_subagent_stop() {
         let json = r#"{"_hook":"SubagentStop","cwd":"/workspace"}"#;
         assert!(matches!(deser(json), HookEvent::SubagentStop { cwd, .. } if cwd == "/workspace"));

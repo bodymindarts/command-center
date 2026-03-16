@@ -185,6 +185,16 @@ impl From<String> for CheckType {
     }
 }
 
+// === ActivationSource ===
+
+/// Whether pane activity was triggered organically (user/agent work)
+/// or by a watch notification firing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivationSource {
+    Organic,
+    Watch,
+}
+
 // === String newtypes ===
 
 /// Generates a newtype wrapper around `String` with serde, sqlx, and common trait impls.

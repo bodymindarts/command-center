@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use ratatui::widgets::ListState;
 
-use crate::primitives::{PaneId, TaskName, WindowId};
+use crate::primitives::{ActivationSource, PaneId, TaskName, WindowId};
 use crate::task::{Task, TaskMessage};
 
 pub struct TaskListState {
@@ -14,9 +14,8 @@ pub struct TaskListState {
     detail_live_output: Option<String>,
     window_numbers: HashMap<WindowId, String>,
     /// Pane IDs that are actively working (hook reported activity).
-    /// The bool value indicates whether the activation was watch-triggered
-    /// (true = watch, false = organic). Absence means idle (the safe default).
-    active_panes: HashMap<PaneId, bool>,
+    /// The value records how the pane was activated. Absence means idle.
+    active_panes: HashMap<PaneId, ActivationSource>,
     /// Indices into `tasks` that match the current search query.
     filtered_indices: Vec<usize>,
 }
@@ -94,50 +93,53 @@ impl TaskListState {
     // ── Active panes ────────────────────────────────────────────────
 
     /// Mark a pane as idle (remove from active map).
-    /// Returns `Some(watch)` if the pane was previously active, where `watch`
-    /// indicates whether the activation was watch-triggered.
-    pub fn mark_pane_idle(&mut self, pane: &PaneId) -> Option<bool> {
+    /// Returns the previous `ActivationSource` if the pane was active.
+    pub fn mark_pane_idle(&mut self, pane: &PaneId) -> Option<ActivationSource> {
         self.active_panes.remove(pane)
     }
 
     /// Mark a pane as active (add to active map).
-    /// `watch` indicates whether the activation is watch-triggered.
     /// Returns `true` if the pane was not already active.
-    pub fn mark_pane_active(&mut self, pane: PaneId, watch: bool) -> bool {
+    pub fn mark_pane_active(&mut self, pane: PaneId, source: ActivationSource) -> bool {
         use std::collections::hash_map::Entry;
         match self.active_panes.entry(pane) {
-            Entry::Occupied(_) => false,
+            Entry::Occupied(mut e) => {
+                // Organic work overrides watch-only activation so the
+                // subsequent idle notification is not suppressed.
+                if source == ActivationSource::Organic && *e.get() == ActivationSource::Watch {
+                    e.insert(ActivationSource::Organic);
+                }
+                false
+            }
             Entry::Vacant(v) => {
-                v.insert(watch);
+                v.insert(source);
                 true
             }
         }
     }
 
-    pub fn active_panes(&self) -> &HashMap<PaneId, bool> {
+    pub fn active_panes(&self) -> &HashMap<PaneId, ActivationSource> {
         &self.active_panes
     }
 
     /// Mark the pane of the named task as active.
-    /// `watch` indicates whether the activation is watch-triggered.
     /// Returns `true` if the pane was newly marked active.
-    pub fn activate_task_pane(&mut self, name: &TaskName, watch: bool) -> bool {
+    pub fn activate_task_pane(&mut self, name: &TaskName, source: ActivationSource) -> bool {
         if let Some(pane_id) = self
             .tasks
             .iter()
             .find(|t| t.name == *name)
             .and_then(|t| t.tmux_pane.clone())
         {
-            self.mark_pane_active(pane_id, watch)
+            self.mark_pane_active(pane_id, source)
         } else {
             false
         }
     }
 
     /// Mark the pane of the named task as idle.
-    /// Returns `Some(watch)` if the pane was previously active, where `watch`
-    /// indicates whether the activation was watch-triggered.
-    pub fn idle_task_pane(&mut self, name: &TaskName) -> Option<bool> {
+    /// Returns the previous `ActivationSource` if the pane was active.
+    pub fn idle_task_pane(&mut self, name: &TaskName) -> Option<ActivationSource> {
         if let Some(pane_id) = self
             .tasks
             .iter()
@@ -308,5 +310,64 @@ impl TaskListState {
             None => 0,
         };
         self.list_state.select(Some(i));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::PaneId;
+
+    fn pane(s: &str) -> PaneId {
+        PaneId::from(s.to_string())
+    }
+
+    fn new_state() -> TaskListState {
+        TaskListState::new(Vec::new())
+    }
+
+    #[test]
+    fn mark_active_watch_then_idle_returns_watch() {
+        let mut state = new_state();
+        assert!(state.mark_pane_active(pane("%1"), ActivationSource::Watch));
+        assert_eq!(
+            state.mark_pane_idle(&pane("%1")),
+            Some(ActivationSource::Watch)
+        );
+    }
+
+    #[test]
+    fn mark_active_organic_then_idle_returns_organic() {
+        let mut state = new_state();
+        assert!(state.mark_pane_active(pane("%1"), ActivationSource::Organic));
+        assert_eq!(
+            state.mark_pane_idle(&pane("%1")),
+            Some(ActivationSource::Organic)
+        );
+    }
+
+    #[test]
+    fn watch_then_organic_upgrades_to_organic() {
+        let mut state = new_state();
+        assert!(state.mark_pane_active(pane("%1"), ActivationSource::Watch));
+        // Second activation with Organic upgrades but returns false (already active).
+        assert!(!state.mark_pane_active(pane("%1"), ActivationSource::Organic));
+        assert_eq!(
+            state.mark_pane_idle(&pane("%1")),
+            Some(ActivationSource::Organic)
+        );
+    }
+
+    #[test]
+    fn duplicate_activation_returns_false() {
+        let mut state = new_state();
+        assert!(state.mark_pane_active(pane("%1"), ActivationSource::Organic));
+        assert!(!state.mark_pane_active(pane("%1"), ActivationSource::Organic));
+    }
+
+    #[test]
+    fn idle_unknown_pane_returns_none() {
+        let mut state = new_state();
+        assert_eq!(state.mark_pane_idle(&pane("%99")), None);
     }
 }
