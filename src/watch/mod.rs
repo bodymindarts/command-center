@@ -318,18 +318,24 @@ impl<R: Runtime> JobRunner for TimerJobRunner<R> {
             message.push_str(&format!("\nContext: {}", ctx));
         }
 
-        match self.app.send(&self.config.task_id, &message).await {
-            Ok(output) => {
-                self.app.suppress_watch_notifications(output.task_name);
+        // Resolve task name and suppress BEFORE sending, so the Active hook
+        // that fires when Claude processes the pasted text is already suppressed.
+        let task_name = self.app.resolve_task_name(&self.config.task_id).await.ok();
+        if let Some(ref name) = task_name {
+            self.app.suppress_watch_notifications(name.clone());
+        }
+
+        if let Err(e) = self.app.send(&self.config.task_id, &message).await {
+            // Send failed — clear suppression so we don't leak a stale entry.
+            if let Some(ref name) = task_name {
+                self.app.clear_watch_suppression(name);
             }
-            Err(e) => {
-                tracing::warn!(
-                    task_id = %self.config.task_id,
-                    label = %self.config.label,
-                    error = %e,
-                    "failed to deliver timer notification"
-                );
-            }
+            tracing::warn!(
+                task_id = %self.config.task_id,
+                label = %self.config.label,
+                error = %e,
+                "failed to deliver timer notification"
+            );
         }
 
         Ok(JobCompletion::Complete)
@@ -451,18 +457,24 @@ impl<R: Runtime> JobRunner for CommandJobRunner<R> {
             message
         };
 
-        match self.app.send(&self.config.task_id, &full_message).await {
-            Ok(output) => {
-                self.app.suppress_watch_notifications(output.task_name);
+        // Resolve task name and suppress BEFORE sending, so the Active hook
+        // that fires when Claude processes the pasted text is already suppressed.
+        let task_name = self.app.resolve_task_name(&self.config.task_id).await.ok();
+        if let Some(ref name) = task_name {
+            self.app.suppress_watch_notifications(name.clone());
+        }
+
+        if let Err(e) = self.app.send(&self.config.task_id, &full_message).await {
+            // Send failed — clear suppression so we don't leak a stale entry.
+            if let Some(ref name) = task_name {
+                self.app.clear_watch_suppression(name);
             }
-            Err(e) => {
-                tracing::warn!(
-                    task_id = %self.config.task_id,
-                    label = %self.config.label,
-                    error = %e,
-                    "failed to deliver command notification"
-                );
-            }
+            tracing::warn!(
+                task_id = %self.config.task_id,
+                label = %self.config.label,
+                error = %e,
+                "failed to deliver command notification"
+            );
         }
 
         Ok(JobCompletion::Complete)

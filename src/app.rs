@@ -148,18 +148,27 @@ impl<R: Runtime> ClatApp<R> {
     /// Mark a task as watch-woken so its next idle→active→idle Telegram
     /// notification cycle is suppressed.
     pub fn suppress_watch_notifications(&self, name: TaskName) {
-        self.watch_suppressed.lock().unwrap().insert(name);
+        self.watch_suppressed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(name);
     }
 
     /// Check whether Telegram notifications are suppressed for this task.
     pub fn is_watch_suppressed(&self, name: &TaskName) -> bool {
-        self.watch_suppressed.lock().unwrap().contains(name)
+        self.watch_suppressed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(name)
     }
 
-    /// Clear the watch-suppression flag (called when the task goes idle,
-    /// completing one suppressed cycle).
+    /// Clear the watch-suppression flag (called when the task goes idle or
+    /// closed, completing one suppressed cycle).
     pub fn clear_watch_suppression(&self, name: &TaskName) {
-        self.watch_suppressed.lock().unwrap().remove(name);
+        self.watch_suppressed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(name);
     }
 
     pub async fn init_watch(self: &Arc<Self>) -> anyhow::Result<()> {
@@ -410,6 +419,7 @@ impl<R: Runtime> ClatApp<R> {
         }
 
         if task.close(output).did_execute() {
+            self.clear_watch_suppression(&task.name);
             self.store.tasks.update(&mut task).await?;
         }
 
@@ -439,6 +449,7 @@ impl<R: Runtime> ClatApp<R> {
         let output_task_name = task.name.clone();
 
         let _ = task.close(None);
+        self.clear_watch_suppression(&task.name);
         if task.delete().did_execute() {
             self.store.tasks.delete(task).await?;
         }
@@ -626,6 +637,7 @@ impl<R: Runtime> ClatApp<R> {
                 && !existing.contains(pane.as_str())
                 && task.close(None).did_execute()
             {
+                self.clear_watch_suppression(&task.name);
                 let _ = self.store.tasks.update(&mut task).await;
             }
         }
@@ -838,6 +850,11 @@ impl<R: Runtime> ClatApp<R> {
             .maybe_find_by_id_prefix(id_prefix)
             .await?
             .ok_or_else(|| anyhow::anyhow!("no task found matching '{id_prefix}'"))
+    }
+
+    /// Resolve just the task name from an ID prefix.
+    pub async fn resolve_task_name(&self, id_prefix: &str) -> anyhow::Result<TaskName> {
+        self.resolve_task(id_prefix).await.map(|t| t.name)
     }
 }
 
