@@ -177,17 +177,25 @@ pub fn spawn_backup_loop(
                 }
             };
 
-            // Remove existing backup — VACUUM INTO won't overwrite.
-            if backup_path.exists()
-                && let Err(e) = std::fs::remove_file(&backup_path)
-            {
-                tracing::warn!(error = %e, "failed to remove old backup, skipping");
-                continue;
-            }
+            // VACUUM INTO a temp file, then atomically rename over the backup.
+            // This way if anything fails, the previous backup survives.
+            let tmp_path = backup_path.with_extension("db.tmp");
+            let tmp_str = match tmp_path.to_str() {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
 
-            let query = format!("VACUUM INTO '{}'", dest_str.replace('\'', "''"));
+            // Remove stale temp file if one exists from a previous failed run.
+            let _ = std::fs::remove_file(&tmp_path);
+
+            let query = format!("VACUUM INTO '{}'", tmp_str.replace('\'', "''"));
             match sqlx::query(&query).execute(&pool).await {
-                Ok(_) => tracing::debug!("database backup completed: {}", dest_str),
+                Ok(_) => match std::fs::rename(&tmp_path, &backup_path) {
+                    Ok(_) => tracing::debug!("database backup completed: {}", dest_str),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "backup rename failed, temp file left at {}", tmp_str)
+                    }
+                },
                 Err(e) => tracing::warn!(error = %e, "database backup failed"),
             }
         }
