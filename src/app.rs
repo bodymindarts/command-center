@@ -454,8 +454,17 @@ impl<R: Runtime> ClatApp<R> {
                 };
                 self.jwt_signer.sign(&claims)?
             };
+            // Derive repo_root from work_dir by stripping .claude/worktrees/<name>.
+            // This is necessary for cross-repo tasks where work_dir is under a
+            // different repo than command-center.
+            let repo_root = work_dir.ancestors().nth(3).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "cannot derive repo root from work_dir: {}",
+                    work_dir.display()
+                )
+            })?;
             self.runtime
-                .recreate_worktree(&self.paths.root, work_dir, &jwt_token)?;
+                .recreate_worktree(repo_root, work_dir, &jwt_token)?;
         }
 
         let session_id = task.session_id.map(|s| s.to_string()).unwrap_or_default();

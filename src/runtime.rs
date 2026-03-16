@@ -300,6 +300,7 @@ impl Runtime for TmuxRuntime {
         }
 
         setup_worktree_config(repo_root, work_dir, &SkillPermissions::default(), jwt_token)?;
+        merge_repo_settings(repo_root, work_dir)?;
         Ok(())
     }
 
