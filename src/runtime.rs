@@ -538,6 +538,8 @@ fn setup_worktree_config(
                 perms_allow.push(serde_json::json!("mcp__clat__clat_spawn"));
                 perms_allow.push(serde_json::json!("mcp__clat__create_watch"));
                 perms_allow.push(serde_json::json!("mcp__clat__send_message"));
+                perms_allow.push(serde_json::json!("mcp__clat__list_tasks"));
+                perms_allow.push(serde_json::json!("mcp__clat__task_log"));
             }
 
             // Ensure .mcp.json is gitignored in the worktree.

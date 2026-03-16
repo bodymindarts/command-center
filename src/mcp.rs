@@ -420,7 +420,7 @@ impl<R: Runtime> ClatMcpServer<R> {
             "type": "object",
             "properties": {
                 "project": {
-                    "type": "string",
+                    "type": ["string", "null"],
                     "description": "Filter tasks by project name. If omitted, lists all active tasks."
                 }
             },
@@ -439,8 +439,19 @@ impl<R: Runtime> ClatMcpServer<R> {
             move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
                 let app = Arc::clone(&app);
                 Box::pin(async move {
+                    // Prefer project from JWT claims, fall back to explicit parameter.
+                    let claims = ctx
+                        .request_context
+                        .extensions
+                        .get::<axum::http::request::Parts>()
+                        .and_then(|parts| parts.extensions.get::<crate::jwt::AgentClaims>())
+                        .cloned();
                     let args = ctx.arguments.unwrap_or_default();
-                    let project = args.get("project").and_then(|v| v.as_str());
+                    let explicit_project = args.get("project").and_then(|v| v.as_str());
+                    let project = claims
+                        .as_ref()
+                        .and_then(|c| c.project.as_deref())
+                        .or(explicit_project);
 
                     let tasks = match app.list_tasks(false, project).await {
                         Ok(t) => t,
@@ -523,6 +534,14 @@ impl<R: Runtime> ClatMcpServer<R> {
             move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
                 let app = Arc::clone(&app);
                 Box::pin(async move {
+                    // Extract caller's project from JWT claims for scoping.
+                    let claims = ctx
+                        .request_context
+                        .extensions
+                        .get::<axum::http::request::Parts>()
+                        .and_then(|parts| parts.extensions.get::<crate::jwt::AgentClaims>())
+                        .cloned();
+
                     let args = ctx.arguments.unwrap_or_default();
                     let task_id = match args.get("task_id").and_then(|v| v.as_str()) {
                         Some(id) => id,
@@ -542,6 +561,22 @@ impl<R: Runtime> ClatMcpServer<R> {
                             ))]));
                         }
                     };
+
+                    // Enforce project scoping: if caller has a project, the
+                    // target task must belong to the same project.
+                    if let Some(ref claims) = claims
+                        && let Some(ref caller_project) = claims.project
+                    {
+                        let caller_project_id = match app.resolve_project_id(caller_project).await {
+                            Ok(id) => Some(id),
+                            Err(_) => caller_project.parse::<crate::primitives::ProjectId>().ok(),
+                        };
+                        if caller_project_id.is_some() && log.task.project_id != caller_project_id {
+                            return Ok(CallToolResult::error(vec![Content::text(
+                                "Access denied: task does not belong to your project",
+                            )]));
+                        }
+                    }
 
                     // Take only the last `limit` messages.
                     let messages = if log.messages.len() > limit {
