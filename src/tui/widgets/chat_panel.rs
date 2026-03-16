@@ -62,10 +62,20 @@ pub(in crate::tui) fn render_chat(
             )));
         } else {
             for msg in task_list.selected_messages() {
-                let (label, label_color) = match msg.role {
-                    MessageRole::System => ("PROMPT", Color::Cyan),
-                    MessageRole::User => ("YOU", Color::Green),
-                    MessageRole::Assistant => ("ASSISTANT", Color::White),
+                let (label, label_color, display_content) = match msg.role {
+                    MessageRole::System => {
+                        ("PROMPT".to_string(), Color::Cyan, msg.content.as_str())
+                    }
+                    MessageRole::Assistant => {
+                        ("ASSISTANT".to_string(), Color::White, msg.content.as_str())
+                    }
+                    MessageRole::User => {
+                        if let Some((name, body)) = parse_task_msg_sender(&msg.content) {
+                            (name, Color::Yellow, body)
+                        } else {
+                            ("YOU".to_string(), Color::Green, msg.content.as_str())
+                        }
+                    }
                 };
 
                 lines.push(Line::from(Span::styled(
@@ -74,7 +84,7 @@ pub(in crate::tui) fn render_chat(
                         .fg(label_color)
                         .add_modifier(Modifier::BOLD),
                 )));
-                for l in msg.content.lines() {
+                for l in display_content.lines() {
                     lines.push(Line::from(l.to_string()));
                 }
                 lines.push(Line::from(""));
@@ -207,6 +217,17 @@ fn strip_agent_prefix(text: &str) -> &str {
         return &rest[end + 2..];
     }
     text
+}
+
+/// Parse `[from <name> (<role>)] <body>` from raw message content (e.g. TaskMessage).
+/// Returns `(name, body)` if the prefix is found.
+fn parse_task_msg_sender(content: &str) -> Option<(String, &str)> {
+    let rest = content.strip_prefix("[from ")?;
+    let bracket = rest.find("] ")?;
+    let inner = &rest[..bracket];
+    let name = inner.rsplit_once(" (").map_or(inner, |(n, _)| n);
+    let body = &rest[bracket + 2..];
+    Some((name.to_string(), body))
 }
 
 /// Extract sender label from agent messages formatted as `[from <name> (<role>)] <msg>`.

@@ -345,14 +345,10 @@ async fn cmd_log(app: ClatApp<impl Runtime>, id_prefix: &str) -> anyhow::Result<
     }
 
     for msg in &log.messages {
-        let label = match msg.role {
-            MessageRole::System => "PROMPT",
-            MessageRole::User => "YOU",
-            MessageRole::Assistant => "ASSISTANT",
-        };
+        let (label, content) = format_message_label(&msg.role, &msg.content);
         let time = msg.created_at.format("%H:%M:%S");
         println!("[{time}] {label}:");
-        println!("{}", msg.content);
+        println!("{content}");
         println!();
     }
 
@@ -556,22 +552,49 @@ async fn cmd_project_log(
     }
 
     for msg in &messages {
-        let label = match msg.role {
-            MessageRole::System => "PROMPT",
-            MessageRole::User => "YOU",
-            MessageRole::Assistant => "ASSISTANT",
-        };
+        let (label, content) = format_message_label(&msg.role, &msg.content);
         let time = msg.created_at.format("%H:%M:%S");
         println!("[{time}] {label}:");
-        println!("{}", msg.content);
+        println!("{content}");
         println!();
     }
 
     Ok(())
 }
 
+/// Format a message with a `[from sender] ` prefix when CLAT_SENDER is set.
+/// This env var is set by AssistantSession so that PM/ExO `clat send` commands
+/// carry proper attribution (matching the MCP send_message path).
+fn attributed_message(message: &str) -> String {
+    match std::env::var("CLAT_SENDER") {
+        Ok(sender) if !sender.is_empty() => format!("[from {sender}] {message}"),
+        _ => message.to_string(),
+    }
+}
+
+/// Parse the `[from name (role)] ` prefix from a User message to extract the
+/// sender label. Returns `(label, display_content)`.
+fn format_message_label<'a>(role: &MessageRole, content: &'a str) -> (String, &'a str) {
+    match role {
+        MessageRole::System => ("PROMPT".to_string(), content),
+        MessageRole::Assistant => ("ASSISTANT".to_string(), content),
+        MessageRole::User => {
+            if let Some(rest) = content.strip_prefix("[from ")
+                && let Some(bracket) = rest.find("] ")
+            {
+                let inner = &rest[..bracket];
+                let name = inner.rsplit_once(" (").map_or(inner, |(n, _)| n);
+                let body = &rest[bracket + 2..];
+                return (name.to_uppercase(), body);
+            }
+            ("YOU".to_string(), content)
+        }
+    }
+}
+
 fn cmd_exo_send(app: &ClatApp<impl Runtime>, message: &str) -> anyhow::Result<()> {
-    crate::permission::send_exo_message(app.project_root(), message)?;
+    let content = attributed_message(message);
+    crate::permission::send_exo_message(app.project_root(), &content)?;
     println!("Sent message to ExO");
     Ok(())
 }
@@ -583,7 +606,8 @@ async fn cmd_project_send(
 ) -> anyhow::Result<()> {
     // Verify the project exists
     let project = app.resolve_project(name).await?;
-    crate::permission::send_pm_message(app.project_root(), project.name.as_str(), message)?;
+    let content = attributed_message(message);
+    crate::permission::send_pm_message(app.project_root(), project.name.as_str(), &content)?;
     println!("Sent message to PM for project '{}'", project.name);
     Ok(())
 }

@@ -42,6 +42,7 @@ impl ProjectContext {
         system_prompt: &str,
         event_tx: mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
         skip_permissions: bool,
+        sender_label: Option<&str>,
     ) -> Self {
         let cancel = Arc::new(AtomicBool::new(false));
         let session = AssistantSession::new(
@@ -51,6 +52,7 @@ impl ProjectContext {
             system_prompt,
             event_tx,
             skip_permissions,
+            sender_label,
         );
         ProjectContext { session, cancel }
     }
@@ -93,12 +95,14 @@ async fn init_project_context<R: Runtime>(
     state.add_project(*project_id, project_state);
     let prompt = crate::assistant::project_system_prompt(project_name);
     let session_key = SessionKey::Project(*project_id);
+    let sender_label = format!("{project_name} (pm)");
     ProjectContext::new(
         session_key,
         session_id.as_deref(),
         &prompt,
         event_tx,
         skip_permissions,
+        Some(&sender_label),
     )
 }
 
@@ -163,6 +167,7 @@ pub async fn run<R: Runtime>(
         EXO_SYSTEM_PROMPT,
         assistant_tx.clone(),
         skip_permissions,
+        Some("ExO (exo)"),
     );
 
     // Project contexts: one per project, keyed by project ID

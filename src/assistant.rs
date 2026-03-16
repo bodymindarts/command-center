@@ -138,6 +138,9 @@ pub struct AssistantSession {
     session_id: Option<String>,
     system_prompt: String,
     skip_permissions: bool,
+    /// Label set as CLAT_SENDER env var on spawned processes, e.g. "ExO (exo)"
+    /// or "my-project (pm)". Enables `clat send` to attribute messages.
+    sender_label: Option<String>,
 }
 
 impl AssistantSession {
@@ -151,6 +154,7 @@ impl AssistantSession {
         system_prompt: &str,
         event_tx: mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
         skip_permissions: bool,
+        sender_label: Option<&str>,
     ) -> Self {
         let mut session = AssistantSession {
             stdin: None,
@@ -161,6 +165,7 @@ impl AssistantSession {
             session_id: session_id.map(|s| s.to_string()),
             system_prompt: system_prompt.to_string(),
             skip_permissions,
+            sender_label: sender_label.map(|s| s.to_string()),
         };
         session.spawn_process(session_id.is_some());
         session
@@ -194,14 +199,16 @@ impl AssistantSession {
             args.push(sid.clone());
         }
 
-        let mut child = match Command::new("claude")
-            .args(&args)
+        let mut cmd = Command::new("claude");
+        cmd.args(&args)
             .env_remove("CLAUDECODE")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-        {
+            .stderr(Stdio::null());
+        if let Some(ref label) = self.sender_label {
+            cmd.env("CLAT_SENDER", label);
+        }
+        let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
                 let _ = self.event_tx.send((
