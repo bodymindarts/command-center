@@ -149,8 +149,10 @@ impl Store {
 /// Spawn a background task that periodically backs up the database.
 ///
 /// The loop runs every `interval` and calls `VACUUM INTO` to create a
-/// consistent snapshot at `backup_path`. It respects the `cancel` flag
-/// for clean shutdown.
+/// consistent snapshot at `backup_path`. sqlx internally runs sqlite
+/// queries on a blocking thread, so the event loop is not stalled.
+/// File I/O (rename) runs on `spawn_blocking`. It respects the `cancel`
+/// flag for clean shutdown.
 pub fn spawn_backup_loop(
     pool: SqlitePool,
     backup_path: PathBuf,
@@ -169,7 +171,8 @@ pub fn spawn_backup_loop(
                 break;
             }
 
-            let dest_str = match backup_path.to_str() {
+            let tmp_path = backup_path.with_extension("db.tmp");
+            let tmp_str = match tmp_path.to_str() {
                 Some(s) => s.to_string(),
                 None => {
                     tracing::warn!("backup path is not valid UTF-8, skipping backup");
@@ -177,25 +180,21 @@ pub fn spawn_backup_loop(
                 }
             };
 
-            // VACUUM INTO a temp file, then atomically rename over the backup.
-            // This way if anything fails, the previous backup survives.
-            let tmp_path = backup_path.with_extension("db.tmp");
-            let tmp_str = match tmp_path.to_str() {
-                Some(s) => s.to_string(),
-                None => continue,
-            };
-
-            // Remove stale temp file if one exists from a previous failed run.
+            // Remove stale temp file from a previous failed run.
             let _ = std::fs::remove_file(&tmp_path);
 
+            // VACUUM INTO runs on sqlx's internal blocking thread pool.
             let query = format!("VACUUM INTO '{}'", tmp_str.replace('\'', "''"));
             match sqlx::query(&query).execute(&pool).await {
-                Ok(_) => match std::fs::rename(&tmp_path, &backup_path) {
-                    Ok(_) => tracing::debug!("database backup completed: {}", dest_str),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "backup rename failed, temp file left at {}", tmp_str)
+                Ok(_) => {
+                    let src = tmp_path;
+                    let dst = backup_path.clone();
+                    match tokio::task::spawn_blocking(move || std::fs::rename(src, dst)).await {
+                        Ok(Ok(())) => tracing::debug!("database backup completed"),
+                        Ok(Err(e)) => tracing::warn!(error = %e, "backup rename failed"),
+                        Err(e) => tracing::warn!(error = %e, "backup rename task panicked"),
                     }
-                },
+                }
                 Err(e) => tracing::warn!(error = %e, "database backup failed"),
             }
         }
