@@ -704,6 +704,8 @@ fn base_allowed_tools_full() -> Vec<&'static str> {
         // Containers
         "Bash(podman:*)",
         "Bash(docker:*)",
+        // Command-center CLI
+        "Bash(clat:*)",
     ]
 }
 
@@ -718,6 +720,8 @@ fn base_allowed_tools_minimal() -> Vec<&'static str> {
         "Bash(wc:*)",
         "Bash(which:*)",
         "Bash(pwd)",
+        // Command-center CLI
+        "Bash(clat:*)",
     ]
 }
 
