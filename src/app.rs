@@ -164,6 +164,17 @@ impl<R: Runtime> ClatApp<R> {
         Ok(())
     }
 
+    /// Spawn a periodic database backup loop that runs for the lifetime
+    /// of the application.  Backs up to `data/cc.db.bak` every 5 minutes.
+    pub fn spawn_backup_loop(&self, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        crate::store::spawn_backup_loop(
+            self.store.pool().clone(),
+            self.paths.db_backup_path.clone(),
+            std::time::Duration::from_secs(5 * 60),
+            cancel,
+        );
+    }
+
     /// Look up a task's work_dir by id prefix. Used by watch runners to set cwd.
     pub async fn task_work_dir(&self, id_prefix: &str) -> anyhow::Result<Option<String>> {
         let task = self.resolve_task(id_prefix).await?;
@@ -1043,6 +1054,7 @@ prompt = "noop prompt"
             skills_dir,
             data_dir: tmp.join("data"),
             db_path: tmp.join("data/cc.db"),
+            db_backup_path: tmp.join("data/cc.db.bak"),
         }
     }
 

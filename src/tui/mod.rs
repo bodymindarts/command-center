@@ -152,6 +152,9 @@ pub async fn run<R: Runtime>(
     let mut state = ScreenState::new(exo, keybindings);
     let cancel = Arc::new(AtomicBool::new(false));
 
+    // Periodic database backup (every 5 minutes).
+    app.spawn_backup_loop(Arc::clone(&cancel));
+
     // Shared channel for all assistant session events (ExO + PM sessions).
     let (assistant_tx, mut assistant_rx) =
         mpsc::unbounded_channel::<(SessionKey, AssistantEvent)>();

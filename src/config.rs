@@ -7,6 +7,7 @@ pub struct Paths {
     pub skills_dir: PathBuf,
     pub data_dir: PathBuf,
     pub db_path: PathBuf,
+    pub db_backup_path: PathBuf,
 }
 
 impl Paths {
@@ -15,12 +16,14 @@ impl Paths {
         let skills_dir = root.join("skills");
         let data_dir = root.join("data");
         let db_path = data_dir.join("cc.db");
+        let db_backup_path = data_dir.join("cc.db.bak");
 
         Ok(Self {
             root,
             skills_dir,
             data_dir,
             db_path,
+            db_backup_path,
         })
     }
 

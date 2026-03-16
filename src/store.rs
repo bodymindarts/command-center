@@ -1,4 +1,6 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -142,6 +144,54 @@ impl Store {
         .await?;
         rows.iter().map(row_to_message).collect()
     }
+}
+
+/// Spawn a background task that periodically backs up the database.
+///
+/// The loop runs every `interval` and calls `VACUUM INTO` to create a
+/// consistent snapshot at `backup_path`. It respects the `cancel` flag
+/// for clean shutdown.
+pub fn spawn_backup_loop(
+    pool: SqlitePool,
+    backup_path: PathBuf,
+    interval: std::time::Duration,
+    cancel: Arc<AtomicBool>,
+) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        // The first tick fires immediately — skip it so the first backup
+        // happens after `interval` has elapsed.
+        ticker.tick().await;
+
+        loop {
+            ticker.tick().await;
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let dest_str = match backup_path.to_str() {
+                Some(s) => s.to_string(),
+                None => {
+                    tracing::warn!("backup path is not valid UTF-8, skipping backup");
+                    continue;
+                }
+            };
+
+            // Remove existing backup — VACUUM INTO won't overwrite.
+            if backup_path.exists()
+                && let Err(e) = std::fs::remove_file(&backup_path)
+            {
+                tracing::warn!(error = %e, "failed to remove old backup, skipping");
+                continue;
+            }
+
+            let query = format!("VACUUM INTO '{}'", dest_str.replace('\'', "''"));
+            match sqlx::query(&query).execute(&pool).await {
+                Ok(_) => tracing::debug!("database backup completed: {}", dest_str),
+                Err(e) => tracing::warn!(error = %e, "database backup failed"),
+            }
+        }
+    });
 }
 
 #[cfg(test)]
