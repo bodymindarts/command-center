@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::config::Paths;
 use crate::jwt::JwtSigner;
@@ -112,6 +112,9 @@ pub struct ClatApp<R: Runtime> {
     skip_permissions: bool,
     jwt_signer: JwtSigner,
     watch: OnceLock<crate::watch::WatchService>,
+    /// Tasks whose next idle→active→idle notification cycle should be
+    /// suppressed because they were woken by a watch (timer/command poll).
+    watch_suppressed: Mutex<HashSet<TaskName>>,
 }
 
 impl<R: Runtime> ClatApp<R> {
@@ -132,11 +135,31 @@ impl<R: Runtime> ClatApp<R> {
             skip_permissions,
             jwt_signer,
             watch: OnceLock::new(),
+            watch_suppressed: Mutex::new(HashSet::new()),
         })
     }
 
     pub fn watch(&self) -> &crate::watch::WatchService {
         self.watch.get().expect("watch service not initialized")
+    }
+
+    // ── Watch notification suppression ────────────────────────────────
+
+    /// Mark a task as watch-woken so its next idle→active→idle Telegram
+    /// notification cycle is suppressed.
+    pub fn suppress_watch_notifications(&self, name: TaskName) {
+        self.watch_suppressed.lock().unwrap().insert(name);
+    }
+
+    /// Check whether Telegram notifications are suppressed for this task.
+    pub fn is_watch_suppressed(&self, name: &TaskName) -> bool {
+        self.watch_suppressed.lock().unwrap().contains(name)
+    }
+
+    /// Clear the watch-suppression flag (called when the task goes idle,
+    /// completing one suppressed cycle).
+    pub fn clear_watch_suppression(&self, name: &TaskName) {
+        self.watch_suppressed.lock().unwrap().remove(name);
     }
 
     pub async fn init_watch(self: &Arc<Self>) -> anyhow::Result<()> {
@@ -191,6 +214,7 @@ impl<R: Runtime> ClatApp<R> {
             skip_permissions: false,
             jwt_signer,
             watch: OnceLock::new(),
+            watch_suppressed: Mutex::new(HashSet::new()),
         }
     }
 

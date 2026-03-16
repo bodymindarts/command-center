@@ -318,13 +318,18 @@ impl<R: Runtime> JobRunner for TimerJobRunner<R> {
             message.push_str(&format!("\nContext: {}", ctx));
         }
 
-        if let Err(e) = self.app.send(&self.config.task_id, &message).await {
-            tracing::warn!(
-                task_id = %self.config.task_id,
-                label = %self.config.label,
-                error = %e,
-                "failed to deliver timer notification"
-            );
+        match self.app.send(&self.config.task_id, &message).await {
+            Ok(output) => {
+                self.app.suppress_watch_notifications(output.task_name);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    task_id = %self.config.task_id,
+                    label = %self.config.label,
+                    error = %e,
+                    "failed to deliver timer notification"
+                );
+            }
         }
 
         Ok(JobCompletion::Complete)
@@ -446,13 +451,18 @@ impl<R: Runtime> JobRunner for CommandJobRunner<R> {
             message
         };
 
-        if let Err(e) = self.app.send(&self.config.task_id, &full_message).await {
-            tracing::warn!(
-                task_id = %self.config.task_id,
-                label = %self.config.label,
-                error = %e,
-                "failed to deliver command notification"
-            );
+        match self.app.send(&self.config.task_id, &full_message).await {
+            Ok(output) => {
+                self.app.suppress_watch_notifications(output.task_name);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    task_id = %self.config.task_id,
+                    label = %self.config.label,
+                    error = %e,
+                    "failed to deliver command notification"
+                );
+            }
         }
 
         Ok(JobCompletion::Complete)

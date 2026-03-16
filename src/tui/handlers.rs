@@ -884,10 +884,10 @@ pub(super) async fn dispatch_hook_event<R: Runtime>(
             handle_hook_resolved(state, &cwd, tg_tx, &mut tg_perm.ids);
         }
         HookEvent::Idle { cwd } => {
-            handle_hook_idle(state, &cwd, tg_tx);
+            handle_hook_idle(state, &cwd, tg_tx, app);
         }
         HookEvent::Active { cwd } => {
-            handle_hook_active(state, &cwd, tg_tx);
+            handle_hook_active(state, &cwd, tg_tx, app);
         }
         HookEvent::Permission(request) => {
             handle_hook_permission(
@@ -904,10 +904,10 @@ pub(super) async fn dispatch_hook_event<R: Runtime>(
         HookEvent::PreToolUse { cwd, .. }
         | HookEvent::UserPromptSubmit { cwd, .. }
         | HookEvent::SubagentStop { cwd, .. } => {
-            handle_hook_active(state, &cwd, tg_tx);
+            handle_hook_active(state, &cwd, tg_tx, app);
         }
         HookEvent::Stop { cwd, .. } => {
-            handle_hook_idle(state, &cwd, tg_tx);
+            handle_hook_idle(state, &cwd, tg_tx, app);
             drop(stream);
         }
         HookEvent::PmMessage { project, message } => {
@@ -934,26 +934,31 @@ fn handle_hook_resolved(
     }
 }
 
-fn handle_hook_idle(
+fn handle_hook_idle<R: Runtime>(
     state: &mut ScreenState,
     cwd: &str,
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
+    app: &ClatApp<R>,
 ) {
-    if let Some(task_name) = state.mark_task_idle(cwd)
-        && let Some(tx) = tg_tx
-    {
-        let _ = tx.send(telegram::TgOutbound::Notify {
-            text: format!("💤 Task idle: {task_name}"),
-        });
+    if let Some(task_name) = state.mark_task_idle(cwd) {
+        if app.is_watch_suppressed(&task_name) {
+            app.clear_watch_suppression(&task_name);
+        } else if let Some(tx) = tg_tx {
+            let _ = tx.send(telegram::TgOutbound::Notify {
+                text: format!("💤 Task idle: {task_name}"),
+            });
+        }
     }
 }
 
-fn handle_hook_active(
+fn handle_hook_active<R: Runtime>(
     state: &mut ScreenState,
     cwd: &str,
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
+    app: &ClatApp<R>,
 ) {
     if let Some(task_name) = state.mark_task_active(cwd)
+        && !app.is_watch_suppressed(&task_name)
         && let Some(tx) = tg_tx
     {
         let _ = tx.send(telegram::TgOutbound::Notify {
