@@ -211,22 +211,13 @@ fn render_chat_messages(
 
 /// Strip the `[from <name> (<role>)] ` prefix from message text for display.
 fn strip_agent_prefix(text: &str) -> &str {
-    if let Some(rest) = text.strip_prefix("[from ")
-        && let Some(end) = rest.find("] ")
-    {
-        return &rest[end + 2..];
-    }
-    text
+    crate::primitives::parse_sender_prefix(text).map_or(text, |(_, body)| body)
 }
 
 /// Parse `[from <name> (<role>)] <body>` from raw message content (e.g. TaskMessage).
 /// Returns `(name, body)` if the prefix is found.
 fn parse_task_msg_sender(content: &str) -> Option<(String, &str)> {
-    let rest = content.strip_prefix("[from ")?;
-    let bracket = rest.find("] ")?;
-    let inner = &rest[..bracket];
-    let name = inner.rsplit_once(" (").map_or(inner, |(n, _)| n);
-    let body = &rest[bracket + 2..];
+    let (name, body) = crate::primitives::parse_sender_prefix(content)?;
     Some((name.to_string(), body))
 }
 
@@ -237,13 +228,78 @@ fn parse_agent_sender(msg: &ChatMessage) -> Option<String> {
         ContentBlock::Text(t) => t,
         _ => return None,
     };
-    let rest = text.strip_prefix("[from ")?;
-    let end = rest.find(']')?;
-    let inner = &rest[..end];
-    // inner is "<name> (<role>)"
-    if let Some((name, _role_paren)) = inner.rsplit_once(" (") {
-        Some(name.to_string())
-    } else {
-        None
+    let (name, _) = crate::primitives::parse_sender_prefix(text)?;
+    Some(name.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_task_msg_sender_with_role() {
+        let (name, body) = parse_task_msg_sender("[from my-project (pm)] hello world").unwrap();
+        assert_eq!(name, "my-project");
+        assert_eq!(body, "hello world");
+    }
+
+    #[test]
+    fn parse_task_msg_sender_without_role() {
+        let (name, body) = parse_task_msg_sender("[from agent-x] done").unwrap();
+        assert_eq!(name, "agent-x");
+        assert_eq!(body, "done");
+    }
+
+    #[test]
+    fn parse_task_msg_sender_no_prefix() {
+        assert!(parse_task_msg_sender("plain text").is_none());
+    }
+
+    #[test]
+    fn parse_agent_sender_with_role() {
+        let msg = ChatMessage {
+            role: MessageRole::User,
+            blocks: vec![ContentBlock::Text(
+                "[from my-project (pm)] hello".to_string(),
+            )],
+        };
+        assert_eq!(parse_agent_sender(&msg).unwrap(), "my-project");
+    }
+
+    #[test]
+    fn parse_agent_sender_without_role() {
+        let msg = ChatMessage {
+            role: MessageRole::User,
+            blocks: vec![ContentBlock::Text("[from agent-name] some msg".to_string())],
+        };
+        assert_eq!(parse_agent_sender(&msg).unwrap(), "agent-name");
+    }
+
+    #[test]
+    fn parse_agent_sender_no_prefix() {
+        let msg = ChatMessage {
+            role: MessageRole::User,
+            blocks: vec![ContentBlock::Text("plain message".to_string())],
+        };
+        assert!(parse_agent_sender(&msg).is_none());
+    }
+
+    #[test]
+    fn parse_agent_sender_tool_block_first() {
+        let msg = ChatMessage {
+            role: MessageRole::User,
+            blocks: vec![ContentBlock::ToolUse("Bash".to_string())],
+        };
+        assert!(parse_agent_sender(&msg).is_none());
+    }
+
+    #[test]
+    fn strip_agent_prefix_with_sender() {
+        assert_eq!(strip_agent_prefix("[from ExO (exo)] hello"), "hello");
+    }
+
+    #[test]
+    fn strip_agent_prefix_no_sender() {
+        assert_eq!(strip_agent_prefix("plain text"), "plain text");
     }
 }

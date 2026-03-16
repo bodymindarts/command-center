@@ -579,12 +579,7 @@ fn format_message_label<'a>(role: &MessageRole, content: &'a str) -> (String, &'
         MessageRole::System => ("PROMPT".to_string(), content),
         MessageRole::Assistant => ("ASSISTANT".to_string(), content),
         MessageRole::User => {
-            if let Some(rest) = content.strip_prefix("[from ")
-                && let Some(bracket) = rest.find("] ")
-            {
-                let inner = &rest[..bracket];
-                let name = inner.rsplit_once(" (").map_or(inner, |(n, _)| n);
-                let body = &rest[bracket + 2..];
+            if let Some((name, body)) = crate::primitives::parse_sender_prefix(content) {
                 return (name.to_uppercase(), body);
             }
             ("YOU".to_string(), content)
@@ -610,4 +605,69 @@ async fn cmd_project_send(
     crate::permission::send_pm_message(app.project_root(), project.name.as_str(), &content)?;
     println!("Sent message to PM for project '{}'", project.name);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_message_label_system() {
+        let (label, content) = format_message_label(&MessageRole::System, "boot prompt");
+        assert_eq!(label, "PROMPT");
+        assert_eq!(content, "boot prompt");
+    }
+
+    #[test]
+    fn format_message_label_assistant() {
+        let (label, content) = format_message_label(&MessageRole::Assistant, "sure thing");
+        assert_eq!(label, "ASSISTANT");
+        assert_eq!(content, "sure thing");
+    }
+
+    #[test]
+    fn format_message_label_user_plain() {
+        let (label, content) = format_message_label(&MessageRole::User, "hello");
+        assert_eq!(label, "YOU");
+        assert_eq!(content, "hello");
+    }
+
+    #[test]
+    fn format_message_label_user_with_sender() {
+        let (label, content) =
+            format_message_label(&MessageRole::User, "[from my-project (pm)] status update");
+        assert_eq!(label, "MY-PROJECT");
+        assert_eq!(content, "status update");
+    }
+
+    #[test]
+    fn format_message_label_user_sender_no_role() {
+        let (label, content) = format_message_label(&MessageRole::User, "[from agent-x] done");
+        assert_eq!(label, "AGENT-X");
+        assert_eq!(content, "done");
+    }
+
+    #[test]
+    fn attributed_message_without_env() {
+        // SAFETY: test-only env manipulation; nextest runs each test in its own process.
+        unsafe { std::env::remove_var("CLAT_SENDER") };
+        assert_eq!(attributed_message("hello"), "hello");
+    }
+
+    #[test]
+    fn attributed_message_with_env() {
+        // SAFETY: test-only env manipulation; nextest runs each test in its own process.
+        unsafe { std::env::set_var("CLAT_SENDER", "ExO (exo)") };
+        let result = attributed_message("status update");
+        assert_eq!(result, "[from ExO (exo)] status update");
+        unsafe { std::env::remove_var("CLAT_SENDER") };
+    }
+
+    #[test]
+    fn attributed_message_empty_env() {
+        // SAFETY: test-only env manipulation; nextest runs each test in its own process.
+        unsafe { std::env::set_var("CLAT_SENDER", "") };
+        assert_eq!(attributed_message("hello"), "hello");
+        unsafe { std::env::remove_var("CLAT_SENDER") };
+    }
 }

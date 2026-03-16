@@ -306,3 +306,65 @@ impl From<String> for MessageRole {
         }
     }
 }
+
+/// Parse the `[from <name> (<role>)] <body>` prefix from message content.
+///
+/// Returns `(sender_name, body)` when the prefix is present.
+/// Handles both `[from name (role)] body` and `[from name] body` formats.
+pub fn parse_sender_prefix(content: &str) -> Option<(&str, &str)> {
+    let rest = content.strip_prefix("[from ")?;
+    let bracket = rest.find("] ")?;
+    let inner = &rest[..bracket];
+    let name = inner.rsplit_once(" (").map_or(inner, |(n, _)| n);
+    let body = &rest[bracket + 2..];
+    Some((name, body))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_sender_prefix_with_role() {
+        let (name, body) = parse_sender_prefix("[from my-project (pm)] hello world").unwrap();
+        assert_eq!(name, "my-project");
+        assert_eq!(body, "hello world");
+    }
+
+    #[test]
+    fn parse_sender_prefix_with_exo_role() {
+        let (name, body) = parse_sender_prefix("[from ExO (exo)] status update").unwrap();
+        assert_eq!(name, "ExO");
+        assert_eq!(body, "status update");
+    }
+
+    #[test]
+    fn parse_sender_prefix_without_role() {
+        let (name, body) = parse_sender_prefix("[from agent-name] some message").unwrap();
+        assert_eq!(name, "agent-name");
+        assert_eq!(body, "some message");
+    }
+
+    #[test]
+    fn parse_sender_prefix_no_prefix() {
+        assert!(parse_sender_prefix("plain message").is_none());
+    }
+
+    #[test]
+    fn parse_sender_prefix_malformed_no_closing_bracket() {
+        assert!(parse_sender_prefix("[from sender incomplete").is_none());
+    }
+
+    #[test]
+    fn parse_sender_prefix_empty_body() {
+        let (name, body) = parse_sender_prefix("[from ExO (exo)] ").unwrap();
+        assert_eq!(name, "ExO");
+        assert_eq!(body, "");
+    }
+
+    #[test]
+    fn parse_sender_prefix_bracket_without_space() {
+        // "[from x]no space" should NOT match (requires "] " with a space)
+        assert!(parse_sender_prefix("[from x]no space").is_none());
+    }
+}
