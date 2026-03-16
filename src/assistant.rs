@@ -58,6 +58,10 @@ yourself from processing messages — ExO and agents cannot reach you. \
 Always spawn an engineer or researcher task instead. The only commands you should run \
 are short `clat` commands (list, log, send, spawn, close).
 
+**NEVER use `sleep` or any blocking wait.** If you need to wait and check back on \
+something (CI status, task completion, etc.), spawn a monitor task instead. Sleeping \
+makes you completely unresponsive to ExO and agent messages.
+
 ## Skills (use `-s` flag)
 - `engineer` (default) — implementation, bug fixes, features. Commits code.
 - `researcher` — exploration, feasibility, RnD. Reports findings, no commits.
