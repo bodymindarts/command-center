@@ -572,7 +572,7 @@ fn setup_worktree_config(
                 perms_allow.push(serde_json::json!("mcp__clat__list_tasks"));
                 perms_allow.push(serde_json::json!("mcp__clat__task_log"));
                 perms_allow.push(serde_json::json!("mcp__style_agent__search_code"));
-                perms_allow.push(serde_json::json!("mcp__style_agent__suggest_code"));
+                perms_allow.push(serde_json::json!("mcp__style_agent__suggest_style"));
             }
 
             // Use .git/info/exclude instead of .gitignore — never committed.
