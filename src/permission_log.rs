@@ -9,8 +9,6 @@ pub struct PermissionLogEntry {
     pub ts: String,
     pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub task_name: Option<String>,
     pub tool: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -42,7 +40,6 @@ mod tests {
         let entry = PermissionLogEntry {
             ts: "2026-03-17T10:00:00Z".to_string(),
             role: "exo".to_string(),
-            task_id: None,
             task_name: None,
             tool: "Bash".to_string(),
             command: Some("git status".to_string()),
@@ -54,7 +51,6 @@ mod tests {
         assert_eq!(parsed["tool"], "Bash");
         assert_eq!(parsed["command"], "git status");
         assert_eq!(parsed["outcome"], "approved");
-        assert!(parsed.get("task_id").is_none());
         assert!(parsed.get("task_name").is_none());
     }
 
@@ -63,7 +59,6 @@ mod tests {
         let entry = PermissionLogEntry {
             ts: "2026-03-17T10:00:00Z".to_string(),
             role: "task".to_string(),
-            task_id: Some("abc-123".to_string()),
             task_name: Some("fix-bug".to_string()),
             tool: "Edit".to_string(),
             command: None,
@@ -72,7 +67,6 @@ mod tests {
         let json = serde_json::to_string(&entry).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["role"], "task");
-        assert_eq!(parsed["task_id"], "abc-123");
         assert_eq!(parsed["task_name"], "fix-bug");
         assert!(parsed.get("command").is_none());
     }
@@ -83,7 +77,6 @@ mod tests {
         let entry = PermissionLogEntry {
             ts: "2026-03-17T10:00:00Z".to_string(),
             role: "exo".to_string(),
-            task_id: None,
             task_name: None,
             tool: "Bash".to_string(),
             command: Some("clat list".to_string()),
@@ -101,7 +94,6 @@ mod tests {
         let entry = PermissionLogEntry {
             ts: "2026-03-17T10:00:00Z".to_string(),
             role: "pm".to_string(),
-            task_id: None,
             task_name: None,
             tool: "Bash".to_string(),
             command: Some("clat spawn test".to_string()),
@@ -117,7 +109,6 @@ mod tests {
         let entry = PermissionLogEntry {
             ts: "2026-03-17T10:00:00Z".to_string(),
             role: "task".to_string(),
-            task_id: Some("id-1".to_string()),
             task_name: Some("my-task".to_string()),
             tool: "Write".to_string(),
             command: None,
@@ -134,7 +125,6 @@ mod tests {
             let entry = PermissionLogEntry {
                 ts: format!("2026-03-17T10:0{i}:00Z"),
                 role: "exo".to_string(),
-                task_id: None,
                 task_name: None,
                 tool: "Bash".to_string(),
                 command: Some(format!("cmd-{i}")),
