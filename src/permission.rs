@@ -11,8 +11,6 @@ pub struct PermissionRequest {
     pub tool_input_summary: String,
     pub cwd: String,
     pub permission_suggestions: Vec<Value>,
-    /// Session role injected by the hook script ("exo", "pm", or absent for tasks).
-    pub session_role: Option<String>,
 }
 
 impl<'de> serde::Deserialize<'de> for PermissionRequest {
@@ -28,8 +26,6 @@ impl<'de> serde::Deserialize<'de> for PermissionRequest {
             cwd: String,
             #[serde(default)]
             permission_suggestions: Vec<Value>,
-            #[serde(default, rename = "_session_role")]
-            session_role: Option<String>,
         }
         let raw = Raw::deserialize(deserializer)?;
         let tool_input_summary = summarize_tool_input(&raw.tool_name, raw.tool_input.as_ref());
@@ -39,7 +35,6 @@ impl<'de> serde::Deserialize<'de> for PermissionRequest {
             tool_input_summary,
             cwd: raw.cwd,
             permission_suggestions: raw.permission_suggestions,
-            session_role: raw.session_role,
         })
     }
 }

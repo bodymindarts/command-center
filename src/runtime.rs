@@ -807,19 +807,6 @@ pub fn reembed_socket_in_worktrees(work_dirs: &[String], sock_path: &str) {
     }
 }
 
-/// Update the hook commands in a single settings file with the current socket path.
-/// If the file doesn't exist or has no hooks, this is a no-op.
-pub fn embed_socket_in_settings_file(settings_path: &Path, sock_path: &str) {
-    let Ok(content) = std::fs::read_to_string(settings_path) else {
-        return;
-    };
-    let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return;
-    };
-    embed_socket_in_hooks(&mut settings, sock_path);
-    let _ = std::fs::write(settings_path, settings.to_string());
-}
-
 /// Check whether a TCP port is reachable with a short timeout.
 fn is_port_reachable(host: &str, port: u16) -> bool {
     use std::net::{SocketAddr, TcpStream};

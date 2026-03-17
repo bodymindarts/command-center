@@ -22,9 +22,7 @@ use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
 
 use crate::app::ClatApp;
-use crate::assistant::{
-    AssistantEvent, AssistantSession, EXO_SYSTEM_PROMPT, SessionKey, SessionRole,
-};
+use crate::assistant::{AssistantEvent, AssistantSession, EXO_SYSTEM_PROMPT, SessionKey};
 use crate::permission::HookEvent;
 use crate::primitives::ProjectId;
 use crate::runtime::Runtime;
@@ -44,7 +42,6 @@ impl ProjectContext {
         system_prompt: &str,
         event_tx: mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
         skip_permissions: bool,
-        role: Option<SessionRole>,
     ) -> Self {
         let cancel = Arc::new(AtomicBool::new(false));
         let session = AssistantSession::new(
@@ -54,7 +51,6 @@ impl ProjectContext {
             system_prompt,
             event_tx,
             skip_permissions,
-            role,
         );
         ProjectContext { session, cancel }
     }
@@ -97,18 +93,12 @@ async fn init_project_context<R: Runtime>(
     state.add_project(*project_id, project_state);
     let prompt = crate::assistant::project_system_prompt(project_name);
     let session_key = SessionKey::Project(*project_id);
-    let role = if skip_permissions {
-        None
-    } else {
-        Some(SessionRole::Pm)
-    };
     ProjectContext::new(
         session_key,
         session_id.as_deref(),
         &prompt,
         event_tx,
         skip_permissions,
-        role,
     )
 }
 
@@ -184,18 +174,7 @@ pub async fn run<R: Runtime>(
     if skip_permissions {
         crate::permission::write_skip_permissions_breadcrumb(app.project_root());
     }
-    // Update the project root's settings.local.json so ExO/PM hooks
-    // connect to this dashboard's socket (not a stale path from a previous run).
-    crate::runtime::embed_socket_in_settings_file(
-        &app.project_root().join(".claude/settings.local.json"),
-        &socket_path.to_string_lossy(),
-    );
 
-    let exo_role = if skip_permissions {
-        None
-    } else {
-        Some(SessionRole::Exo)
-    };
     let mut exo_session = AssistantSession::new(
         SessionKey::Exo,
         state.exo.session_id(),
@@ -203,7 +182,6 @@ pub async fn run<R: Runtime>(
         EXO_SYSTEM_PROMPT,
         assistant_tx.clone(),
         skip_permissions,
-        exo_role,
     );
 
     // Project contexts: one per project, keyed by project ID

@@ -78,7 +78,6 @@ struct ResolvedPermission {
     tool_name: String,
     tool_input: Option<serde_json::Value>,
     task_name: TaskName,
-    session_role: Option<String>,
 }
 
 /// Resolve and consume the active permission request.
@@ -93,7 +92,6 @@ fn resolve_permission(state: &mut ScreenState, allow: bool) -> Option<ResolvedPe
         tool_name: perm.tool_name,
         tool_input: perm.tool_input,
         task_name: perm.task_name,
-        session_role: perm.session_role,
     })
 }
 
@@ -107,17 +105,12 @@ fn resolved_from_active(perm: ActivePermission, allow: bool) -> ResolvedPermissi
         tool_name: perm.tool_name,
         tool_input: perm.tool_input,
         task_name: perm.task_name,
-        session_role: perm.session_role,
     }
 }
 
 /// Build and write a permission log entry.
 fn log_resolved_permission(data_dir: &std::path::Path, resolved: &ResolvedPermission) {
-    let role = resolved
-        .session_role
-        .as_deref()
-        .unwrap_or("task")
-        .to_string();
+    let role = resolved.task_name.to_string();
     let command = if resolved.tool_name == "Bash" {
         resolved
             .tool_input
@@ -128,8 +121,8 @@ fn log_resolved_permission(data_dir: &std::path::Path, resolved: &ResolvedPermis
     } else {
         None
     };
-    let task_name = if role == "task" {
-        Some(resolved.task_name.to_string())
+    let task_name = if role != "exo" {
+        Some(role.clone())
     } else {
         None
     };
@@ -396,7 +389,6 @@ fn handle_askuser_select(
                     tool_name: perm.tool_name,
                     tool_input: perm.tool_input,
                     task_name: perm.task_name,
-                    session_role: perm.session_role,
                 };
                 log_resolved_permission(data_dir, &resolved);
                 let _ = write_response_with_message(resolved.stream, true, &label);
@@ -1195,7 +1187,6 @@ fn handle_hook_permission(
         permission_suggestions: req.permission_suggestions,
         askuser_question,
         askuser_options,
-        session_role: req.session_role,
         tool_input: req.tool_input,
     };
     state.permissions.add(perm);
