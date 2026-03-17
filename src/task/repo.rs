@@ -53,6 +53,27 @@ impl TaskRepo {
         Ok(tasks.into_iter().next())
     }
 
+    /// Find a running task by exact name (case-insensitive).
+    /// Returns None if no match, errors if ambiguous (multiple running tasks with same name).
+    pub async fn maybe_find_by_name_running(&self, name: &str) -> anyhow::Result<Option<Task>> {
+        let lower = name.to_lowercase();
+        let (tasks, _) = es_query!(
+            "SELECT id FROM tasks WHERE LOWER(name) = $1 AND status = 'running' AND deleted = FALSE LIMIT 2",
+            lower as &str,
+        )
+        .fetch_n(self.pool(), 2)
+        .await?;
+
+        if tasks.len() > 1 {
+            anyhow::bail!(
+                "ambiguous name '{name}': matches {} running tasks",
+                tasks.len()
+            );
+        }
+
+        Ok(tasks.into_iter().next())
+    }
+
     /// List all tasks ordered by created_at DESC.
     pub async fn list_all(&self) -> anyhow::Result<Vec<Task>> {
         let ret = self

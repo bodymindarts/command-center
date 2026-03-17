@@ -818,12 +818,24 @@ impl<R: Runtime> ClatApp<R> {
         }
     }
 
-    async fn resolve_task(&self, id_prefix: &str) -> anyhow::Result<Task> {
+    /// Resolve a task by ID prefix first, then by name among running tasks.
+    async fn resolve_task(&self, id_or_name: &str) -> anyhow::Result<Task> {
+        // Try UUID prefix match first.
+        match self.store.tasks.maybe_find_by_id_prefix(id_or_name).await {
+            Ok(Some(task)) => return Ok(task),
+            Ok(None) => {}
+            Err(e) => {
+                // If prefix was ambiguous, propagate the error.
+                return Err(e);
+            }
+        }
+
+        // Fall back to case-insensitive name match among running tasks.
         self.store
             .tasks
-            .maybe_find_by_id_prefix(id_prefix)
+            .maybe_find_by_name_running(id_or_name)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("no task found matching '{id_prefix}'"))
+            .ok_or_else(|| anyhow::anyhow!("no task found matching '{id_or_name}'"))
     }
 }
 

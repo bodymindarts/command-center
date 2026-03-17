@@ -532,4 +532,75 @@ mod tests {
             .unwrap();
         assert!(visible.is_empty());
     }
+
+    // -- find_by_name_running tests --
+
+    #[tokio::test]
+    async fn find_by_name_running_exact_match() {
+        let store = test_store().await;
+        let task = create_running_task(&store, "my-task").await;
+
+        let found = store
+            .tasks
+            .maybe_find_by_name_running("my-task")
+            .await
+            .unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id, task.id);
+    }
+
+    #[tokio::test]
+    async fn find_by_name_running_case_insensitive() {
+        let store = test_store().await;
+        let task = create_running_task(&store, "My-Task").await;
+
+        let found = store
+            .tasks
+            .maybe_find_by_name_running("my-task")
+            .await
+            .unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id, task.id);
+    }
+
+    #[tokio::test]
+    async fn find_by_name_running_ignores_closed() {
+        let store = test_store().await;
+        let mut task = create_running_task(&store, "done-task").await;
+        let _ = task.close(None);
+        store.tasks.update(&mut task).await.unwrap();
+
+        let found = store
+            .tasks
+            .maybe_find_by_name_running("done-task")
+            .await
+            .unwrap();
+        assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn find_by_name_running_returns_none_for_unknown() {
+        let store = test_store().await;
+        create_running_task(&store, "existing").await;
+
+        let found = store
+            .tasks
+            .maybe_find_by_name_running("nonexistent")
+            .await
+            .unwrap();
+        assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn find_by_name_running_ambiguous_errors() {
+        let store = test_store().await;
+        // Two running tasks with the same name (case-insensitive).
+        create_running_task(&store, "dup-name").await;
+        create_running_task(&store, "Dup-Name").await;
+
+        let result = store.tasks.maybe_find_by_name_running("dup-name").await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("ambiguous name"), "got: {msg}");
+    }
 }
