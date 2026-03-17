@@ -516,24 +516,48 @@ fn setup_worktree_config(
         // Claude Code reads MCP servers from .mcp.json (project scope), NOT from
         // the mcpServers key in settings.local.json.
         if let Some(mcp_url) = crate::mcp::read_mcp_url_breadcrumb(repo_root) {
+            // Read existing .mcp.json (target repo may have committed servers) or start fresh.
+            let mcp_path = worktree_path.join(".mcp.json");
+            let mut mcp_config: serde_json::Value = if mcp_path.exists() {
+                let content = std::fs::read_to_string(&mcp_path)?;
+                serde_json::from_str(&content)
+                    .unwrap_or_else(|_| serde_json::json!({"mcpServers": {}}))
+            } else {
+                serde_json::json!({"mcpServers": {}})
+            };
+
+            // Ensure mcpServers key exists as an object.
+            if !mcp_config.get("mcpServers").is_some_and(|v| v.is_object()) {
+                mcp_config["mcpServers"] = serde_json::json!({});
+            }
+            let servers = mcp_config["mcpServers"].as_object_mut().unwrap();
+
+            // Always add clat MCP server.
             // Include the JWT in both the URL query param and Authorization header
             // for resilience against Claude Code header bugs.
-            let mcp_server = serde_json::json!({
-                "type": "http",
-                "url": format!("{mcp_url}?token={jwt_token}"),
-                "headers": {
-                    "Authorization": format!("Bearer {jwt_token}")
-                }
-            });
-            let mcp_json = serde_json::json!({
-                "mcpServers": {
-                    "clat": mcp_server
-                }
-            });
-            std::fs::write(
-                worktree_path.join(".mcp.json"),
-                serde_json::to_string_pretty(&mcp_json)?,
-            )?;
+            servers.insert(
+                "clat".to_string(),
+                serde_json::json!({
+                    "type": "http",
+                    "url": format!("{mcp_url}?token={jwt_token}"),
+                    "headers": {
+                        "Authorization": format!("Bearer {jwt_token}")
+                    }
+                }),
+            );
+
+            // Auto-discover style-agent on :9222.
+            if is_port_reachable("127.0.0.1", 9222) {
+                servers.insert(
+                    "style-agent".to_string(),
+                    serde_json::json!({
+                        "type": "http",
+                        "url": "http://127.0.0.1:9222/mcp"
+                    }),
+                );
+            }
+
+            std::fs::write(&mcp_path, serde_json::to_string_pretty(&mcp_config)?)?;
             settings["enableAllProjectMcpServers"] = serde_json::json!(true);
 
             // Auto-allow MCP tools so agents don't need manual approval.
@@ -547,19 +571,12 @@ fn setup_worktree_config(
                 perms_allow.push(serde_json::json!("mcp__clat__send_message"));
                 perms_allow.push(serde_json::json!("mcp__clat__list_tasks"));
                 perms_allow.push(serde_json::json!("mcp__clat__task_log"));
+                perms_allow.push(serde_json::json!("mcp__style_agent__search_code"));
+                perms_allow.push(serde_json::json!("mcp__style_agent__suggest_code"));
             }
 
-            // Ensure .mcp.json is gitignored in the worktree.
-            let gitignore_path = worktree_path.join(".gitignore");
-            let content = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
-            if !content.lines().any(|l| l.trim() == ".mcp.json") {
-                let mut new_content = content;
-                if !new_content.is_empty() && !new_content.ends_with('\n') {
-                    new_content.push('\n');
-                }
-                new_content.push_str(".mcp.json\n");
-                std::fs::write(&gitignore_path, new_content)?;
-            }
+            // Use .git/info/exclude instead of .gitignore — never committed.
+            exclude_from_git(worktree_path, ".mcp.json")?;
         }
 
         std::fs::write(&target_settings, settings.to_string())?;
@@ -788,6 +805,45 @@ pub fn reembed_socket_in_worktrees(work_dirs: &[String], sock_path: &str) {
         embed_socket_in_hooks(&mut settings, sock_path);
         let _ = std::fs::write(&settings_path, settings.to_string());
     }
+}
+
+/// Check whether a TCP port is reachable with a short timeout.
+fn is_port_reachable(host: &str, port: u16) -> bool {
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::Duration;
+    let addr: SocketAddr = format!("{host}:{port}").parse().unwrap();
+    TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok()
+}
+
+/// Add an entry to `.git/info/exclude` so it's ignored without touching `.gitignore`.
+fn exclude_from_git(worktree_path: &Path, pattern: &str) -> anyhow::Result<()> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(worktree_path)
+        .output()
+        .context("failed to run git rev-parse --git-common-dir")?;
+    if !output.status.success() {
+        bail!(
+            "git rev-parse --git-common-dir failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let git_common_dir = String::from_utf8(output.stdout)?.trim().to_string();
+    let exclude_path = PathBuf::from(&git_common_dir).join("info").join("exclude");
+
+    std::fs::create_dir_all(exclude_path.parent().unwrap())?;
+
+    let content = std::fs::read_to_string(&exclude_path).unwrap_or_default();
+    if !content.lines().any(|l| l.trim() == pattern) {
+        let mut new_content = content;
+        if !new_content.is_empty() && !new_content.ends_with('\n') {
+            new_content.push('\n');
+        }
+        new_content.push_str(pattern);
+        new_content.push('\n');
+        std::fs::write(&exclude_path, new_content)?;
+    }
+    Ok(())
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
