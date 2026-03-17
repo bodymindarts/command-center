@@ -169,6 +169,28 @@ pub async fn run<R: Runtime>(
     let (assistant_tx, mut assistant_rx) =
         mpsc::unbounded_channel::<(SessionKey, AssistantEvent)>();
 
+    // ── Permission socket ──────────────────────────────────────────────
+    // Create the socket BEFORE spawning ExO/PM sessions so that:
+    // 1. CC_PERM_SOCKET is in the env when child processes are forked
+    // 2. The project root's settings.local.json has the correct socket path
+    let socket_path = crate::permission::session_socket_path();
+    let _ = std::fs::remove_file(&socket_path);
+    let listener = tokio::net::UnixListener::bind(&socket_path)?;
+    // SAFETY: called once at startup before spawning claude processes.
+    unsafe {
+        std::env::set_var(crate::permission::SOCKET_ENV, &socket_path);
+    }
+    crate::permission::write_socket_breadcrumb(app.project_root(), &socket_path);
+    if skip_permissions {
+        crate::permission::write_skip_permissions_breadcrumb(app.project_root());
+    }
+    // Update the project root's settings.local.json so ExO/PM hooks
+    // connect to this dashboard's socket (not a stale path from a previous run).
+    crate::runtime::embed_socket_in_settings_file(
+        &app.project_root().join(".claude/settings.local.json"),
+        &socket_path.to_string_lossy(),
+    );
+
     let exo_role = if skip_permissions {
         None
     } else {
@@ -208,20 +230,9 @@ pub async fn run<R: Runtime>(
         Vec::new()
     };
 
-    // Hook event socket listener — async via tokio::net::UnixListener
+    // Hook event channel — socket was already bound before session spawns above.
     let (hook_tx, mut hook_rx) = mpsc::unbounded_channel::<(HookEvent, UnixStream)>();
     let perm_cancel = Arc::clone(&cancel);
-    let socket_path = crate::permission::session_socket_path();
-    let _ = std::fs::remove_file(&socket_path);
-    let listener = tokio::net::UnixListener::bind(&socket_path)?;
-    // SAFETY: called once at startup before spawning tasks that read env vars.
-    unsafe {
-        std::env::set_var(crate::permission::SOCKET_ENV, &socket_path);
-    }
-    crate::permission::write_socket_breadcrumb(app.project_root(), &socket_path);
-    if skip_permissions {
-        crate::permission::write_skip_permissions_breadcrumb(app.project_root());
-    }
     {
         let work_dirs: Vec<String> = state
             .exo

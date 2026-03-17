@@ -750,7 +750,7 @@ fn base_allowed_tools_minimal() -> Vec<&'static str> {
 /// Rewrite hook commands in settings JSON to prefix `CC_PERM_SOCKET=<path>`,
 /// so spawned agents' hooks connect to the correct dashboard socket.
 /// Matches any hook command under `.claude/hooks/`.
-fn embed_socket_in_hooks(settings: &mut serde_json::Value, sock_path: &str) {
+pub(crate) fn embed_socket_in_hooks(settings: &mut serde_json::Value, sock_path: &str) {
     let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
         return;
     };
@@ -805,6 +805,19 @@ pub fn reembed_socket_in_worktrees(work_dirs: &[String], sock_path: &str) {
         embed_socket_in_hooks(&mut settings, sock_path);
         let _ = std::fs::write(&settings_path, settings.to_string());
     }
+}
+
+/// Update the hook commands in a single settings file with the current socket path.
+/// If the file doesn't exist or has no hooks, this is a no-op.
+pub fn embed_socket_in_settings_file(settings_path: &Path, sock_path: &str) {
+    let Ok(content) = std::fs::read_to_string(settings_path) else {
+        return;
+    };
+    let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return;
+    };
+    embed_socket_in_hooks(&mut settings, sock_path);
+    let _ = std::fs::write(settings_path, settings.to_string());
 }
 
 /// Check whether a TCP port is reachable with a short timeout.
