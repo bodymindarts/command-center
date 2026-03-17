@@ -17,11 +17,7 @@ pub struct PermissionLogEntry {
 }
 
 pub fn log_permission(data_dir: &Path, entry: &PermissionLogEntry) {
-    let filename = match entry.role.as_str() {
-        "exo" => "permission-log-exo.jsonl",
-        "pm" => "permission-log-pm.jsonl",
-        _ => "permission-log-task.jsonl",
-    };
+    let filename = format!("permission-log-{}.jsonl", entry.role);
     let path = data_dir.join(filename);
     if let Ok(json) = serde_json::to_string(entry)
         && let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path)
@@ -58,7 +54,7 @@ mod tests {
     fn log_entry_serializes_with_task_fields() {
         let entry = PermissionLogEntry {
             ts: "2026-03-17T10:00:00Z".to_string(),
-            role: "task".to_string(),
+            role: "engineer".to_string(),
             task_name: Some("fix-bug".to_string()),
             tool: "Edit".to_string(),
             command: None,
@@ -66,7 +62,7 @@ mod tests {
         };
         let json = serde_json::to_string(&entry).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["role"], "task");
+        assert_eq!(parsed["role"], "engineer");
         assert_eq!(parsed["task_name"], "fix-bug");
         assert!(parsed.get("command").is_none());
     }
@@ -104,18 +100,33 @@ mod tests {
     }
 
     #[test]
-    fn log_permission_task_file() {
+    fn log_permission_engineer_file() {
         let dir = TempDir::new().unwrap();
         let entry = PermissionLogEntry {
             ts: "2026-03-17T10:00:00Z".to_string(),
-            role: "task".to_string(),
+            role: "engineer".to_string(),
             task_name: Some("my-task".to_string()),
             tool: "Write".to_string(),
             command: None,
             outcome: "denied".to_string(),
         };
         log_permission(dir.path(), &entry);
-        assert!(dir.path().join("permission-log-task.jsonl").exists());
+        assert!(dir.path().join("permission-log-engineer.jsonl").exists());
+    }
+
+    #[test]
+    fn log_permission_researcher_file() {
+        let dir = TempDir::new().unwrap();
+        let entry = PermissionLogEntry {
+            ts: "2026-03-17T10:00:00Z".to_string(),
+            role: "researcher".to_string(),
+            task_name: Some("explore-api".to_string()),
+            tool: "Bash".to_string(),
+            command: Some("curl https://example.com".to_string()),
+            outcome: "approved".to_string(),
+        };
+        log_permission(dir.path(), &entry);
+        assert!(dir.path().join("permission-log-researcher.jsonl").exists());
     }
 
     #[test]

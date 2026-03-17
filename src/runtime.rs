@@ -21,6 +21,8 @@ pub struct LaunchConfig<'a> {
     pub user_prompt: Option<&'a str>,
     /// When true, pass `--dangerously-skip-permissions` to the claude subprocess.
     pub skip_permissions: bool,
+    /// Role exported as `CC_SESSION_ROLE` in the launch script (e.g. skill name).
+    pub session_role: Option<&'a str>,
 }
 
 /// Bundled permission info extracted from a skill's `[agent]` section.
@@ -310,7 +312,11 @@ impl Runtime for TmuxRuntime {
         let claude_dir = config.work_dir.join(".claude");
         std::fs::create_dir_all(&claude_dir)?;
 
-        let mut script = format!("#!/bin/sh\nunset CLAUDECODE\nexec {claude_bin}");
+        let mut script = "#!/bin/sh\nunset CLAUDECODE\n".to_string();
+        if let Some(role) = config.session_role {
+            script.push_str(&format!("export CC_SESSION_ROLE={role}\n"));
+        }
+        script.push_str(&format!("exec {claude_bin}"));
         if config.skip_permissions {
             script.push_str(" --dangerously-skip-permissions");
         }

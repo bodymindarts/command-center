@@ -348,6 +348,7 @@ impl<R: Runtime> ClatApp<R> {
             work_dir: &work_dir,
             user_prompt: user_prompt.as_deref(),
             skip_permissions: self.skip_permissions,
+            session_role: Some(req.skill_name),
         })?;
         if task
             .launch_agent(result.pane_id.clone(), result.window_id.clone())
