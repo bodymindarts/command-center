@@ -15,6 +15,10 @@ pub struct ActivePermission {
     pub askuser_question: Option<String>,
     /// AskUser options (label, description pairs).
     pub askuser_options: Vec<(String, String)>,
+    /// Session role ("exo", "pm", or None for tasks).
+    pub session_role: Option<String>,
+    /// The raw tool_input JSON (used for permission logging).
+    pub tool_input: Option<serde_json::Value>,
 }
 
 impl ActivePermission {

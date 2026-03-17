@@ -5,6 +5,7 @@ mod config;
 mod jwt;
 mod mcp;
 mod permission;
+mod permission_log;
 mod primitives;
 mod project;
 mod runtime;

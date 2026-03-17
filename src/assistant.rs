@@ -7,6 +7,30 @@ use tokio::sync::mpsc;
 
 use crate::primitives::ProjectId;
 
+/// Identifies what role an assistant session plays — used to scope
+/// `--allowedTools` and set the `CC_SESSION_ROLE` env var.
+#[derive(Clone, Debug)]
+pub enum SessionRole {
+    Exo,
+    Pm,
+}
+
+impl SessionRole {
+    pub fn allowed_tools(&self) -> &str {
+        match self {
+            SessionRole::Exo => "Read,Grep,Glob,Edit,Write,Bash(clat:*),Bash(git:*),Bash(gh:*)",
+            SessionRole::Pm => "Read,Grep,Glob,Bash(clat:*)",
+        }
+    }
+
+    pub fn env_value(&self) -> &str {
+        match self {
+            SessionRole::Exo => "exo",
+            SessionRole::Pm => "pm",
+        }
+    }
+}
+
 pub const EXO_SYSTEM_PROMPT: &str = "\
 You are ExO, the executive orchestrator of a multi-agent command center. \
 You operate a three-tier hierarchy: User → ExO → PM(s) → Tasks.
@@ -144,6 +168,7 @@ pub struct AssistantSession {
     session_id: Option<String>,
     system_prompt: String,
     skip_permissions: bool,
+    role: Option<SessionRole>,
 }
 
 impl AssistantSession {
@@ -157,6 +182,7 @@ impl AssistantSession {
         system_prompt: &str,
         event_tx: mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
         skip_permissions: bool,
+        role: Option<SessionRole>,
     ) -> Self {
         let mut session = AssistantSession {
             stdin: None,
@@ -167,6 +193,7 @@ impl AssistantSession {
             session_id: session_id.map(|s| s.to_string()),
             system_prompt: system_prompt.to_string(),
             skip_permissions,
+            role,
         };
         session.spawn_process(session_id.is_some());
         session
@@ -184,6 +211,11 @@ impl AssistantSession {
         ];
         if self.skip_permissions {
             args.push("--dangerously-skip-permissions".to_string());
+        } else if let Some(ref role) = self.role {
+            args.extend([
+                "--allowedTools".to_string(),
+                role.allowed_tools().to_string(),
+            ]);
         } else {
             args.extend([
                 "--allowedTools".to_string(),
@@ -200,14 +232,16 @@ impl AssistantSession {
             args.push(sid.clone());
         }
 
-        let mut child = match Command::new("claude")
-            .args(&args)
+        let mut cmd = Command::new("claude");
+        cmd.args(&args)
             .env_remove("CLAUDECODE")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-        {
+            .stderr(Stdio::null());
+        if let Some(ref role) = self.role {
+            cmd.env("CC_SESSION_ROLE", role.env_value());
+        }
+        let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
                 let _ = self.event_tx.send((

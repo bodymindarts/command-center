@@ -22,7 +22,9 @@ use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
 
 use crate::app::ClatApp;
-use crate::assistant::{AssistantEvent, AssistantSession, EXO_SYSTEM_PROMPT, SessionKey};
+use crate::assistant::{
+    AssistantEvent, AssistantSession, EXO_SYSTEM_PROMPT, SessionKey, SessionRole,
+};
 use crate::permission::HookEvent;
 use crate::primitives::ProjectId;
 use crate::runtime::Runtime;
@@ -42,6 +44,7 @@ impl ProjectContext {
         system_prompt: &str,
         event_tx: mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
         skip_permissions: bool,
+        role: Option<SessionRole>,
     ) -> Self {
         let cancel = Arc::new(AtomicBool::new(false));
         let session = AssistantSession::new(
@@ -51,6 +54,7 @@ impl ProjectContext {
             system_prompt,
             event_tx,
             skip_permissions,
+            role,
         );
         ProjectContext { session, cancel }
     }
@@ -93,12 +97,18 @@ async fn init_project_context<R: Runtime>(
     state.add_project(*project_id, project_state);
     let prompt = crate::assistant::project_system_prompt(project_name);
     let session_key = SessionKey::Project(*project_id);
+    let role = if skip_permissions {
+        None
+    } else {
+        Some(SessionRole::Pm)
+    };
     ProjectContext::new(
         session_key,
         session_id.as_deref(),
         &prompt,
         event_tx,
         skip_permissions,
+        role,
     )
 }
 
@@ -159,6 +169,11 @@ pub async fn run<R: Runtime>(
     let (assistant_tx, mut assistant_rx) =
         mpsc::unbounded_channel::<(SessionKey, AssistantEvent)>();
 
+    let exo_role = if skip_permissions {
+        None
+    } else {
+        Some(SessionRole::Exo)
+    };
     let mut exo_session = AssistantSession::new(
         SessionKey::Exo,
         state.exo.session_id(),
@@ -166,6 +181,7 @@ pub async fn run<R: Runtime>(
         EXO_SYSTEM_PROMPT,
         assistant_tx.clone(),
         skip_permissions,
+        exo_role,
     );
 
     // Project contexts: one per project, keyed by project ID
@@ -278,6 +294,7 @@ pub async fn run<R: Runtime>(
         (None, None)
     };
 
+    let data_dir = app.project_root().join("data");
     let result = run_loop(
         &mut terminal,
         &mut state,
@@ -291,6 +308,7 @@ pub async fn run<R: Runtime>(
         assistant_tx,
         skip_permissions,
         boot_projects,
+        &data_dir,
     )
     .await;
 
@@ -345,6 +363,7 @@ async fn run_loop<R: Runtime>(
     assistant_tx: mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
     skip_permissions: bool,
     boot_projects: Vec<crate::project::Project>,
+    data_dir: &std::path::Path,
 ) -> anyhow::Result<()> {
     let mut event_stream = crossterm::event::EventStream::new();
     let mut last_tick = Instant::now();
@@ -407,7 +426,7 @@ async fn run_loop<R: Runtime>(
                                 )?;
                                 terminal.hide_cursor()?;
                                 terminal.clear()?;
-                            } else if !handlers::handle_global_keys(state, key, app, tg_tx).await {
+                            } else if !handlers::handle_global_keys(state, key, app, tg_tx, data_dir).await {
                                 handlers::handle_focus_key(state, key, app, exo_session, project_contexts).await;
                             }
                         }
@@ -444,7 +463,7 @@ async fn run_loop<R: Runtime>(
             // Telegram inbound events (optional)
             event = recv_optional(tg_rx) => {
                 if let Some(tg_msg) = event {
-                    handlers::dispatch_telegram_event(state, exo_session, app, tg_msg).await;
+                    handlers::dispatch_telegram_event(state, exo_session, app, tg_msg, data_dir).await;
                 }
             }
 

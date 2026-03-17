@@ -1,0 +1,148 @@
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::Path;
+
+use serde::Serialize;
+
+#[derive(Serialize)]
+pub struct PermissionLogEntry {
+    pub ts: String,
+    pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_name: Option<String>,
+    pub tool: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    pub outcome: String,
+}
+
+pub fn log_permission(data_dir: &Path, entry: &PermissionLogEntry) {
+    let filename = match entry.role.as_str() {
+        "exo" => "permission-log-exo.jsonl",
+        "pm" => "permission-log-pm.jsonl",
+        _ => "permission-log-task.jsonl",
+    };
+    let path = data_dir.join(filename);
+    if let Ok(json) = serde_json::to_string(entry)
+        && let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path)
+    {
+        let _ = writeln!(file, "{}", json);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn log_entry_serializes_with_all_fields() {
+        let entry = PermissionLogEntry {
+            ts: "2026-03-17T10:00:00Z".to_string(),
+            role: "exo".to_string(),
+            task_id: None,
+            task_name: None,
+            tool: "Bash".to_string(),
+            command: Some("git status".to_string()),
+            outcome: "approved".to_string(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["role"], "exo");
+        assert_eq!(parsed["tool"], "Bash");
+        assert_eq!(parsed["command"], "git status");
+        assert_eq!(parsed["outcome"], "approved");
+        assert!(parsed.get("task_id").is_none());
+        assert!(parsed.get("task_name").is_none());
+    }
+
+    #[test]
+    fn log_entry_serializes_with_task_fields() {
+        let entry = PermissionLogEntry {
+            ts: "2026-03-17T10:00:00Z".to_string(),
+            role: "task".to_string(),
+            task_id: Some("abc-123".to_string()),
+            task_name: Some("fix-bug".to_string()),
+            tool: "Edit".to_string(),
+            command: None,
+            outcome: "denied".to_string(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["role"], "task");
+        assert_eq!(parsed["task_id"], "abc-123");
+        assert_eq!(parsed["task_name"], "fix-bug");
+        assert!(parsed.get("command").is_none());
+    }
+
+    #[test]
+    fn log_permission_writes_to_correct_file() {
+        let dir = TempDir::new().unwrap();
+        let entry = PermissionLogEntry {
+            ts: "2026-03-17T10:00:00Z".to_string(),
+            role: "exo".to_string(),
+            task_id: None,
+            task_name: None,
+            tool: "Bash".to_string(),
+            command: Some("clat list".to_string()),
+            outcome: "approved".to_string(),
+        };
+        log_permission(dir.path(), &entry);
+        let content = std::fs::read_to_string(dir.path().join("permission-log-exo.jsonl")).unwrap();
+        assert!(content.contains("\"role\":\"exo\""));
+        assert!(content.ends_with('\n'));
+    }
+
+    #[test]
+    fn log_permission_pm_file() {
+        let dir = TempDir::new().unwrap();
+        let entry = PermissionLogEntry {
+            ts: "2026-03-17T10:00:00Z".to_string(),
+            role: "pm".to_string(),
+            task_id: None,
+            task_name: None,
+            tool: "Bash".to_string(),
+            command: Some("clat spawn test".to_string()),
+            outcome: "approved".to_string(),
+        };
+        log_permission(dir.path(), &entry);
+        assert!(dir.path().join("permission-log-pm.jsonl").exists());
+    }
+
+    #[test]
+    fn log_permission_task_file() {
+        let dir = TempDir::new().unwrap();
+        let entry = PermissionLogEntry {
+            ts: "2026-03-17T10:00:00Z".to_string(),
+            role: "task".to_string(),
+            task_id: Some("id-1".to_string()),
+            task_name: Some("my-task".to_string()),
+            tool: "Write".to_string(),
+            command: None,
+            outcome: "denied".to_string(),
+        };
+        log_permission(dir.path(), &entry);
+        assert!(dir.path().join("permission-log-task.jsonl").exists());
+    }
+
+    #[test]
+    fn log_permission_appends() {
+        let dir = TempDir::new().unwrap();
+        for i in 0..3 {
+            let entry = PermissionLogEntry {
+                ts: format!("2026-03-17T10:0{i}:00Z"),
+                role: "exo".to_string(),
+                task_id: None,
+                task_name: None,
+                tool: "Bash".to_string(),
+                command: Some(format!("cmd-{i}")),
+                outcome: "approved".to_string(),
+            };
+            log_permission(dir.path(), &entry);
+        }
+        let content = std::fs::read_to_string(dir.path().join("permission-log-exo.jsonl")).unwrap();
+        assert_eq!(content.lines().count(), 3);
+    }
+}
