@@ -134,7 +134,7 @@ fn log_resolved_permission(data_dir: &std::path::Path, resolved: &ResolvedPermis
     };
     let outcome = if resolved.allow { "approved" } else { "denied" };
     let entry = crate::permission_log::PermissionLogEntry {
-        ts: chrono::Utc::now().to_rfc3339(),
+        ts: chrono::Local::now().to_rfc3339(),
         role,
         task_name,
         tool: resolved.tool_name.clone(),

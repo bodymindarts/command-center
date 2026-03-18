@@ -18,7 +18,9 @@ pub struct PermissionLogEntry {
 
 pub fn log_permission(data_dir: &Path, entry: &PermissionLogEntry) {
     let filename = format!("permission-log-{}.jsonl", entry.role);
-    let path = data_dir.join(filename);
+    let logs_dir = data_dir.join("logs");
+    let _ = std::fs::create_dir_all(&logs_dir);
+    let path = logs_dir.join(filename);
     if let Ok(json) = serde_json::to_string(entry)
         && let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path)
     {
@@ -79,7 +81,8 @@ mod tests {
             outcome: "approved".to_string(),
         };
         log_permission(dir.path(), &entry);
-        let content = std::fs::read_to_string(dir.path().join("permission-log-exo.jsonl")).unwrap();
+        let content =
+            std::fs::read_to_string(dir.path().join("logs/permission-log-exo.jsonl")).unwrap();
         assert!(content.contains("\"role\":\"exo\""));
         assert!(content.ends_with('\n'));
     }
@@ -96,7 +99,7 @@ mod tests {
             outcome: "approved".to_string(),
         };
         log_permission(dir.path(), &entry);
-        assert!(dir.path().join("permission-log-pm.jsonl").exists());
+        assert!(dir.path().join("logs/permission-log-pm.jsonl").exists());
     }
 
     #[test]
@@ -111,7 +114,11 @@ mod tests {
             outcome: "denied".to_string(),
         };
         log_permission(dir.path(), &entry);
-        assert!(dir.path().join("permission-log-engineer.jsonl").exists());
+        assert!(
+            dir.path()
+                .join("logs/permission-log-engineer.jsonl")
+                .exists()
+        );
     }
 
     #[test]
@@ -126,7 +133,11 @@ mod tests {
             outcome: "approved".to_string(),
         };
         log_permission(dir.path(), &entry);
-        assert!(dir.path().join("permission-log-researcher.jsonl").exists());
+        assert!(
+            dir.path()
+                .join("logs/permission-log-researcher.jsonl")
+                .exists()
+        );
     }
 
     #[test]
@@ -143,7 +154,8 @@ mod tests {
             };
             log_permission(dir.path(), &entry);
         }
-        let content = std::fs::read_to_string(dir.path().join("permission-log-exo.jsonl")).unwrap();
+        let content =
+            std::fs::read_to_string(dir.path().join("logs/permission-log-exo.jsonl")).unwrap();
         assert_eq!(content.lines().count(), 3);
     }
 }
