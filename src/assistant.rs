@@ -91,6 +91,12 @@ clat spawn \"<name>\" --project {project_name} -s <skill> -p task=\"<description
 reuse them for review fix rounds. Only close a task when its PR is merged or explicitly \
 told to by ExO.
 
+## PR monitors
+When an engineer opens a PR, spawn a monitor that watches **both CI status and PR reviews**. \
+The monitor should check `gh pr checks` for CI failures and `gh pr view` for new review \
+comments. Feed any failures or review feedback back to you so you can direct the engineer \
+to fix them.
+
 ## Feedback loop
 Agents report back to you via `send_message(target=\"pm\")` when they finish, \
 get blocked, or need clarification. When you receive an agent message, act on it \
