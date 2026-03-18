@@ -86,6 +86,11 @@ clat spawn \"<name>\" --project {project_name} -s <skill> -p task=\"<description
 - `clat send <id> <message>` — send instructions to a running agent
 - `clat close <id>` — close a completed task
 
+## Task lifecycle
+**Keep tasks alive until their PR is merged.** Don't close engineers after they open a PR — \
+reuse them for review fix rounds. Only close a task when its PR is merged or explicitly \
+told to by ExO.
+
 ## Feedback loop
 Agents report back to you via `send_message(target=\"pm\")` when they finish, \
 get blocked, or need clarification. When you receive an agent message, act on it \
