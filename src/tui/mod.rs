@@ -415,7 +415,7 @@ async fn run_loop<R: Runtime>(
                                 )?;
                                 terminal.hide_cursor()?;
                                 terminal.clear()?;
-                            } else if !handlers::handle_global_keys(state, key, app, tg_tx, data_dir).await {
+                            } else if !handlers::handle_global_keys(state, key, app, tg_tx).await {
                                 handlers::handle_focus_key(state, key, app, exo_session, project_contexts).await;
                             }
                         }
@@ -445,6 +445,7 @@ async fn run_loop<R: Runtime>(
                         stream,
                         tg_tx,
                         &mut tg_perm,
+                        data_dir,
                     ).await;
                 }
             }
@@ -452,7 +453,7 @@ async fn run_loop<R: Runtime>(
             // Telegram inbound events (optional)
             event = recv_optional(tg_rx) => {
                 if let Some(tg_msg) = event {
-                    handlers::dispatch_telegram_event(state, exo_session, app, tg_msg, data_dir).await;
+                    handlers::dispatch_telegram_event(state, exo_session, app, tg_msg).await;
                 }
             }
 

@@ -69,16 +69,12 @@ fn parse_ask_user_options(
     Some((question, parsed))
 }
 
-/// Info returned from a resolved permission — enough to write the response and log it.
+/// Info returned from a resolved permission — enough to write the response.
 struct ResolvedPermission {
     stream: UnixStream,
     allow: bool,
     permission_suggestions: Vec<serde_json::Value>,
     perm_id: u64,
-    tool_name: String,
-    tool_input: Option<serde_json::Value>,
-    task_name: TaskName,
-    skill_name: Option<String>,
 }
 
 /// Resolve and consume the active permission request.
@@ -90,58 +86,7 @@ fn resolve_permission(state: &mut ScreenState, allow: bool) -> Option<ResolvedPe
         allow,
         permission_suggestions: perm.permission_suggestions,
         perm_id: perm.perm_id,
-        tool_name: perm.tool_name,
-        tool_input: perm.tool_input,
-        task_name: perm.task_name,
-        skill_name: perm.skill_name,
     })
-}
-
-/// Build a `ResolvedPermission` from an `ActivePermission` + allow flag.
-fn resolved_from_active(perm: ActivePermission, allow: bool) -> ResolvedPermission {
-    ResolvedPermission {
-        stream: perm.stream,
-        allow,
-        permission_suggestions: perm.permission_suggestions,
-        perm_id: perm.perm_id,
-        tool_name: perm.tool_name,
-        tool_input: perm.tool_input,
-        task_name: perm.task_name,
-        skill_name: perm.skill_name,
-    }
-}
-
-/// Build and write a permission log entry.
-fn log_resolved_permission(data_dir: &std::path::Path, resolved: &ResolvedPermission) {
-    let role = resolved
-        .skill_name
-        .clone()
-        .unwrap_or_else(|| resolved.task_name.to_string());
-    let command = if resolved.tool_name == "Bash" {
-        resolved
-            .tool_input
-            .as_ref()
-            .and_then(|v| v.get("command"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-    } else {
-        None
-    };
-    let task_name = if role != "exo" {
-        Some(role.clone())
-    } else {
-        None
-    };
-    let outcome = if resolved.allow { "approved" } else { "denied" };
-    let entry = crate::permission_log::PermissionLogEntry {
-        ts: chrono::Local::now().to_rfc3339(),
-        role,
-        task_name,
-        tool: resolved.tool_name.clone(),
-        command,
-        outcome: outcome.to_string(),
-    };
-    crate::permission_log::log_permission(data_dir, &entry);
 }
 
 /// Notify Telegram that a permission was resolved (if the bot is active).
@@ -227,7 +172,6 @@ pub(super) async fn handle_global_keys<R: Runtime>(
     key: KeyEvent,
     app: &ClatApp<R>,
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
-    data_dir: &std::path::Path,
 ) -> bool {
     let kb = &state.keybindings.global;
 
@@ -250,7 +194,6 @@ pub(super) async fn handle_global_keys<R: Runtime>(
     {
         if let Some(resolved) = resolve_permission(state, true) {
             let perm_id = resolved.perm_id;
-            log_resolved_permission(data_dir, &resolved);
             let _ = write_response_to_stream(resolved.stream, resolved.allow, None);
             notify_tg_resolved(tg_tx, perm_id, "✅ Approved locally");
         }
@@ -263,7 +206,6 @@ pub(super) async fn handle_global_keys<R: Runtime>(
     {
         if let Some(resolved) = resolve_permission(state, true) {
             let perm_id = resolved.perm_id;
-            log_resolved_permission(data_dir, &resolved);
             let _ = write_response_to_stream(
                 resolved.stream,
                 resolved.allow,
@@ -280,7 +222,6 @@ pub(super) async fn handle_global_keys<R: Runtime>(
     {
         if let Some(resolved) = resolve_permission(state, false) {
             let perm_id = resolved.perm_id;
-            log_resolved_permission(data_dir, &resolved);
             let _ = write_response_to_stream(resolved.stream, resolved.allow, None);
             notify_tg_resolved(tg_tx, perm_id, "❌ Denied locally");
         }
@@ -296,7 +237,7 @@ pub(super) async fn handle_global_keys<R: Runtime>(
             .peek(&state.focused_perm_key())
             .is_some_and(|p| p.is_askuser())
     {
-        handle_askuser_select(state, key, tg_tx, data_dir);
+        handle_askuser_select(state, key, tg_tx);
         return true;
     }
 
@@ -374,7 +315,6 @@ fn handle_askuser_select(
     state: &mut ScreenState,
     key: KeyEvent,
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
-    data_dir: &std::path::Path,
 ) {
     let digit = match key.code {
         KeyCode::Char(c) => c.to_digit(10).unwrap_or(1) as usize,
@@ -387,18 +327,7 @@ fn handle_askuser_select(
             let label = perm.askuser_options[idx].0.clone();
             let perm_id = perm.perm_id;
             if let Some(perm) = state.permissions.take(&perm_key) {
-                let resolved = ResolvedPermission {
-                    stream: perm.stream,
-                    allow: true,
-                    permission_suggestions: perm.permission_suggestions,
-                    perm_id: perm.perm_id,
-                    tool_name: perm.tool_name,
-                    tool_input: perm.tool_input,
-                    task_name: perm.task_name,
-                    skill_name: perm.skill_name,
-                };
-                log_resolved_permission(data_dir, &resolved);
-                let _ = write_response_with_message(resolved.stream, true, &label);
+                let _ = write_response_with_message(perm.stream, true, &label);
                 notify_tg_resolved(tg_tx, perm_id, &format!("✅ Selected: {label}"));
             }
         }
@@ -961,6 +890,7 @@ pub(super) async fn dispatch_hook_event<R: Runtime>(
     stream: UnixStream,
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
     tg_perm: &mut TgPermState,
+    data_dir: &std::path::Path,
 ) {
     match event {
         HookEvent::Resolved { cwd } => {
@@ -980,6 +910,7 @@ pub(super) async fn dispatch_hook_event<R: Runtime>(
                 tg_tx,
                 &mut tg_perm.ids,
                 &mut tg_perm.counter,
+                data_dir,
             );
         }
         // New hook events — received and dropped for now.
@@ -1147,10 +1078,37 @@ fn handle_hook_permission(
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
     tg_perm_ids: &mut HashSet<u64>,
     perm_id_counter: &mut u64,
+    data_dir: &std::path::Path,
 ) {
     let task_name = state.task_name_for_cwd_or(&req.cwd, TaskName::from(EXO_PERM_KEY.to_string()));
     let skill_name = state.global_task_skill(&task_name).map(|s| s.to_string());
     state.mark_task_active_by_name(&task_name);
+
+    // Log the incoming permission request immediately.
+    let role = skill_name.clone().unwrap_or_else(|| task_name.to_string());
+    let command = if req.tool_name == "Bash" {
+        req.tool_input
+            .as_ref()
+            .and_then(|v| v.get("command"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    } else {
+        None
+    };
+    let log_task_name = if role != "exo" {
+        Some(task_name.to_string())
+    } else {
+        None
+    };
+    let entry = crate::permission_log::PermissionLogEntry {
+        ts: chrono::Local::now().to_rfc3339(),
+        role,
+        task_name: log_task_name,
+        tool: req.tool_name.clone(),
+        command,
+        outcome: "pending".to_string(),
+    };
+    crate::permission_log::log_permission(data_dir, &entry);
     *perm_id_counter += 1;
     let perm_id = *perm_id_counter;
     if let Some(tx) = tg_tx {
@@ -1190,13 +1148,11 @@ fn handle_hook_permission(
         perm_id,
         stream,
         task_name: task_name.clone(),
-        skill_name,
         tool_name: req.tool_name,
         tool_input_summary: req.tool_input_summary,
         permission_suggestions: req.permission_suggestions,
         askuser_question,
         askuser_options,
-        tool_input: req.tool_input,
     };
     state.permissions.add(perm);
 }
@@ -1207,7 +1163,6 @@ pub(super) async fn dispatch_telegram_event<R: Runtime>(
     exo_session: &mut AssistantSession,
     app: &ClatApp<R>,
     tg_msg: telegram::TgInbound,
-    data_dir: &std::path::Path,
 ) {
     match tg_msg {
         telegram::TgInbound::PermissionDecision { perm_id, action } => {
@@ -1229,9 +1184,7 @@ pub(super) async fn dispatch_telegram_event<R: Runtime>(
                 } else {
                     None
                 };
-                let resolved = resolved_from_active(perm, allow);
-                log_resolved_permission(data_dir, &resolved);
-                let _ = write_response_to_stream(resolved.stream, allow, suggestions.as_deref());
+                let _ = write_response_to_stream(perm.stream, allow, suggestions.as_deref());
             }
         }
         telegram::TgInbound::QuestionAnswer { perm_id, answer } => {
@@ -1247,9 +1200,7 @@ pub(super) async fn dispatch_telegram_event<R: Runtime>(
                     .is_some_and(|front| front.perm_id == perm_id)
                 && let Some(perm) = state.permissions.take(&name)
             {
-                let resolved = resolved_from_active(perm, true);
-                log_resolved_permission(data_dir, &resolved);
-                let _ = write_response_with_message(resolved.stream, true, &answer);
+                let _ = write_response_with_message(perm.stream, true, &answer);
             }
         }
         telegram::TgInbound::ExoMessage { text } => {
