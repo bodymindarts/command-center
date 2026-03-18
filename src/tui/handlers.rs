@@ -78,6 +78,7 @@ struct ResolvedPermission {
     tool_name: String,
     tool_input: Option<serde_json::Value>,
     task_name: TaskName,
+    skill_name: Option<String>,
 }
 
 /// Resolve and consume the active permission request.
@@ -92,6 +93,7 @@ fn resolve_permission(state: &mut ScreenState, allow: bool) -> Option<ResolvedPe
         tool_name: perm.tool_name,
         tool_input: perm.tool_input,
         task_name: perm.task_name,
+        skill_name: perm.skill_name,
     })
 }
 
@@ -105,12 +107,16 @@ fn resolved_from_active(perm: ActivePermission, allow: bool) -> ResolvedPermissi
         tool_name: perm.tool_name,
         tool_input: perm.tool_input,
         task_name: perm.task_name,
+        skill_name: perm.skill_name,
     }
 }
 
 /// Build and write a permission log entry.
 fn log_resolved_permission(data_dir: &std::path::Path, resolved: &ResolvedPermission) {
-    let role = resolved.task_name.to_string();
+    let role = resolved
+        .skill_name
+        .clone()
+        .unwrap_or_else(|| resolved.task_name.to_string());
     let command = if resolved.tool_name == "Bash" {
         resolved
             .tool_input
@@ -389,6 +395,7 @@ fn handle_askuser_select(
                     tool_name: perm.tool_name,
                     tool_input: perm.tool_input,
                     task_name: perm.task_name,
+                    skill_name: perm.skill_name,
                 };
                 log_resolved_permission(data_dir, &resolved);
                 let _ = write_response_with_message(resolved.stream, true, &label);
@@ -1142,6 +1149,7 @@ fn handle_hook_permission(
     perm_id_counter: &mut u64,
 ) {
     let task_name = state.task_name_for_cwd_or(&req.cwd, TaskName::from(EXO_PERM_KEY.to_string()));
+    let skill_name = state.global_task_skill(&task_name).map(|s| s.to_string());
     state.mark_task_active_by_name(&task_name);
     *perm_id_counter += 1;
     let perm_id = *perm_id_counter;
@@ -1182,6 +1190,7 @@ fn handle_hook_permission(
         perm_id,
         stream,
         task_name: task_name.clone(),
+        skill_name,
         tool_name: req.tool_name,
         tool_input_summary: req.tool_input_summary,
         permission_suggestions: req.permission_suggestions,
@@ -1304,7 +1313,11 @@ pub(super) async fn tick_refresh<R: Runtime>(
         .iter()
         .filter_map(|t| t.work_dir.as_ref().map(|wd| (t.name.clone(), wd.clone())))
         .collect();
-    state.update_global_task_mappings(projects_map, work_dirs);
+    let skills_map = all_active
+        .iter()
+        .map(|t| (t.name.clone(), t.skill_name.clone()))
+        .collect();
+    state.update_global_task_mappings(projects_map, work_dirs, skills_map);
     for perm in state.permissions.drain_stale(&all_running_names) {
         notify_tg_resolved(tg_tx, perm.perm_id, "⚪ Expired (task ended)");
         let _ = write_response_to_stream(perm.stream, false, None);

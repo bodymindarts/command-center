@@ -8,6 +8,7 @@ pub struct ActivePermission {
     pub perm_id: u64,
     pub stream: UnixStream,
     pub task_name: TaskName,
+    pub skill_name: Option<String>,
     pub tool_name: String,
     pub tool_input_summary: String,
     pub permission_suggestions: Vec<serde_json::Value>,

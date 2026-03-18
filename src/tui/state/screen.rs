@@ -42,6 +42,9 @@ pub struct ScreenState {
     /// Used for CWD→task matching in permission/resolved/idle handlers
     /// so lookups work regardless of which project is currently displayed.
     global_task_work_dirs: Vec<(TaskName, String)>,
+    /// Global map of task_name → skill_name for all running tasks.
+    /// Used for permission logging (log files are per-skill, not per-task).
+    global_task_skills: HashMap<TaskName, String>,
     /// User-configurable keybindings.
     pub keybindings: Keybindings,
 }
@@ -63,6 +66,7 @@ impl ScreenState {
             search_input: InputState::new(),
             global_task_projects: HashMap::new(),
             global_task_work_dirs: Vec::new(),
+            global_task_skills: HashMap::new(),
             keybindings,
         }
     }
@@ -133,13 +137,19 @@ impl ScreenState {
         &mut self,
         projects: HashMap<TaskName, Option<ProjectId>>,
         work_dirs: Vec<(TaskName, String)>,
+        skills: HashMap<TaskName, String>,
     ) {
         self.global_task_projects = projects;
         self.global_task_work_dirs = work_dirs;
+        self.global_task_skills = skills;
     }
 
     pub fn global_task_project(&self, name: &TaskName) -> Option<&Option<ProjectId>> {
         self.global_task_projects.get(name)
+    }
+
+    pub fn global_task_skill(&self, name: &TaskName) -> Option<&str> {
+        self.global_task_skills.get(name).map(|s| s.as_str())
     }
 
     pub fn render_loop_starting(&mut self, projects: Vec<Project>) {
