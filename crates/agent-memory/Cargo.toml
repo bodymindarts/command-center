@@ -1,0 +1,22 @@
+[package]
+name = "agent-memory"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+embed = ["dep:fastembed"]
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+sqlite-vec = "0.1"
+zerocopy = { version = "0.7", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+uuid = { version = "1", features = ["v7"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+tracing = "0.1"
+walkdir = "2"
+fastembed = { version = "4", optional = true }
