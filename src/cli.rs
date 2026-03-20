@@ -286,6 +286,18 @@ pub enum MemoryAction {
         id: String,
     },
 
+    /// Pin a natural memory (exempt from decay)
+    Pin {
+        /// Memory ID (prefix match)
+        id: String,
+    },
+
+    /// Unpin a natural memory (subject to decay again)
+    Unpin {
+        /// Memory ID (prefix match)
+        id: String,
+    },
+
     /// Rebuild index from markdown files on disk
     Reindex,
 }

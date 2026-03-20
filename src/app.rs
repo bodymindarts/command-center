@@ -124,6 +124,9 @@ impl<R: Runtime> ClatApp<R> {
             let config = agent_memory::config::Config {
                 memories_dir: paths.data_dir.join("memory"),
                 db_path: paths.data_dir.join("memory.db"),
+                decay_half_life_days: agent_memory::config::Config::DEFAULT_HALF_LIFE_DAYS,
+                decay_min_strength: agent_memory::config::Config::DEFAULT_MIN_STRENGTH,
+                decay_enabled: true,
             };
             std::fs::create_dir_all(&config.memories_dir)?;
             agent_memory::service::MemoryService::new(&config)
@@ -198,6 +201,9 @@ impl<R: Runtime> ClatApp<R> {
         let config = agent_memory::config::Config {
             memories_dir: paths.data_dir.join("memory"),
             db_path: paths.data_dir.join("memory.db"),
+            decay_half_life_days: agent_memory::config::Config::DEFAULT_HALF_LIFE_DAYS,
+            decay_min_strength: agent_memory::config::Config::DEFAULT_MIN_STRENGTH,
+            decay_enabled: true,
         };
         std::fs::create_dir_all(&config.memories_dir).unwrap();
         let memory = agent_memory::service::MemoryService::new(&config)

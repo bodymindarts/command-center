@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -24,6 +24,10 @@ pub struct SearchResult {
     pub project: Option<String>,
     pub memory_type: MemoryType,
     pub score: f64,
+    /// Decay factor (1.0 = fully fresh, 0.0 = fully decayed). Reports always 1.0.
+    pub decay_factor: f64,
+    /// Whether this memory is pinned (always false for reports).
+    pub pinned: bool,
 }
 
 /// The type of memory in a search result.
@@ -87,6 +91,24 @@ impl MemoryItem {
     }
 }
 
+/// Decay configuration stored in the service.
+#[derive(Debug, Clone)]
+struct DecayConfig {
+    half_life_days: f64,
+    min_strength: f64,
+    enabled: bool,
+}
+
+/// Compute exponential decay factor based on time since last access.
+fn decay_factor(last_accessed: DateTime<Utc>, half_life_days: f64) -> f64 {
+    let lambda = (2.0_f64).ln() / half_life_days;
+    let days_elapsed = Utc::now()
+        .signed_duration_since(last_accessed)
+        .num_seconds() as f64
+        / 86400.0;
+    (-lambda * days_elapsed).exp()
+}
+
 /// High-level orchestrator for memory operations.
 ///
 /// Coordinates the SQLite store, fastembed embedder, and markdown file I/O.
@@ -98,6 +120,7 @@ pub struct MemoryService {
     report_repo: ResearchReportRepo,
     embedder: Option<Embedder>,
     markdown: MarkdownStore,
+    decay: DecayConfig,
 }
 
 impl std::fmt::Debug for MemoryService {
@@ -133,12 +156,19 @@ impl MemoryService {
 
         let markdown = MarkdownStore::new(config.memories_dir.clone());
 
+        let decay = DecayConfig {
+            half_life_days: config.decay_half_life_days,
+            min_strength: config.decay_min_strength,
+            enabled: config.decay_enabled,
+        };
+
         Ok(Self {
             search,
             natural_repo,
             report_repo,
             embedder,
             markdown,
+            decay,
         })
     }
 
@@ -210,6 +240,24 @@ impl MemoryService {
         limit: usize,
     ) -> Result<Vec<NaturalMemory>, AgentMemoryError> {
         self.natural_repo.list(project, limit).await
+    }
+
+    /// Pin a natural memory (exempt from decay).
+    #[tracing::instrument(name = "agent_memory.service.pin", skip_all, fields(id = %id_or_prefix))]
+    pub async fn pin(&self, id_or_prefix: &str) -> Result<NaturalMemory, AgentMemoryError> {
+        let memory = self.natural_repo.resolve_id(id_or_prefix).await?;
+        self.natural_repo.set_pinned(&memory.id, true).await?;
+        tracing::info!(id = %memory.id, "Memory pinned");
+        self.natural_repo.find_by_id(&memory.id).await
+    }
+
+    /// Unpin a natural memory (subject to decay again).
+    #[tracing::instrument(name = "agent_memory.service.unpin", skip_all, fields(id = %id_or_prefix))]
+    pub async fn unpin(&self, id_or_prefix: &str) -> Result<NaturalMemory, AgentMemoryError> {
+        let memory = self.natural_repo.resolve_id(id_or_prefix).await?;
+        self.natural_repo.set_pinned(&memory.id, false).await?;
+        tracing::info!(id = %memory.id, "Memory unpinned");
+        self.natural_repo.find_by_id(&memory.id).await
     }
 
     // ── Research reports ────────────────────────────────────────────
@@ -395,12 +443,14 @@ impl MemoryService {
         let mut ranked: Vec<(String, f64)> = scores.into_iter().collect();
         ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Fetch full memories and build results.
+        // Fetch full memories and build results with decay scoring.
         let mut results = Vec::new();
-        for (id, score) in &ranked {
+
+        for (id, rrf_score) in &ranked {
             let mem_type = type_map.get(id).map(|s| s.as_str()).unwrap_or("natural");
             let result = match mem_type {
                 "report" => {
+                    // Reports never decay.
                     let report_id: Result<ResearchReportId, _> = id.parse();
                     if let Ok(rid) = report_id {
                         match self.report_repo.find_by_id(rid).await {
@@ -417,7 +467,9 @@ impl MemoryService {
                                     tags: r.tags.clone(),
                                     project: r.project.clone(),
                                     memory_type: MemoryType::Report,
-                                    score: *score,
+                                    score: *rrf_score,
+                                    decay_factor: 1.0,
+                                    pinned: false,
                                 })
                             }
                             Err(_) => None,
@@ -433,6 +485,20 @@ impl MemoryService {
                         {
                             continue;
                         }
+
+                        let df = if !self.decay.enabled || m.pinned {
+                            1.0
+                        } else {
+                            let accessed = m.last_accessed.unwrap_or(m.created_at);
+                            decay_factor(accessed, self.decay.half_life_days)
+                        };
+
+                        // Filter below min_strength.
+                        if self.decay.enabled && !m.pinned && df < self.decay.min_strength {
+                            continue;
+                        }
+
+                        let adjusted_score = rrf_score * df;
                         Some(SearchResult {
                             id: m.id.clone(),
                             title: m.title.clone(),
@@ -440,7 +506,9 @@ impl MemoryService {
                             tags: m.tags.clone(),
                             project: m.project.clone(),
                             memory_type: MemoryType::Natural,
-                            score: *score,
+                            score: adjusted_score,
+                            decay_factor: df,
+                            pinned: m.pinned,
                         })
                     }
                     Err(_) => None,
@@ -449,10 +517,27 @@ impl MemoryService {
 
             if let Some(r) = result {
                 results.push(r);
-                if results.len() >= limit {
-                    break;
-                }
             }
+        }
+
+        // Re-sort by adjusted score descending.
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(limit);
+
+        // Collect IDs of natural memories actually returned, then record access.
+        let returned_natural_ids: Vec<String> = results
+            .iter()
+            .filter(|r| r.memory_type == MemoryType::Natural)
+            .map(|r| r.id.clone())
+            .collect();
+        if !returned_natural_ids.is_empty()
+            && let Err(e) = self.natural_repo.record_access(&returned_natural_ids).await
+        {
+            tracing::warn!(error = %e, "Failed to record access for search results");
         }
 
         Ok(results)
@@ -461,11 +546,22 @@ impl MemoryService {
     // ── Shared operations ───────────────────────────────────────────
 
     /// Get a memory by ID or prefix (returns either type).
+    /// Records access for NaturalMemory (reinforcement).
     #[tracing::instrument(name = "agent_memory.service.get", skip_all, fields(id = %id_or_prefix))]
     pub async fn get(&self, id_or_prefix: &str) -> Result<MemoryItem, AgentMemoryError> {
         // Try natural memory first.
         match self.natural_repo.resolve_id(id_or_prefix).await {
-            Ok(m) => return Ok(MemoryItem::Natural(m)),
+            Ok(m) => {
+                // Record access (reinforcement).
+                if let Err(e) = self
+                    .natural_repo
+                    .record_access(std::slice::from_ref(&m.id))
+                    .await
+                {
+                    tracing::warn!(error = %e, "Failed to record access");
+                }
+                return Ok(MemoryItem::Natural(m));
+            }
             Err(AgentMemoryError::NotFound(_)) => {}
             Err(e) => return Err(e),
         }

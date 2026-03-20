@@ -19,6 +19,12 @@ struct Frontmatter {
     source_type: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    last_accessed: Option<DateTime<Utc>>,
+    #[serde(default)]
+    access_count: i64,
+    #[serde(default)]
+    pinned: bool,
 }
 
 /// Handles reading and writing markdown memory files.
@@ -59,6 +65,9 @@ impl MarkdownStore {
             source_type: memory.source_type.clone(),
             created_at: memory.created_at,
             updated_at: memory.updated_at,
+            last_accessed: memory.last_accessed,
+            access_count: memory.access_count,
+            pinned: memory.pinned,
         };
 
         let yaml = serde_yaml::to_string(&frontmatter)?;
@@ -134,9 +143,9 @@ fn parse_markdown(raw: &str, path: &Path) -> Result<NaturalMemory, AgentMemoryEr
         file_path: path.to_string_lossy().to_string(),
         created_at: fm.created_at,
         updated_at: fm.updated_at,
-        last_accessed: None,
-        access_count: 0,
-        pinned: false,
+        last_accessed: fm.last_accessed,
+        access_count: fm.access_count,
+        pinned: fm.pinned,
     })
 }
 

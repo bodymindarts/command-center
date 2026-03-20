@@ -158,6 +158,39 @@ impl NaturalMemoryRepo {
         Ok(())
     }
 
+    /// Record access for a batch of memory IDs (reset last_accessed, increment access_count).
+    pub async fn record_access(&self, ids: &[String]) -> Result<(), AgentMemoryError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let now = Utc::now().to_rfc3339();
+        let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{}", i + 1)).collect();
+        let sql = format!(
+            "UPDATE natural_memories SET last_accessed = ?1, access_count = access_count + 1
+             WHERE id IN ({})",
+            placeholders.join(", ")
+        );
+        let mut query = sqlx::query(&sql).bind(&now);
+        for id in ids {
+            query = query.bind(id);
+        }
+        query.execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Set the pinned status for a memory.
+    pub async fn set_pinned(&self, id: &str, pinned: bool) -> Result<(), AgentMemoryError> {
+        let result = sqlx::query("UPDATE natural_memories SET pinned = ? WHERE id = ?")
+            .bind(pinned as i32)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        if result.rows_affected() == 0 {
+            return Err(AgentMemoryError::NotFound(format!("natural memory '{id}'")));
+        }
+        Ok(())
+    }
+
     /// Fetch memories by a list of IDs.
     pub async fn get_by_ids(&self, ids: &[String]) -> Result<Vec<NaturalMemory>, AgentMemoryError> {
         if ids.is_empty() {
