@@ -519,6 +519,10 @@ async fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow
                 memory_type: String,
                 #[tabled(rename = "Score")]
                 score: String,
+                #[tabled(rename = "Decay")]
+                decay: String,
+                #[tabled(rename = "📌")]
+                pinned: String,
                 #[tabled(rename = "Title")]
                 title: String,
                 #[tabled(rename = "Tags")]
@@ -537,6 +541,12 @@ async fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow
                         id: r.id[..8].to_string(),
                         memory_type: r.memory_type.to_string(),
                         score: format!("{:.4}", r.score),
+                        decay: format!("{:.0}%", r.decay_factor * 100.0),
+                        pinned: if r.pinned {
+                            "y".to_string()
+                        } else {
+                            String::new()
+                        },
                         title: r.title.clone(),
                         tags: r.tags.join(", "),
                         project: r.project.clone().unwrap_or_else(|| "-".to_string()),
@@ -644,6 +654,14 @@ async fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow
             };
             mem.delete(&id).await?;
             println!("Deleted memory {} — {}", short_id, title);
+        }
+        MemoryAction::Pin { id } => {
+            let memory = mem.pin(&id).await?;
+            println!("Pinned memory {} — {}", &memory.id[..8], memory.title);
+        }
+        MemoryAction::Unpin { id } => {
+            let memory = mem.unpin(&id).await?;
+            println!("Unpinned memory {} — {}", &memory.id[..8], memory.title);
         }
         MemoryAction::Reindex => {
             let count = mem.reindex().await?;
