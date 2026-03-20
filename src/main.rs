@@ -461,7 +461,7 @@ async fn cmd_complete(
 }
 
 fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow::Result<()> {
-    let mem = app.memory()?;
+    let mem = app.memory();
 
     match action {
         MemoryAction::Store {
