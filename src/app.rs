@@ -656,8 +656,16 @@ impl<R: Runtime> ClatApp<R> {
         self.store.tasks.list_visible_for_project(project_id).await
     }
 
-    pub async fn messages(&self, chat_id: &ChatId) -> anyhow::Result<Vec<TaskMessage>> {
-        self.store.list_messages(chat_id).await
+    pub async fn messages_last(
+        &self,
+        chat_id: &ChatId,
+        limit: u32,
+    ) -> anyhow::Result<Vec<TaskMessage>> {
+        self.store.list_messages_last(chat_id, limit).await
+    }
+
+    pub async fn message_count(&self, chat_id: &ChatId) -> anyhow::Result<u32> {
+        self.store.message_count(chat_id).await
     }
 
     pub fn list_skills(&self) -> anyhow::Result<Vec<SkillSummary>> {
@@ -704,12 +712,13 @@ impl<R: Runtime> ClatApp<R> {
         self.store.insert_message(&chat, role, content).await
     }
 
-    pub async fn session_messages(
+    pub async fn session_messages_last(
         &self,
         project_id: Option<&ProjectId>,
+        limit: u32,
     ) -> anyhow::Result<Vec<TaskMessage>> {
         let chat = Self::chat_id(project_id);
-        self.store.list_messages(&chat).await
+        self.store.list_messages_last(&chat, limit).await
     }
 
     // -- Project methods --

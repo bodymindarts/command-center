@@ -1412,14 +1412,32 @@ pub(super) async fn tick_refresh<R: Runtime>(
     }
     let active = state.active_state_mut();
     active.task_list.update_window_numbers(app.window_numbers());
-    // Update selected messages and live output for detail view
+    // Update selected messages and live output for detail view.
+    // Only reload messages when the selected task changed or new messages arrived
+    // (detected via a lightweight COUNT query).
     if let Some(task) = active.task_list.selected_task() {
-        let chat = ChatId::Task(task.id);
+        let task_id = task.id;
+        let chat = ChatId::Task(task_id);
         let is_running = task.status.is_running();
         let pane = task.tmux_pane.clone();
-        if let Ok(messages) = app.messages(&chat).await {
+
+        let should_reload = match app.message_count(&chat).await {
+            Ok(count) => {
+                if active.task_list.needs_message_reload(task_id, count) {
+                    Some(count)
+                } else {
+                    None
+                }
+            }
+            Err(_) => Some(0),
+        };
+        if let Some(db_count) = should_reload
+            && let Ok(messages) = app.messages_last(&chat, 200).await
+        {
             active.task_list.set_selected_messages(messages);
+            active.task_list.mark_messages_loaded(task_id, db_count);
         }
+
         if is_running {
             active.task_list.set_live_output(
                 pane.as_ref()
