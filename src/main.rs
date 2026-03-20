@@ -22,7 +22,7 @@ use tabled::{Table, Tabled};
 use std::sync::Arc;
 
 use crate::app::{ClatApp, PromptMode, SpawnRequest, WorkDirMode};
-use crate::cli::{AgentCommand, Cli, Command, ProjectAction, SkillAction};
+use crate::cli::{AgentCommand, Cli, Command, MemoryAction, ProjectAction, SkillAction};
 use crate::primitives::MessageRole;
 use crate::runtime::{Runtime, TmuxRuntime};
 
@@ -110,6 +110,7 @@ async fn main() -> anyhow::Result<()> {
         },
         Command::Skill { action } => cmd_skill(action, app)?,
         Command::Project { action } => cmd_project(action, app).await?,
+        Command::Memory { action } => cmd_memory(action, &app)?,
         Command::Agent { action } => match action {
             AgentCommand::PermissionGate => permission::gate_request()?,
             AgentCommand::PermissionPrompt {
@@ -455,6 +456,157 @@ async fn cmd_complete(
         result.task_name,
         result.task_id.short()
     );
+
+    Ok(())
+}
+
+fn init_memory_service(
+    app: &ClatApp<impl Runtime>,
+) -> anyhow::Result<agent_memory::service::MemoryService> {
+    let data_dir = app.project_root().join("data");
+    let config = agent_memory::config::Config {
+        memories_dir: data_dir.join("memory"),
+        db_path: data_dir.join("memory.db"),
+    };
+    std::fs::create_dir_all(&config.memories_dir).context("failed to create memory directory")?;
+    agent_memory::service::MemoryService::new(&config)
+        .context("failed to initialize memory service")
+}
+
+fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow::Result<()> {
+    let svc = init_memory_service(app)?;
+
+    match action {
+        MemoryAction::Store {
+            title,
+            content,
+            tag,
+            project,
+        } => {
+            let new = agent_memory::memory::NewMemory {
+                title,
+                content,
+                tags: tag,
+                project,
+                source_task: None,
+                source_type: "cli".to_string(),
+            };
+            let memory = svc.store(new)?;
+            println!("Stored memory {} — {}", &memory.id[..8], memory.title);
+        }
+        MemoryAction::Search {
+            query,
+            project,
+            limit,
+        } => {
+            let results = svc.search(&query, project.as_deref(), None, limit)?;
+            if results.is_empty() {
+                println!("No results.");
+                return Ok(());
+            }
+
+            #[derive(Tabled)]
+            struct Row {
+                #[tabled(rename = "ID")]
+                id: String,
+                #[tabled(rename = "Score")]
+                score: String,
+                #[tabled(rename = "Title")]
+                title: String,
+                #[tabled(rename = "Tags")]
+                tags: String,
+                #[tabled(rename = "Project")]
+                project: String,
+                #[tabled(rename = "Created")]
+                created: String,
+                #[tabled(rename = "Snippet")]
+                snippet: String,
+            }
+
+            let rows: Vec<Row> = results
+                .iter()
+                .map(|r| {
+                    let snippet: String = r.memory.content.chars().take(80).collect();
+                    Row {
+                        id: r.memory.id[..8].to_string(),
+                        score: format!("{:.4}", r.score),
+                        title: r.memory.title.clone(),
+                        tags: r.memory.tags.join(", "),
+                        project: r.memory.project.clone().unwrap_or_else(|| "-".to_string()),
+                        created: r.memory.created_at.format("%Y-%m-%d").to_string(),
+                        snippet: snippet.replace('\n', " "),
+                    }
+                })
+                .collect();
+
+            println!("{}", Table::new(rows));
+        }
+        MemoryAction::List {
+            project,
+            tag,
+            limit,
+        } => {
+            let tags = if tag.is_empty() {
+                None
+            } else {
+                Some(tag.as_slice())
+            };
+            let memories = svc.list(project.as_deref(), tags, limit)?;
+            if memories.is_empty() {
+                println!("No memories.");
+                return Ok(());
+            }
+
+            #[derive(Tabled)]
+            struct Row {
+                #[tabled(rename = "ID")]
+                id: String,
+                #[tabled(rename = "Title")]
+                title: String,
+                #[tabled(rename = "Tags")]
+                tags: String,
+                #[tabled(rename = "Project")]
+                project: String,
+                #[tabled(rename = "Created")]
+                created: String,
+            }
+
+            let rows: Vec<Row> = memories
+                .iter()
+                .map(|m| Row {
+                    id: m.id[..8].to_string(),
+                    title: m.title.clone(),
+                    tags: m.tags.join(", "),
+                    project: m.project.clone().unwrap_or_else(|| "-".to_string()),
+                    created: m.created_at.format("%Y-%m-%d").to_string(),
+                })
+                .collect();
+
+            println!("{}", Table::new(rows));
+        }
+        MemoryAction::Get { id } => {
+            let memory = svc.get(&id)?;
+            println!("ID:      {}", memory.id);
+            println!("Title:   {}", memory.title);
+            println!("Tags:    {}", memory.tags.join(", "));
+            println!("Project: {}", memory.project.as_deref().unwrap_or("-"));
+            println!("Created: {}", memory.created_at.format("%Y-%m-%d %H:%M"));
+            println!("File:    {}", memory.file_path);
+            println!();
+            println!("{}", memory.content);
+        }
+        MemoryAction::Delete { id } => {
+            let memory = svc.get(&id)?;
+            let title = memory.title.clone();
+            let short_id = memory.id[..8].to_string();
+            svc.delete(&id)?;
+            println!("Deleted memory {} — {}", short_id, title);
+        }
+        MemoryAction::Reindex => {
+            let count = svc.reindex()?;
+            println!("Reindexed {count} memories from disk.");
+        }
+    }
 
     Ok(())
 }
