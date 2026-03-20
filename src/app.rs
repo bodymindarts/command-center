@@ -169,7 +169,6 @@ impl<R: Runtime> ClatApp<R> {
                 timer_spawner,
                 command_spawner,
                 watches,
-                jobs,
             ))
             .map_err(|_| anyhow::anyhow!("watch service already initialized"))?;
         Ok(())

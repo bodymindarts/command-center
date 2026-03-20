@@ -73,7 +73,6 @@ pub struct WatchService {
     timer_spawner: JobSpawner<TimerConfig>,
     command_spawner: JobSpawner<CommandConfig>,
     repo: WatchRepo,
-    jobs: job::Jobs,
 }
 
 impl WatchService {
@@ -81,13 +80,11 @@ impl WatchService {
         timer_spawner: JobSpawner<TimerConfig>,
         command_spawner: JobSpawner<CommandConfig>,
         watches: WatchRepo,
-        jobs: job::Jobs,
     ) -> Self {
         Self {
             timer_spawner,
             command_spawner,
             repo: watches,
-            jobs,
         }
     }
 
@@ -107,10 +104,8 @@ impl WatchService {
             .find_active_by_task_and_name(task_id, name)
             .await?
         {
-            let old_job_id = existing.job_id.clone();
             existing.reschedule(label, &job_id.to_string(), CheckType::Timer, scheduled_at);
             self.repo.update(&mut existing).await?;
-            self.try_cancel_job(&old_job_id).await;
             existing.id
         } else {
             let id = WatchId::new();
@@ -158,10 +153,8 @@ impl WatchService {
             .find_active_by_task_and_name(task_id, name)
             .await?
         {
-            let old_job_id = existing.job_id.clone();
             existing.reschedule(label, &job_id.to_string(), CheckType::Command, scheduled_at);
             self.repo.update(&mut existing).await?;
-            self.try_cancel_job(&old_job_id).await;
             existing.id
         } else {
             let id = WatchId::new();
@@ -209,9 +202,6 @@ impl WatchService {
 
         let _ = watch.cancel("cancelled by agent");
         self.repo.update(&mut watch).await?;
-
-        // Best-effort cancel the underlying job.
-        self.try_cancel_job(&watch.job_id).await;
         Ok(())
     }
 
@@ -248,15 +238,6 @@ impl WatchService {
                 tracing::warn!(job_id, "no watch entity found for job, delivering anyway");
                 Ok(true)
             }
-        }
-    }
-
-    /// Best-effort cancel a job by its string ID.
-    async fn try_cancel_job(&self, job_id: &str) {
-        if let Ok(id) = job_id.parse::<job::JobId>()
-            && let Err(e) = self.jobs.cancel_job(id).await
-        {
-            tracing::debug!(job_id, error = %e, "could not cancel job (may already be running/completed)");
         }
     }
 }
