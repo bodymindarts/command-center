@@ -240,8 +240,8 @@ pub enum MemoryAction {
         #[arg(long)]
         project: Option<String>,
 
-        /// Memory type: natural (default) or report
-        #[arg(long, name = "type", default_value = "natural")]
+        /// Memory type: memory (default) or report
+        #[arg(long, name = "type", default_value = "memory")]
         memory_type: String,
     },
 
@@ -265,7 +265,7 @@ pub enum MemoryAction {
         #[arg(long)]
         project: Option<String>,
 
-        /// Filter by type: natural, report, or both (default)
+        /// Filter by type: memory, report, or both (default)
         #[arg(long, name = "type")]
         memory_type: Option<String>,
 
