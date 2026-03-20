@@ -40,7 +40,7 @@ jsonwebtoken = { version = "10", default-features = false, features = ["rust_cry
 rand = "0.9"
 async-trait = "0.1"
 job = { git = "https://github.com/galoymoney/job", branch = "task/job-sqlite-compat-019ce262" }
-agent-memory = { path = "crates/agent-memory", features = ["embed"] }
+agent-memory = { path = "crates/agent-memory" }
 
 [dev-dependencies]
 tempfile = "3"
