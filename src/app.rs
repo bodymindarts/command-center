@@ -112,6 +112,7 @@ pub struct ClatApp<R: Runtime> {
     skip_permissions: bool,
     jwt_signer: JwtSigner,
     watch: OnceLock<crate::watch::WatchService>,
+    memory: OnceLock<agent_memory::service::MemoryService>,
 }
 
 impl<R: Runtime> ClatApp<R> {
@@ -132,6 +133,7 @@ impl<R: Runtime> ClatApp<R> {
             skip_permissions,
             jwt_signer,
             watch: OnceLock::new(),
+            memory: OnceLock::new(),
         })
     }
 
@@ -191,6 +193,7 @@ impl<R: Runtime> ClatApp<R> {
             skip_permissions: false,
             jwt_signer,
             watch: OnceLock::new(),
+            memory: OnceLock::new(),
         }
     }
 
@@ -200,6 +203,24 @@ impl<R: Runtime> ClatApp<R> {
 
     pub fn project_root(&self) -> &std::path::Path {
         &self.paths.root
+    }
+
+    /// Lazily-initialized memory service. The underlying SQLite DB and
+    /// markdown directory are created on first access.
+    pub fn memory(&self) -> anyhow::Result<&agent_memory::service::MemoryService> {
+        if let Some(svc) = self.memory.get() {
+            return Ok(svc);
+        }
+        let config = agent_memory::config::Config {
+            memories_dir: self.paths.data_dir.join("memory"),
+            db_path: self.paths.data_dir.join("memory.db"),
+        };
+        std::fs::create_dir_all(&config.memories_dir)?;
+        let svc = agent_memory::service::MemoryService::new(&config)
+            .map_err(|e| anyhow::anyhow!("failed to initialize memory service: {e}"))?;
+        // Another thread may have raced us — that's fine, just use whichever won.
+        let _ = self.memory.set(svc);
+        Ok(self.memory.get().expect("memory service just initialized"))
     }
 
     pub fn jwt_signer(&self) -> &JwtSigner {
