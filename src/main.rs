@@ -110,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
         },
         Command::Skill { action } => cmd_skill(action, app)?,
         Command::Project { action } => cmd_project(action, app).await?,
-        Command::Memory { action } => cmd_memory(action, &app)?,
+        Command::Memory { action } => cmd_memory(action, &app).await?,
         Command::Agent { action } => match action {
             AgentCommand::PermissionGate => permission::gate_request()?,
             AgentCommand::PermissionPrompt {
@@ -460,7 +460,7 @@ async fn cmd_complete(
     Ok(())
 }
 
-fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow::Result<()> {
+async fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow::Result<()> {
     let mem = app.memory();
 
     match action {
@@ -469,24 +469,43 @@ fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow::Resu
             content,
             tag,
             project,
-        } => {
-            let new = agent_memory::memory::NewMemory {
-                title,
-                content,
-                tags: tag,
-                project,
-                source_task: None,
-                source_type: "cli".to_string(),
-            };
-            let memory = mem.store(new)?;
-            println!("Stored memory {} — {}", &memory.id[..8], memory.title);
-        }
+            memory_type,
+        } => match memory_type.as_str() {
+            "report" => {
+                let new = agent_memory::research_report::NewResearchReport {
+                    id: agent_memory::primitives::ResearchReportId::new(),
+                    title,
+                    content,
+                    tags: tag,
+                    project,
+                    source_task: None,
+                };
+                let report = mem.store_report(new).await?;
+                println!(
+                    "Stored report {} — {}",
+                    &report.id.to_string()[..8],
+                    report.title
+                );
+            }
+            _ => {
+                let new = agent_memory::natural_memory::NewNaturalMemory {
+                    title,
+                    content,
+                    tags: tag,
+                    project,
+                    source_task: None,
+                    source_type: "cli".to_string(),
+                };
+                let memory = mem.store_natural(new).await?;
+                println!("Stored memory {} — {}", &memory.id[..8], memory.title);
+            }
+        },
         MemoryAction::Search {
             query,
             project,
             limit,
         } => {
-            let results = mem.search(&query, project.as_deref(), None, limit)?;
+            let results = mem.search(&query, project.as_deref(), limit).await?;
             if results.is_empty() {
                 println!("No results.");
                 return Ok(());
@@ -496,6 +515,8 @@ fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow::Resu
             struct Row {
                 #[tabled(rename = "ID")]
                 id: String,
+                #[tabled(rename = "Type")]
+                memory_type: String,
                 #[tabled(rename = "Score")]
                 score: String,
                 #[tabled(rename = "Title")]
@@ -504,8 +525,6 @@ fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow::Resu
                 tags: String,
                 #[tabled(rename = "Project")]
                 project: String,
-                #[tabled(rename = "Created")]
-                created: String,
                 #[tabled(rename = "Snippet")]
                 snippet: String,
             }
@@ -513,14 +532,14 @@ fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow::Resu
             let rows: Vec<Row> = results
                 .iter()
                 .map(|r| {
-                    let snippet: String = r.memory.content.chars().take(80).collect();
+                    let snippet: String = r.content.chars().take(80).collect();
                     Row {
-                        id: r.memory.id[..8].to_string(),
+                        id: r.id[..8].to_string(),
+                        memory_type: r.memory_type.to_string(),
                         score: format!("{:.4}", r.score),
-                        title: r.memory.title.clone(),
-                        tags: r.memory.tags.join(", "),
-                        project: r.memory.project.clone().unwrap_or_else(|| "-".to_string()),
-                        created: r.memory.created_at.format("%Y-%m-%d").to_string(),
+                        title: r.title.clone(),
+                        tags: r.tags.join(", "),
+                        project: r.project.clone().unwrap_or_else(|| "-".to_string()),
                         snippet: snippet.replace('\n', " "),
                     }
                 })
@@ -530,24 +549,15 @@ fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow::Resu
         }
         MemoryAction::List {
             project,
-            tag,
+            memory_type,
             limit,
         } => {
-            let tags = if tag.is_empty() {
-                None
-            } else {
-                Some(tag.as_slice())
-            };
-            let memories = mem.list(project.as_deref(), tags, limit)?;
-            if memories.is_empty() {
-                println!("No memories.");
-                return Ok(());
-            }
-
             #[derive(Tabled)]
             struct Row {
                 #[tabled(rename = "ID")]
                 id: String,
+                #[tabled(rename = "Type")]
+                memory_type: String,
                 #[tabled(rename = "Title")]
                 title: String,
                 #[tabled(rename = "Tags")]
@@ -558,39 +568,85 @@ fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow::Resu
                 created: String,
             }
 
-            let rows: Vec<Row> = memories
-                .iter()
-                .map(|m| Row {
-                    id: m.id[..8].to_string(),
-                    title: m.title.clone(),
-                    tags: m.tags.join(", "),
-                    project: m.project.clone().unwrap_or_else(|| "-".to_string()),
-                    created: m.created_at.format("%Y-%m-%d").to_string(),
-                })
-                .collect();
+            let mut rows: Vec<Row> = Vec::new();
+            let show_natural = memory_type.is_none() || memory_type.as_deref() == Some("natural");
+            let show_report = memory_type.is_none() || memory_type.as_deref() == Some("report");
+
+            if show_natural {
+                let memories = mem.list_natural(project.as_deref(), limit).await?;
+                for m in &memories {
+                    rows.push(Row {
+                        id: m.id[..8].to_string(),
+                        memory_type: "natural".to_string(),
+                        title: m.title.clone(),
+                        tags: m.tags.join(", "),
+                        project: m.project.clone().unwrap_or_else(|| "-".to_string()),
+                        created: m.created_at.format("%Y-%m-%d").to_string(),
+                    });
+                }
+            }
+
+            if show_report {
+                let reports = mem.list_reports(project.as_deref(), limit).await?;
+                for r in &reports {
+                    rows.push(Row {
+                        id: r.id.to_string()[..8].to_string(),
+                        memory_type: "report".to_string(),
+                        title: r.title.clone(),
+                        tags: r.tags.join(", "),
+                        project: r.project.clone().unwrap_or_else(|| "-".to_string()),
+                        created: r.created_at.format("%Y-%m-%d").to_string(),
+                    });
+                }
+            }
+
+            if rows.is_empty() {
+                println!("No memories.");
+                return Ok(());
+            }
 
             println!("{}", Table::new(rows));
         }
         MemoryAction::Get { id } => {
-            let memory = mem.get(&id)?;
-            println!("ID:      {}", memory.id);
-            println!("Title:   {}", memory.title);
-            println!("Tags:    {}", memory.tags.join(", "));
-            println!("Project: {}", memory.project.as_deref().unwrap_or("-"));
-            println!("Created: {}", memory.created_at.format("%Y-%m-%d %H:%M"));
-            println!("File:    {}", memory.file_path);
-            println!();
-            println!("{}", memory.content);
+            use agent_memory::service::MemoryItem;
+            let item = mem.get(&id).await?;
+            match item {
+                MemoryItem::Natural(m) => {
+                    println!("ID:      {}", m.id);
+                    println!("Type:    natural");
+                    println!("Title:   {}", m.title);
+                    println!("Tags:    {}", m.tags.join(", "));
+                    println!("Project: {}", m.project.as_deref().unwrap_or("-"));
+                    println!("Created: {}", m.created_at.format("%Y-%m-%d %H:%M"));
+                    println!("File:    {}", m.file_path);
+                    println!();
+                    println!("{}", m.content);
+                }
+                MemoryItem::Report(r) => {
+                    println!("ID:      {}", r.id);
+                    println!("Type:    report");
+                    println!("Title:   {}", r.title);
+                    println!("Tags:    {}", r.tags.join(", "));
+                    println!("Project: {}", r.project.as_deref().unwrap_or("-"));
+                    println!("Status:  {}", r.status);
+                    println!("Created: {}", r.created_at.format("%Y-%m-%d %H:%M"));
+                    println!();
+                    println!("{}", r.content);
+                }
+            }
         }
         MemoryAction::Delete { id } => {
-            let memory = mem.get(&id)?;
-            let title = memory.title.clone();
-            let short_id = memory.id[..8].to_string();
-            mem.delete(&id)?;
+            use agent_memory::service::MemoryItem;
+            let item = mem.get(&id).await?;
+            let (short_id, title) = match &item {
+                MemoryItem::Natural(m) => (m.id[..8].to_string(), m.title.clone()),
+                MemoryItem::Report(r) => (r.id.to_string()[..8].to_string(), r.title.clone()),
+            };
+            mem.delete(&id).await?;
             println!("Deleted memory {} — {}", short_id, title);
         }
         MemoryAction::Reindex => {
-            let count = mem.reindex()?;
+            let count = mem.reindex().await?;
             println!("Reindexed {count} memories from disk.");
         }
     }
