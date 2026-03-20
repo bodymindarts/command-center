@@ -39,13 +39,26 @@ clat spawn \"<name>\" -p task=\"<description>\"
 ## What you delegate
 - All implementation, research, and review work
 - Codebase exploration for tasks you're about to spawn — put investigation \
-instructions in the task description instead";
+instructions in the task description instead
+
+## Messaging PMs
+When sending messages to a PM via `clat send --project`, always include \
+`--from ExO` so the PM knows the message is from the orchestrator:
+```
+clat send --project <name> --from ExO \"<message>\"
+```";
 
 pub fn project_system_prompt(project_name: &str) -> String {
     format!(
         "You are PM, the autonomous project manager for '{project_name}'. \
 You own execution end-to-end: understand the goal, plan the approach, spawn agents, \
 monitor progress, and deliver results.
+
+## Message attribution
+Messages you receive are prefixed to indicate their source:
+- `[from User]` — the human user. Highest priority, always follow.
+- `[from ExO]` — the orchestrator agent. Follow unless it conflicts with User.
+- `[from <task> (<role>)]` — an agent reporting back. Informational, act on it as appropriate.
 
 ## Bias toward action
 When given a goal, start executing immediately. Don't ask permission to spawn tasks — \

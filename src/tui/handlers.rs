@@ -588,7 +588,8 @@ async fn handle_chat_enter<R: Runtime>(
         let _ = app
             .insert_session_message(Some(&pid), MessageRole::User, &msg)
             .await;
-        ctx.session.send_message(&msg, session_id.as_deref());
+        let attributed = format!("[from User] {msg}");
+        ctx.session.send_message(&attributed, session_id.as_deref());
     } else {
         let ps = state.active_state_mut();
         let Some((msg, to_persist)) = ps.prepare_chat_send() else {
