@@ -3,24 +3,24 @@ use sqlx::{Row, SqlitePool};
 
 use crate::error::AgentMemoryError;
 
-use super::NaturalMemory;
+use super::Memory;
 
-/// Simple sqlx CRUD repository for natural memories (no event sourcing).
+/// Simple sqlx CRUD repository for memories (no event sourcing).
 #[derive(Debug, Clone)]
-pub struct NaturalMemoryRepo {
+pub struct MemoryRepo {
     pool: SqlitePool,
 }
 
-impl NaturalMemoryRepo {
+impl MemoryRepo {
     pub fn new(pool: &SqlitePool) -> Self {
         Self { pool: pool.clone() }
     }
 
-    /// Insert a new natural memory.
-    pub async fn insert(&self, memory: &NaturalMemory) -> Result<(), AgentMemoryError> {
+    /// Insert a new memory.
+    pub async fn insert(&self, memory: &Memory) -> Result<(), AgentMemoryError> {
         let tags_json = serde_json::to_string(&memory.tags)?;
         sqlx::query(
-            "INSERT OR REPLACE INTO natural_memories
+            "INSERT OR REPLACE INTO memories
                 (id, title, content, tags, project, source_task, source_type,
                  file_path, created_at, updated_at, last_accessed, access_count, pinned)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -44,38 +44,35 @@ impl NaturalMemoryRepo {
     }
 
     /// Find a memory by exact ID.
-    pub async fn find_by_id(&self, id: &str) -> Result<NaturalMemory, AgentMemoryError> {
+    pub async fn find_by_id(&self, id: &str) -> Result<Memory, AgentMemoryError> {
         let row = sqlx::query(
             "SELECT id, title, content, tags, project, source_task, source_type,
                     file_path, created_at, updated_at, last_accessed, access_count, pinned
-             FROM natural_memories WHERE id = ?",
+             FROM memories WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await?
-        .ok_or_else(|| AgentMemoryError::NotFound(format!("natural memory '{id}'")))?;
-        Ok(row_to_natural_memory(&row))
+        .ok_or_else(|| AgentMemoryError::NotFound(format!("memory '{id}'")))?;
+        Ok(row_to_memory(&row))
     }
 
     /// Find memories by ID prefix.
-    pub async fn find_by_prefix(
-        &self,
-        prefix: &str,
-    ) -> Result<Vec<NaturalMemory>, AgentMemoryError> {
+    pub async fn find_by_prefix(&self, prefix: &str) -> Result<Vec<Memory>, AgentMemoryError> {
         let pattern = format!("{prefix}%");
         let rows = sqlx::query(
             "SELECT id, title, content, tags, project, source_task, source_type,
                     file_path, created_at, updated_at, last_accessed, access_count, pinned
-             FROM natural_memories WHERE id LIKE ?",
+             FROM memories WHERE id LIKE ?",
         )
         .bind(&pattern)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.iter().map(row_to_natural_memory).collect())
+        Ok(rows.iter().map(row_to_memory).collect())
     }
 
     /// Resolve an exact ID or unique prefix to a single memory.
-    pub async fn resolve_id(&self, id_or_prefix: &str) -> Result<NaturalMemory, AgentMemoryError> {
+    pub async fn resolve_id(&self, id_or_prefix: &str) -> Result<Memory, AgentMemoryError> {
         match self.find_by_id(id_or_prefix).await {
             Ok(m) => return Ok(m),
             Err(AgentMemoryError::NotFound(_)) => {}
@@ -84,7 +81,7 @@ impl NaturalMemoryRepo {
         let matches = self.find_by_prefix(id_or_prefix).await?;
         match matches.len() {
             0 => Err(AgentMemoryError::NotFound(format!(
-                "natural memory '{id_or_prefix}'"
+                "memory '{id_or_prefix}'"
             ))),
             1 => Ok(matches.into_iter().next().unwrap()),
             n => Err(AgentMemoryError::AmbiguousPrefix(
@@ -96,7 +93,7 @@ impl NaturalMemoryRepo {
 
     /// Delete a memory by exact ID.
     pub async fn delete(&self, id: &str) -> Result<(), AgentMemoryError> {
-        sqlx::query("DELETE FROM natural_memories WHERE id = ?")
+        sqlx::query("DELETE FROM memories WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -108,12 +105,12 @@ impl NaturalMemoryRepo {
         &self,
         project: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<NaturalMemory>, AgentMemoryError> {
+    ) -> Result<Vec<Memory>, AgentMemoryError> {
         let rows = if let Some(proj) = project {
             sqlx::query(
                 "SELECT id, title, content, tags, project, source_task, source_type,
                         file_path, created_at, updated_at, last_accessed, access_count, pinned
-                 FROM natural_memories WHERE project = ?
+                 FROM memories WHERE project = ?
                  ORDER BY created_at DESC LIMIT ?",
             )
             .bind(proj)
@@ -124,18 +121,18 @@ impl NaturalMemoryRepo {
             sqlx::query(
                 "SELECT id, title, content, tags, project, source_task, source_type,
                         file_path, created_at, updated_at, last_accessed, access_count, pinned
-                 FROM natural_memories ORDER BY created_at DESC LIMIT ?",
+                 FROM memories ORDER BY created_at DESC LIMIT ?",
             )
             .bind(limit as i64)
             .fetch_all(&self.pool)
             .await?
         };
-        Ok(rows.iter().map(row_to_natural_memory).collect())
+        Ok(rows.iter().map(row_to_memory).collect())
     }
 
     /// Get all memory IDs.
     pub async fn all_ids(&self) -> Result<Vec<String>, AgentMemoryError> {
-        let rows = sqlx::query("SELECT id FROM natural_memories")
+        let rows = sqlx::query("SELECT id FROM memories")
             .fetch_all(&self.pool)
             .await?;
         Ok(rows.iter().map(|r| r.get("id")).collect())
@@ -143,16 +140,16 @@ impl NaturalMemoryRepo {
 
     /// Count total memories.
     pub async fn count(&self) -> Result<u64, AgentMemoryError> {
-        let row = sqlx::query("SELECT COUNT(*) as cnt FROM natural_memories")
+        let row = sqlx::query("SELECT COUNT(*) as cnt FROM memories")
             .fetch_one(&self.pool)
             .await?;
         let count: i64 = row.get("cnt");
         Ok(count as u64)
     }
 
-    /// Delete all natural memories (for full reindex).
+    /// Delete all memories (for full reindex).
     pub async fn clear_all(&self) -> Result<(), AgentMemoryError> {
-        sqlx::query("DELETE FROM natural_memories")
+        sqlx::query("DELETE FROM memories")
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -166,7 +163,7 @@ impl NaturalMemoryRepo {
         let now = Utc::now().to_rfc3339();
         let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{}", i + 1)).collect();
         let sql = format!(
-            "UPDATE natural_memories SET last_accessed = ?1, access_count = access_count + 1
+            "UPDATE memories SET last_accessed = ?1, access_count = access_count + 1
              WHERE id IN ({})",
             placeholders.join(", ")
         );
@@ -180,19 +177,19 @@ impl NaturalMemoryRepo {
 
     /// Set the pinned status for a memory.
     pub async fn set_pinned(&self, id: &str, pinned: bool) -> Result<(), AgentMemoryError> {
-        let result = sqlx::query("UPDATE natural_memories SET pinned = ? WHERE id = ?")
+        let result = sqlx::query("UPDATE memories SET pinned = ? WHERE id = ?")
             .bind(pinned as i32)
             .bind(id)
             .execute(&self.pool)
             .await?;
         if result.rows_affected() == 0 {
-            return Err(AgentMemoryError::NotFound(format!("natural memory '{id}'")));
+            return Err(AgentMemoryError::NotFound(format!("memory '{id}'")));
         }
         Ok(())
     }
 
     /// Fetch memories by a list of IDs.
-    pub async fn get_by_ids(&self, ids: &[String]) -> Result<Vec<NaturalMemory>, AgentMemoryError> {
+    pub async fn get_by_ids(&self, ids: &[String]) -> Result<Vec<Memory>, AgentMemoryError> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -200,7 +197,7 @@ impl NaturalMemoryRepo {
         let sql = format!(
             "SELECT id, title, content, tags, project, source_task, source_type,
                     file_path, created_at, updated_at, last_accessed, access_count, pinned
-             FROM natural_memories WHERE id IN ({})",
+             FROM memories WHERE id IN ({})",
             placeholders.join(", ")
         );
         let mut query = sqlx::query(&sql);
@@ -208,11 +205,11 @@ impl NaturalMemoryRepo {
             query = query.bind(id);
         }
         let rows = query.fetch_all(&self.pool).await?;
-        Ok(rows.iter().map(row_to_natural_memory).collect())
+        Ok(rows.iter().map(row_to_memory).collect())
     }
 }
 
-fn row_to_natural_memory(row: &sqlx::sqlite::SqliteRow) -> NaturalMemory {
+fn row_to_memory(row: &sqlx::sqlite::SqliteRow) -> Memory {
     let tags_json: String = row.get("tags");
     let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
     let created_str: String = row.get("created_at");
@@ -220,7 +217,7 @@ fn row_to_natural_memory(row: &sqlx::sqlite::SqliteRow) -> NaturalMemory {
     let last_accessed_str: Option<String> = row.get("last_accessed");
     let pinned_int: i32 = row.get("pinned");
 
-    NaturalMemory {
+    Memory {
         id: row.get("id"),
         title: row.get("title"),
         content: row.get("content"),

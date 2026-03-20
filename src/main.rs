@@ -472,8 +472,8 @@ async fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow
             memory_type,
         } => match memory_type.as_str() {
             "report" => {
-                let new = agent_memory::research_report::NewResearchReport {
-                    id: agent_memory::primitives::ResearchReportId::new(),
+                let new = agent_memory::report::NewReport {
+                    id: agent_memory::primitives::ReportId::new(),
                     title,
                     content,
                     tags: tag,
@@ -488,7 +488,7 @@ async fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow
                 );
             }
             _ => {
-                let new = agent_memory::natural_memory::NewNaturalMemory {
+                let new = agent_memory::memory::NewMemory {
                     title,
                     content,
                     tags: tag,
@@ -496,7 +496,7 @@ async fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow
                     source_task: None,
                     source_type: "cli".to_string(),
                 };
-                let memory = mem.store_natural(new).await?;
+                let memory = mem.store_memory(new).await?;
                 println!("Stored memory {} — {}", &memory.id[..8], memory.title);
             }
         },
@@ -579,15 +579,15 @@ async fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow
             }
 
             let mut rows: Vec<Row> = Vec::new();
-            let show_natural = memory_type.is_none() || memory_type.as_deref() == Some("natural");
+            let show_memory = memory_type.is_none() || memory_type.as_deref() == Some("memory");
             let show_report = memory_type.is_none() || memory_type.as_deref() == Some("report");
 
-            if show_natural {
-                let memories = mem.list_natural(project.as_deref(), limit).await?;
+            if show_memory {
+                let memories = mem.list_memories(project.as_deref(), limit).await?;
                 for m in &memories {
                     rows.push(Row {
                         id: m.id[..8].to_string(),
-                        memory_type: "natural".to_string(),
+                        memory_type: "memory".to_string(),
                         title: m.title.clone(),
                         tags: m.tags.join(", "),
                         project: m.project.clone().unwrap_or_else(|| "-".to_string()),
@@ -621,9 +621,9 @@ async fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow
             use agent_memory::service::MemoryItem;
             let item = mem.get(&id).await?;
             match item {
-                MemoryItem::Natural(m) => {
+                MemoryItem::Memory(m) => {
                     println!("ID:      {}", m.id);
-                    println!("Type:    natural");
+                    println!("Type:    memory");
                     println!("Title:   {}", m.title);
                     println!("Tags:    {}", m.tags.join(", "));
                     println!("Project: {}", m.project.as_deref().unwrap_or("-"));
@@ -654,18 +654,16 @@ async fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow
             if title.is_none() && content.is_none() && tag.is_none() {
                 bail!("at least one of --title, --content, or --tag must be provided");
             }
-            // Verify it's a report, not a natural memory.
+            // Verify it's a report, not a memory.
             use agent_memory::service::MemoryItem;
             let item = mem.get(&id).await?;
             match item {
-                MemoryItem::Natural(_) => {
-                    bail!(
-                        "'{id}' is a natural memory — update is only supported for research reports"
-                    );
+                MemoryItem::Memory(_) => {
+                    bail!("'{id}' is a memory — update is only supported for reports");
                 }
                 MemoryItem::Report(_) => {}
             }
-            let update = agent_memory::research_report::ReportUpdate {
+            let update = agent_memory::report::ReportUpdate {
                 title,
                 content,
                 tags: tag,
