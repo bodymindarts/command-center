@@ -159,6 +159,12 @@ pub enum Command {
         action: ProjectAction,
     },
 
+    /// Manage shared agent memory
+    Memory {
+        #[command(subcommand)]
+        action: MemoryAction,
+    },
+
     /// Commands called by spawned agents (hooks, lifecycle)
     #[command(hide = true)]
     Agent {
@@ -212,6 +218,72 @@ pub enum ProjectAction {
         #[arg(long)]
         last: Option<u32>,
     },
+}
+
+#[derive(Subcommand)]
+pub enum MemoryAction {
+    /// Store a new memory
+    Store {
+        /// Memory title
+        #[arg(long)]
+        title: String,
+
+        /// Memory content
+        #[arg(long)]
+        content: String,
+
+        /// Tags (can be repeated)
+        #[arg(long)]
+        tag: Vec<String>,
+
+        /// Project to associate with
+        #[arg(long)]
+        project: Option<String>,
+    },
+
+    /// Search memories (hybrid keyword + vector)
+    Search {
+        /// Search query
+        query: String,
+
+        /// Filter by project
+        #[arg(long)]
+        project: Option<String>,
+
+        /// Maximum results to return
+        #[arg(long, default_value = "10")]
+        limit: usize,
+    },
+
+    /// List memories
+    List {
+        /// Filter by project
+        #[arg(long)]
+        project: Option<String>,
+
+        /// Filter by tag
+        #[arg(long)]
+        tag: Vec<String>,
+
+        /// Maximum results to return
+        #[arg(long, default_value = "20")]
+        limit: usize,
+    },
+
+    /// Get a memory by ID or prefix
+    Get {
+        /// Memory ID (prefix match)
+        id: String,
+    },
+
+    /// Delete a memory by ID or prefix
+    Delete {
+        /// Memory ID (prefix match)
+        id: String,
+    },
+
+    /// Rebuild index from markdown files on disk
+    Reindex,
 }
 
 #[derive(Subcommand)]

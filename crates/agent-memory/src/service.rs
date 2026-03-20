@@ -150,16 +150,16 @@ impl MemoryService {
         for (id, score) in &ranked {
             if let Some(memory) = memory_map.get(id) {
                 // Project filter
-                if let Some(proj) = project {
-                    if memory.project.as_deref() != Some(proj) {
-                        continue;
-                    }
+                if let Some(proj) = project
+                    && memory.project.as_deref() != Some(proj)
+                {
+                    continue;
                 }
                 // Tags filter
-                if let Some(tag_filter) = tags {
-                    if !tag_filter.iter().all(|t| memory.tags.contains(t)) {
-                        continue;
-                    }
+                if let Some(tag_filter) = tags
+                    && !tag_filter.iter().all(|t| memory.tags.contains(t))
+                {
+                    continue;
                 }
                 results.push(SearchResult {
                     memory: memory.clone(),
