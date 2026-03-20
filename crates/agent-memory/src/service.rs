@@ -16,7 +16,7 @@ use crate::store::Store;
 /// Coordinates the SQLite store, fastembed embedder, and markdown file I/O.
 pub struct MemoryService {
     store: Store,
-    embedder: Embedder,
+    embedder: Option<Embedder>,
     markdown: MarkdownStore,
 }
 
@@ -33,12 +33,20 @@ impl MemoryService {
         let store = Store::open(&config.db_path)?;
         store.migrate()?;
 
-        let embedder = Embedder::new()?;
-        if embedder.is_available() {
-            tracing::info!("Embedder loaded — vector search enabled");
-        } else {
-            tracing::warn!("Embedder unavailable — falling back to keyword-only search");
-        }
+        let embedder = match Embedder::new() {
+            Ok(e) if e.is_available() => {
+                tracing::info!("Embedder loaded — vector search enabled");
+                Some(e)
+            }
+            Ok(_) => {
+                tracing::warn!("Embedder unavailable — falling back to keyword-only search");
+                None
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to load embedder — falling back to keyword-only search");
+                None
+            }
+        };
 
         let markdown = MarkdownStore::new(config.memories_dir.clone());
 
@@ -79,9 +87,9 @@ impl MemoryService {
         self.store.insert_memory(&memory)?;
 
         // Generate embedding if available
-        if self.embedder.is_available() {
+        if let Some(embedder) = &self.embedder {
             let text = format!("{}\n\n{}", memory.title, memory.content);
-            match self.embedder.embed_document(&text) {
+            match embedder.embed_document(&text) {
                 Ok(embedding) => {
                     self.store.upsert_embedding(&id, &embedding)?;
                 }
@@ -110,8 +118,10 @@ impl MemoryService {
         let fts_results = self.store.search_fts(query, fetch_limit)?;
 
         // 2. Vector search (if available)
-        let vec_results = if self.embedder.is_available() && self.store.has_embeddings()? {
-            match self.embedder.embed_query(query) {
+        let vec_results = if let Some(embedder) = &self.embedder
+            && self.store.has_embeddings()?
+        {
+            match embedder.embed_query(query) {
                 Ok(query_embedding) => self.store.search_vector(&query_embedding, fetch_limit)?,
                 Err(e) => {
                     tracing::warn!(error = %e, "Vector search failed, using FTS only");
@@ -204,7 +214,7 @@ impl MemoryService {
     /// Rebuild the store from markdown files.
     #[tracing::instrument(name = "agent_memory.service.reindex", skip_all)]
     pub fn reindex(&self) -> Result<usize, AgentMemoryError> {
-        index::reindex(&self.store, &self.markdown, &self.embedder)
+        index::reindex(&self.store, &self.markdown, self.embedder.as_ref())
     }
 
     /// Get database stats.
@@ -212,7 +222,7 @@ impl MemoryService {
         Ok(Stats {
             memory_count: self.store.count()?,
             has_embeddings: self.store.has_embeddings()?,
-            embedder_available: self.embedder.is_available(),
+            embedder_available: self.embedder.is_some(),
         })
     }
 }

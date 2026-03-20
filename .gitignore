@@ -7,3 +7,4 @@ TASK.md
 .env
 .mcp.json
 docs/
+.fastembed_cache/

@@ -11,7 +11,7 @@ use crate::store::Store;
 pub fn reindex(
     store: &Store,
     markdown: &MarkdownStore,
-    embedder: &Embedder,
+    embedder: Option<&Embedder>,
 ) -> Result<usize, AgentMemoryError> {
     tracing::info!("Starting reindex from markdown files");
 
@@ -28,7 +28,7 @@ pub fn reindex(
                 store.insert_memory(&memory)?;
 
                 // Generate embedding if embedder is available
-                if embedder.is_available() {
+                if let Some(embedder) = embedder {
                     let text = format!("{}\n\n{}", memory.title, memory.content);
                     match embedder.embed_document(&text) {
                         Ok(embedding) => {
