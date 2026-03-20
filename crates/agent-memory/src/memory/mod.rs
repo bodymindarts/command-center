@@ -5,12 +5,11 @@ pub use repo::*;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// A natural memory — ephemeral observation, session context, or daily note.
+/// A memory — ephemeral observation, session context, or daily note.
 ///
-/// These decay over time (decay implementation is future work, but the
-/// schema supports the necessary fields).
+/// These decay over time unless pinned.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NaturalMemory {
+pub struct Memory {
     pub id: String,
     pub title: String,
     pub content: String,
@@ -26,9 +25,9 @@ pub struct NaturalMemory {
     pub pinned: bool,
 }
 
-/// Input for creating a new natural memory.
+/// Input for creating a new memory.
 #[derive(Debug, Clone)]
-pub struct NewNaturalMemory {
+pub struct NewMemory {
     pub title: String,
     pub content: String,
     pub tags: Vec<String>,

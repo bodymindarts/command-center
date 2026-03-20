@@ -3,22 +3,22 @@ use std::collections::HashSet;
 use crate::embed::Embedder;
 use crate::error::AgentMemoryError;
 use crate::markdown::MarkdownStore;
-use crate::natural_memory::NaturalMemoryRepo;
+use crate::memory::MemoryRepo;
 use crate::store::SearchStore;
 
-/// Sync markdown files into the SQLite store (natural memories only).
+/// Sync markdown files into the SQLite store (memories only).
 ///
 /// Returns the number of memories indexed.
 pub async fn reindex(
-    natural_repo: &NaturalMemoryRepo,
+    memory_repo: &MemoryRepo,
     search: &SearchStore,
     markdown: &MarkdownStore,
     embedder: Option<&Embedder>,
 ) -> Result<usize, AgentMemoryError> {
     tracing::info!("Starting reindex from markdown files");
 
-    // Clear existing natural memory data and search projections.
-    natural_repo.clear_all().await?;
+    // Clear existing memory data and search projections.
+    memory_repo.clear_all().await?;
     search.clear_projections().await?;
 
     let paths = markdown.walk_all()?;
@@ -27,14 +27,14 @@ pub async fn reindex(
     for path in &paths {
         match markdown.read(path) {
             Ok(memory) => {
-                natural_repo.insert(&memory).await?;
+                memory_repo.insert(&memory).await?;
 
                 // Update FTS index.
                 let tags_str = memory.tags.join(", ");
                 search
                     .upsert_fts(
                         &memory.id,
-                        "natural",
+                        "memory",
                         &memory.title,
                         &memory.content,
                         &tags_str,
@@ -71,7 +71,7 @@ pub async fn reindex(
     }
 
     // Clean up any DB entries whose markdown files no longer exist.
-    let all_ids = natural_repo.all_ids().await?;
+    let all_ids = memory_repo.all_ids().await?;
     let file_ids: HashSet<String> = paths
         .iter()
         .filter_map(|p| markdown.read(p).ok())
@@ -80,7 +80,7 @@ pub async fn reindex(
 
     for id in &all_ids {
         if !file_ids.contains(id) {
-            natural_repo.delete(id).await?;
+            memory_repo.delete(id).await?;
             search.delete_fts(id).await?;
             search.delete_embedding(id).await?;
         }

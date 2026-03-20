@@ -3,16 +3,16 @@ use derive_builder::Builder;
 use es_entity::*;
 use serde::{Deserialize, Serialize};
 
-use crate::primitives::ResearchReportId;
+use crate::primitives::ReportId;
 
 // ── Events ───────────────────────────────────────────────────────────
 
 #[derive(EsEvent, Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[es_event(id = "ResearchReportId")]
-pub enum ResearchReportEvent {
+#[es_event(id = "ReportId")]
+pub enum ReportEvent {
     Initialized {
-        id: ResearchReportId,
+        id: ReportId,
         title: String,
         content: String,
         tags: Vec<String>,
@@ -25,7 +25,7 @@ pub enum ResearchReportEvent {
         tags: Option<Vec<String>>,
     },
     Superseded {
-        superseded_by: ResearchReportId,
+        superseded_by: ReportId,
     },
 }
 
@@ -33,8 +33,8 @@ pub enum ResearchReportEvent {
 
 #[derive(EsEntity, Builder, Clone)]
 #[builder(pattern = "owned", build_fn(error = "EntityHydrationError"))]
-pub struct ResearchReport {
-    pub id: ResearchReportId,
+pub struct Report {
+    pub id: ReportId,
     pub title: String,
     pub content: String,
     pub tags: Vec<String>,
@@ -44,13 +44,13 @@ pub struct ResearchReport {
     #[builder(default)]
     pub created_at: DateTime<Utc>,
     #[builder(default)]
-    pub superseded_by: Option<ResearchReportId>,
-    events: EntityEvents<ResearchReportEvent>,
+    pub superseded_by: Option<ReportId>,
+    events: EntityEvents<ReportEvent>,
 }
 
-impl std::fmt::Debug for ResearchReport {
+impl std::fmt::Debug for Report {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ResearchReport")
+        f.debug_struct("Report")
             .field("id", &self.id)
             .field("title", &self.title)
             .field("status", &self.status)
@@ -59,19 +59,17 @@ impl std::fmt::Debug for ResearchReport {
     }
 }
 
-impl std::fmt::Display for ResearchReport {
+impl std::fmt::Display for Report {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ResearchReport: {} ({})", self.title, self.id)
+        write!(f, "Report: {} ({})", self.title, self.id)
     }
 }
 
 // ── Hydration ────────────────────────────────────────────────────────
 
-impl TryFromEvents<ResearchReportEvent> for ResearchReport {
-    fn try_from_events(
-        events: EntityEvents<ResearchReportEvent>,
-    ) -> Result<Self, EntityHydrationError> {
-        let mut builder = ResearchReportBuilder::default();
+impl TryFromEvents<ReportEvent> for Report {
+    fn try_from_events(events: EntityEvents<ReportEvent>) -> Result<Self, EntityHydrationError> {
+        let mut builder = ReportBuilder::default();
 
         if let Some(first) = events.entity_first_persisted_at() {
             builder = builder.created_at(first);
@@ -79,7 +77,7 @@ impl TryFromEvents<ResearchReportEvent> for ResearchReport {
 
         for event in events.iter_all() {
             match event {
-                ResearchReportEvent::Initialized {
+                ReportEvent::Initialized {
                     id,
                     title,
                     content,
@@ -96,7 +94,7 @@ impl TryFromEvents<ResearchReportEvent> for ResearchReport {
                         .source_task(source_task.clone())
                         .status("active".to_string());
                 }
-                ResearchReportEvent::Updated {
+                ReportEvent::Updated {
                     title,
                     content,
                     tags,
@@ -111,7 +109,7 @@ impl TryFromEvents<ResearchReportEvent> for ResearchReport {
                         builder = builder.tags(tg.clone());
                     }
                 }
-                ResearchReportEvent::Superseded { superseded_by } => {
+                ReportEvent::Superseded { superseded_by } => {
                     builder = builder
                         .status("superseded".to_string())
                         .superseded_by(Some(*superseded_by));
@@ -123,10 +121,10 @@ impl TryFromEvents<ResearchReportEvent> for ResearchReport {
     }
 }
 
-// ── NewResearchReport (construction) ─────────────────────────────────
+// ── NewReport (construction) ─────────────────────────────────────────
 
-pub struct NewResearchReport {
-    pub id: ResearchReportId,
+pub struct NewReport {
+    pub id: ReportId,
     pub title: String,
     pub content: String,
     pub tags: Vec<String>,
@@ -134,18 +132,18 @@ pub struct NewResearchReport {
     pub source_task: Option<String>,
 }
 
-impl NewResearchReport {
+impl NewReport {
     /// Used by EsRepo column accessor for the `status` column.
     pub(super) fn status(&self) -> &str {
         "active"
     }
 }
 
-impl IntoEvents<ResearchReportEvent> for NewResearchReport {
-    fn into_events(self) -> EntityEvents<ResearchReportEvent> {
+impl IntoEvents<ReportEvent> for NewReport {
+    fn into_events(self) -> EntityEvents<ReportEvent> {
         EntityEvents::init(
             self.id,
-            [ResearchReportEvent::Initialized {
+            [ReportEvent::Initialized {
                 id: self.id,
                 title: self.title,
                 content: self.content,
@@ -159,14 +157,14 @@ impl IntoEvents<ResearchReportEvent> for NewResearchReport {
 
 // ── Mutations ────────────────────────────────────────────────────────
 
-/// Update payload for a research report.
+/// Update payload for a report.
 pub struct ReportUpdate {
     pub title: Option<String>,
     pub content: Option<String>,
     pub tags: Option<Vec<String>>,
 }
 
-impl ResearchReport {
+impl Report {
     pub fn update(&mut self, update: ReportUpdate) -> Idempotent<()> {
         if update.title.is_none() && update.content.is_none() && update.tags.is_none() {
             return Idempotent::AlreadyApplied;
@@ -182,7 +180,7 @@ impl ResearchReport {
             self.tags = tg.clone();
         }
 
-        self.events.push(ResearchReportEvent::Updated {
+        self.events.push(ReportEvent::Updated {
             title: update.title,
             content: update.content,
             tags: update.tags,
@@ -190,17 +188,16 @@ impl ResearchReport {
         Idempotent::Executed(())
     }
 
-    pub fn supersede(&mut self, superseded_by: ResearchReportId) -> Idempotent<()> {
+    pub fn supersede(&mut self, superseded_by: ReportId) -> Idempotent<()> {
         idempotency_guard!(
             self.events.iter_all().rev(),
-            already_applied: ResearchReportEvent::Superseded { superseded_by: sb }
+            already_applied: ReportEvent::Superseded { superseded_by: sb }
                 if *sb == superseded_by
         );
 
         self.status = "superseded".to_string();
         self.superseded_by = Some(superseded_by);
-        self.events
-            .push(ResearchReportEvent::Superseded { superseded_by });
+        self.events.push(ReportEvent::Superseded { superseded_by });
         Idempotent::Executed(())
     }
 }

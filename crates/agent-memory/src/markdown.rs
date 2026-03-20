@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::error::AgentMemoryError;
-use crate::natural_memory::NaturalMemory;
+use crate::memory::Memory;
 
 /// YAML frontmatter for markdown memory files.
 #[derive(Debug, Serialize, Deserialize)]
@@ -39,7 +39,7 @@ impl MarkdownStore {
     }
 
     /// Build the file path for a memory: base_dir/YYYY-MM/<id-short>-<slug>.md
-    pub fn memory_path(&self, memory: &NaturalMemory) -> PathBuf {
+    pub fn memory_path(&self, memory: &Memory) -> PathBuf {
         let month_dir = memory.created_at.format("%Y-%m").to_string();
         let id_short = &memory.id[..8.min(memory.id.len())];
         let slug = slugify(&memory.title);
@@ -49,7 +49,7 @@ impl MarkdownStore {
     }
 
     /// Write a memory to a markdown file.
-    pub fn write(&self, memory: &NaturalMemory) -> Result<PathBuf, AgentMemoryError> {
+    pub fn write(&self, memory: &Memory) -> Result<PathBuf, AgentMemoryError> {
         let path = self.memory_path(memory);
 
         if let Some(parent) = path.parent() {
@@ -78,7 +78,7 @@ impl MarkdownStore {
     }
 
     /// Read a memory from a markdown file.
-    pub fn read(&self, path: &Path) -> Result<NaturalMemory, AgentMemoryError> {
+    pub fn read(&self, path: &Path) -> Result<Memory, AgentMemoryError> {
         let raw = std::fs::read_to_string(path)?;
         parse_markdown(&raw, path)
     }
@@ -111,8 +111,8 @@ impl MarkdownStore {
     }
 }
 
-/// Parse a markdown file with YAML frontmatter into a NaturalMemory.
-fn parse_markdown(raw: &str, path: &Path) -> Result<NaturalMemory, AgentMemoryError> {
+/// Parse a markdown file with YAML frontmatter into a Memory.
+fn parse_markdown(raw: &str, path: &Path) -> Result<Memory, AgentMemoryError> {
     let trimmed = raw.trim_start();
     if !trimmed.starts_with("---") {
         return Err(AgentMemoryError::Other(format!(
@@ -132,7 +132,7 @@ fn parse_markdown(raw: &str, path: &Path) -> Result<NaturalMemory, AgentMemoryEr
 
     let fm: Frontmatter = serde_yaml::from_str(yaml_str)?;
 
-    Ok(NaturalMemory {
+    Ok(Memory {
         id: fm.id,
         title: fm.title,
         content,
