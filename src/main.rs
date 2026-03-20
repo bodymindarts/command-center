@@ -645,23 +645,37 @@ async fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow
                 }
             }
         }
-        MemoryAction::Delete { id } => {
+        MemoryAction::Update {
+            id,
+            title,
+            content,
+            tag,
+        } => {
+            if title.is_none() && content.is_none() && tag.is_none() {
+                bail!("at least one of --title, --content, or --tag must be provided");
+            }
+            // Verify it's a report, not a natural memory.
             use agent_memory::service::MemoryItem;
             let item = mem.get(&id).await?;
-            let (short_id, title) = match &item {
-                MemoryItem::Natural(m) => (m.id[..8].to_string(), m.title.clone()),
-                MemoryItem::Report(r) => (r.id.to_string()[..8].to_string(), r.title.clone()),
+            match item {
+                MemoryItem::Natural(_) => {
+                    bail!(
+                        "'{id}' is a natural memory — update is only supported for research reports"
+                    );
+                }
+                MemoryItem::Report(_) => {}
+            }
+            let update = agent_memory::research_report::ReportUpdate {
+                title,
+                content,
+                tags: tag,
             };
-            mem.delete(&id).await?;
-            println!("Deleted memory {} — {}", short_id, title);
-        }
-        MemoryAction::Pin { id } => {
-            let memory = mem.pin(&id).await?;
-            println!("Pinned memory {} — {}", &memory.id[..8], memory.title);
-        }
-        MemoryAction::Unpin { id } => {
-            let memory = mem.unpin(&id).await?;
-            println!("Unpinned memory {} — {}", &memory.id[..8], memory.title);
+            let report = mem.update_report(&id, update).await?;
+            println!(
+                "Updated report {} — {}",
+                &report.id.to_string()[..8],
+                report.title
+            );
         }
         MemoryAction::Reindex => {
             let count = mem.reindex().await?;

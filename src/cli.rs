@@ -280,22 +280,22 @@ pub enum MemoryAction {
         id: String,
     },
 
-    /// Delete a memory by ID or prefix
-    Delete {
-        /// Memory ID (prefix match)
+    /// Update a research report
+    Update {
+        /// Report ID (prefix match)
         id: String,
-    },
 
-    /// Pin a natural memory (exempt from decay)
-    Pin {
-        /// Memory ID (prefix match)
-        id: String,
-    },
+        /// New title
+        #[arg(long)]
+        title: Option<String>,
 
-    /// Unpin a natural memory (subject to decay again)
-    Unpin {
-        /// Memory ID (prefix match)
-        id: String,
+        /// New content
+        #[arg(long)]
+        content: Option<String>,
+
+        /// Replace tags (can be repeated)
+        #[arg(long)]
+        tag: Option<Vec<String>>,
     },
 
     /// Rebuild index from markdown files on disk
