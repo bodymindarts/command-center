@@ -14,6 +14,11 @@ use crate::app::{AgentSendOutput, ClatApp, PromptMode, SpawnRequest, WorkDirMode
 use crate::jwt::JwtSigner;
 use crate::runtime::Runtime;
 
+use agent_memory::memory::NewMemory;
+use agent_memory::primitives::ReportId;
+use agent_memory::report::NewReport;
+use agent_memory::service::MemoryType;
+
 // ---------------------------------------------------------------------------
 // MCP server — generic over R: Runtime
 // ---------------------------------------------------------------------------
@@ -37,6 +42,9 @@ impl<R: Runtime> ClatMcpServer<R> {
         router.add_route(Self::send_message_route(Arc::clone(&app)));
         router.add_route(Self::list_tasks_route(Arc::clone(&app)));
         router.add_route(Self::task_log_route(Arc::clone(&app)));
+        router.add_route(Self::store_memory_route(Arc::clone(&app)));
+        router.add_route(Self::search_memory_route(Arc::clone(&app)));
+        router.add_route(Self::list_memories_route(Arc::clone(&app)));
         Self {
             app,
             tool_router: router,
@@ -499,6 +507,387 @@ impl<R: Runtime> ClatMcpServer<R> {
                     Ok(CallToolResult::success(vec![Content::text(
                         serde_json::to_string_pretty(&items).unwrap(),
                     )]))
+                })
+            },
+        )
+    }
+
+    fn store_memory_route(app: Arc<ClatApp<R>>) -> ToolRoute<Self> {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["title", "content"],
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Descriptive title for the memory or report"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Full content (findings, decisions, patterns, etc.)"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Lowercase tags for categorization"
+                },
+                "project": {
+                    "type": ["string", "null"],
+                    "description": "Project scope for this memory"
+                },
+                "memory_type": {
+                    "type": ["string", "null"],
+                    "description": "'memory' (default) or 'report'"
+                }
+            },
+            "additionalProperties": false
+        });
+
+        let input_schema = Arc::new(schema.as_object().unwrap().clone());
+        let tool = rmcp::model::Tool::new(
+            "store_memory",
+            "Store a research finding, decision, or piece of knowledge for future agents. Always store important findings before completing a task.",
+            input_schema,
+        );
+
+        ToolRoute::new_dyn(
+            tool,
+            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
+                let app = Arc::clone(&app);
+                Box::pin(async move {
+                    let claims = ctx
+                        .request_context
+                        .extensions
+                        .get::<axum::http::request::Parts>()
+                        .and_then(|parts| parts.extensions.get::<crate::jwt::AgentClaims>())
+                        .cloned();
+                    let task_id_str = claims.as_ref().map(|c| c.sub.as_str());
+
+                    let args = ctx.arguments.unwrap_or_default();
+                    let title = match args.get("title").and_then(|v| v.as_str()) {
+                        Some(t) => t.to_string(),
+                        None => {
+                            return Ok(CallToolResult::error(vec![Content::text(
+                                "Missing required field 'title'",
+                            )]));
+                        }
+                    };
+                    let content = match args.get("content").and_then(|v| v.as_str()) {
+                        Some(c) => c.to_string(),
+                        None => {
+                            return Ok(CallToolResult::error(vec![Content::text(
+                                "Missing required field 'content'",
+                            )]));
+                        }
+                    };
+                    let tags: Vec<String> = args
+                        .get("tags")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let project = args
+                        .get("project")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .or_else(|| claims.as_ref().and_then(|c| c.project.clone()));
+                    let memory_type = args
+                        .get("memory_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("memory");
+                    let source_task = task_id_str.map(|s| s.to_string());
+
+                    match memory_type {
+                        "report" => {
+                            let new = NewReport {
+                                id: ReportId::new(),
+                                title: title.clone(),
+                                content,
+                                tags: tags.clone(),
+                                project,
+                                source_task,
+                            };
+                            match app.memory().store_report(new).await {
+                                Ok(report) => {
+                                    let short_id = &report.id.to_string()
+                                        [..8.min(report.id.to_string().len())];
+                                    let tags_display = if tags.is_empty() {
+                                        String::from("(none)")
+                                    } else {
+                                        tags.join(", ")
+                                    };
+                                    let text = format!(
+                                        "Stored report: \"{}\" (type: report, id: {})\nTags: {}",
+                                        title, short_id, tags_display
+                                    );
+                                    Ok(CallToolResult::success(vec![Content::text(text)]))
+                                }
+                                Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                                    "Failed to store report: {e}"
+                                ))])),
+                            }
+                        }
+                        _ => {
+                            let new = NewMemory {
+                                title: title.clone(),
+                                content,
+                                tags: tags.clone(),
+                                project,
+                                source_task,
+                                source_type: "agent".to_string(),
+                            };
+                            match app.memory().store_memory(new).await {
+                                Ok(memory) => {
+                                    let short_id = &memory.id[..8.min(memory.id.len())];
+                                    let tags_display = if tags.is_empty() {
+                                        String::from("(none)")
+                                    } else {
+                                        tags.join(", ")
+                                    };
+                                    let text = format!(
+                                        "Stored memory: \"{}\" (type: memory, id: {})\nTags: {}",
+                                        title, short_id, tags_display
+                                    );
+                                    Ok(CallToolResult::success(vec![Content::text(text)]))
+                                }
+                                Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                                    "Failed to store memory: {e}"
+                                ))])),
+                            }
+                        }
+                    }
+                })
+            },
+        )
+    }
+
+    fn search_memory_route(app: Arc<ClatApp<R>>) -> ToolRoute<Self> {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query (keywords or natural language)"
+                },
+                "project": {
+                    "type": ["string", "null"],
+                    "description": "Filter results by project"
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Maximum number of results to return (default: 10)"
+                }
+            },
+            "additionalProperties": false
+        });
+
+        let input_schema = Arc::new(schema.as_object().unwrap().clone());
+        let tool = rmcp::model::Tool::new(
+            "search_memory",
+            "Search stored memories and research reports. Always search before starting research — someone may have already investigated your topic.",
+            input_schema,
+        );
+
+        ToolRoute::new_dyn(
+            tool,
+            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
+                let app = Arc::clone(&app);
+                Box::pin(async move {
+                    let args = ctx.arguments.unwrap_or_default();
+                    let query = match args.get("query").and_then(|v| v.as_str()) {
+                        Some(q) => q,
+                        None => {
+                            return Ok(CallToolResult::error(vec![Content::text(
+                                "Missing required field 'query'",
+                            )]));
+                        }
+                    };
+                    let project = args.get("project").and_then(|v| v.as_str());
+                    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+
+                    match app.memory().search(query, project, limit).await {
+                        Ok(results) => {
+                            if results.is_empty() {
+                                return Ok(CallToolResult::success(vec![Content::text(
+                                    "No results found.",
+                                )]));
+                            }
+
+                            let mut text = format!("## Results ({} found)\n", results.len());
+
+                            for (i, r) in results.iter().enumerate() {
+                                text.push_str(&format!(
+                                    "\n### {}. {} (score: {:.2}, type: {}",
+                                    i + 1,
+                                    r.title,
+                                    r.score,
+                                    r.memory_type
+                                ));
+                                if r.memory_type == MemoryType::Memory {
+                                    text.push_str(&format!(
+                                        ", decay: {:.0}%",
+                                        r.decay_factor * 100.0
+                                    ));
+                                }
+                                if r.pinned {
+                                    text.push_str(", pinned");
+                                }
+                                text.push(')');
+
+                                if !r.tags.is_empty() {
+                                    text.push_str(&format!("\nTags: {}", r.tags.join(", ")));
+                                }
+                                if let Some(ref proj) = r.project {
+                                    text.push_str(&format!("\nProject: {proj}"));
+                                }
+
+                                // Content snippet (first 300 chars).
+                                let snippet: String = r.content.chars().take(300).collect();
+                                text.push_str(&format!("\n\n{snippet}"));
+                                if r.content.len() > 300 {
+                                    text.push_str("...");
+                                }
+                                text.push_str("\n\n---");
+                            }
+
+                            Ok(CallToolResult::success(vec![Content::text(text)]))
+                        }
+                        Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                            "Search failed: {e}"
+                        ))])),
+                    }
+                })
+            },
+        )
+    }
+
+    fn list_memories_route(app: Arc<ClatApp<R>>) -> ToolRoute<Self> {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": ["string", "null"],
+                    "description": "Filter by project"
+                },
+                "memory_type": {
+                    "type": ["string", "null"],
+                    "description": "Filter by type: 'memory' or 'report'"
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Maximum number of results to return (default: 20)"
+                }
+            },
+            "additionalProperties": false
+        });
+
+        let input_schema = Arc::new(schema.as_object().unwrap().clone());
+        let tool = rmcp::model::Tool::new(
+            "list_memories",
+            "List stored memories and research reports, optionally filtered by project or type.",
+            input_schema,
+        );
+
+        ToolRoute::new_dyn(
+            tool,
+            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
+                let app = Arc::clone(&app);
+                Box::pin(async move {
+                    let args = ctx.arguments.unwrap_or_default();
+                    let project = args.get("project").and_then(|v| v.as_str());
+                    let memory_type = args.get("memory_type").and_then(|v| v.as_str());
+                    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+
+                    let show_memories = memory_type.is_none() || memory_type == Some("memory");
+                    let show_reports = memory_type.is_none() || memory_type == Some("report");
+
+                    let mut text = String::new();
+                    let mut total = 0usize;
+
+                    if show_memories {
+                        match app.memory().list_memories(project, limit).await {
+                            Ok(memories) => {
+                                for m in &memories {
+                                    total += 1;
+                                    let short_id = &m.id[..8.min(m.id.len())];
+                                    let tags_display = if m.tags.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!("\n  Tags: {}", m.tags.join(", "))
+                                    };
+                                    let project_display = m
+                                        .project
+                                        .as_deref()
+                                        .map(|p| format!("\n  Project: {p}"))
+                                        .unwrap_or_default();
+                                    text.push_str(&format!(
+                                        "- [{}] **{}** (type: memory, created: {}){}{}\n",
+                                        short_id,
+                                        m.title,
+                                        m.created_at.format("%Y-%m-%d"),
+                                        tags_display,
+                                        project_display,
+                                    ));
+                                }
+                            }
+                            Err(e) => {
+                                return Ok(CallToolResult::error(vec![Content::text(format!(
+                                    "Failed to list memories: {e}"
+                                ))]));
+                            }
+                        }
+                    }
+
+                    if show_reports {
+                        match app.memory().list_reports(project, limit).await {
+                            Ok(reports) => {
+                                for r in &reports {
+                                    total += 1;
+                                    let id_str = r.id.to_string();
+                                    let short_id = &id_str[..8.min(id_str.len())];
+                                    let tags_display = if r.tags.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!("\n  Tags: {}", r.tags.join(", "))
+                                    };
+                                    let project_display = r
+                                        .project
+                                        .as_deref()
+                                        .map(|p| format!("\n  Project: {p}"))
+                                        .unwrap_or_default();
+                                    text.push_str(&format!(
+                                        "- [{}] **{}** (type: report, created: {}){}{}\n",
+                                        short_id,
+                                        r.title,
+                                        r.created_at.format("%Y-%m-%d"),
+                                        tags_display,
+                                        project_display,
+                                    ));
+                                }
+                            }
+                            Err(e) => {
+                                return Ok(CallToolResult::error(vec![Content::text(format!(
+                                    "Failed to list reports: {e}"
+                                ))]));
+                            }
+                        }
+                    }
+
+                    if total == 0 {
+                        return Ok(CallToolResult::success(vec![Content::text(
+                            "No memories found.",
+                        )]));
+                    }
+
+                    let header = format!("## Memories ({total} found)\n\n");
+                    Ok(CallToolResult::success(vec![Content::text(format!(
+                        "{header}{text}"
+                    ))]))
                 })
             },
         )
