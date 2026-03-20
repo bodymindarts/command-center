@@ -1439,11 +1439,15 @@ pub(super) async fn tick_refresh<R: Runtime>(
         }
 
         if is_running {
-            active.task_list.set_live_output(
-                pane.as_ref()
-                    .map(|p| p.as_str())
-                    .and_then(|p| app.capture_pane(p)),
-            );
+            // Throttle capture_pane subprocess calls to avoid spawning
+            // tmux capture-pane every tick (every 50ms when streaming).
+            if active.task_list.should_capture_pane() {
+                active.task_list.set_live_output(
+                    pane.as_ref()
+                        .map(|p| p.as_str())
+                        .and_then(|p| app.capture_pane(p)),
+                );
+            }
         } else {
             active.task_list.set_live_output(None);
         }
