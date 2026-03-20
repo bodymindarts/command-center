@@ -460,21 +460,8 @@ async fn cmd_complete(
     Ok(())
 }
 
-fn init_memory_service(
-    app: &ClatApp<impl Runtime>,
-) -> anyhow::Result<agent_memory::service::MemoryService> {
-    let data_dir = app.project_root().join("data");
-    let config = agent_memory::config::Config {
-        memories_dir: data_dir.join("memory"),
-        db_path: data_dir.join("memory.db"),
-    };
-    std::fs::create_dir_all(&config.memories_dir).context("failed to create memory directory")?;
-    agent_memory::service::MemoryService::new(&config)
-        .context("failed to initialize memory service")
-}
-
 fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow::Result<()> {
-    let svc = init_memory_service(app)?;
+    let mem = app.memory()?;
 
     match action {
         MemoryAction::Store {
@@ -491,7 +478,7 @@ fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow::Resu
                 source_task: None,
                 source_type: "cli".to_string(),
             };
-            let memory = svc.store(new)?;
+            let memory = mem.store(new)?;
             println!("Stored memory {} — {}", &memory.id[..8], memory.title);
         }
         MemoryAction::Search {
@@ -499,7 +486,7 @@ fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow::Resu
             project,
             limit,
         } => {
-            let results = svc.search(&query, project.as_deref(), None, limit)?;
+            let results = mem.search(&query, project.as_deref(), None, limit)?;
             if results.is_empty() {
                 println!("No results.");
                 return Ok(());
@@ -551,7 +538,7 @@ fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow::Resu
             } else {
                 Some(tag.as_slice())
             };
-            let memories = svc.list(project.as_deref(), tags, limit)?;
+            let memories = mem.list(project.as_deref(), tags, limit)?;
             if memories.is_empty() {
                 println!("No memories.");
                 return Ok(());
@@ -585,7 +572,7 @@ fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow::Resu
             println!("{}", Table::new(rows));
         }
         MemoryAction::Get { id } => {
-            let memory = svc.get(&id)?;
+            let memory = mem.get(&id)?;
             println!("ID:      {}", memory.id);
             println!("Title:   {}", memory.title);
             println!("Tags:    {}", memory.tags.join(", "));
@@ -596,14 +583,14 @@ fn cmd_memory(action: MemoryAction, app: &ClatApp<impl Runtime>) -> anyhow::Resu
             println!("{}", memory.content);
         }
         MemoryAction::Delete { id } => {
-            let memory = svc.get(&id)?;
+            let memory = mem.get(&id)?;
             let title = memory.title.clone();
             let short_id = memory.id[..8].to_string();
-            svc.delete(&id)?;
+            mem.delete(&id)?;
             println!("Deleted memory {} — {}", short_id, title);
         }
         MemoryAction::Reindex => {
-            let count = svc.reindex()?;
+            let count = mem.reindex()?;
             println!("Reindexed {count} memories from disk.");
         }
     }
