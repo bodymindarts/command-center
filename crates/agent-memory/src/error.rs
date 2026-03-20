@@ -1,8 +1,11 @@
 /// Errors for the agent-memory crate.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentMemoryError {
-    #[error("sqlite error: {0}")]
-    Sqlite(#[from] rusqlite::Error),
+    #[error("sqlx error: {0}")]
+    Sqlx(#[from] sqlx::Error),
+
+    #[error("sqlx migrate error: {0}")]
+    SqlxMigrate(#[from] sqlx::migrate::MigrateError),
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

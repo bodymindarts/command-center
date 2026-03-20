@@ -239,6 +239,10 @@ pub enum MemoryAction {
         /// Project to associate with
         #[arg(long)]
         project: Option<String>,
+
+        /// Memory type: natural (default) or report
+        #[arg(long, name = "type", default_value = "natural")]
+        memory_type: String,
     },
 
     /// Search memories (hybrid keyword + vector)
@@ -261,9 +265,9 @@ pub enum MemoryAction {
         #[arg(long)]
         project: Option<String>,
 
-        /// Filter by tag
-        #[arg(long)]
-        tag: Vec<String>,
+        /// Filter by type: natural, report, or both (default)
+        #[arg(long, name = "type")]
+        memory_type: Option<String>,
 
         /// Maximum results to return
         #[arg(long, default_value = "20")]

@@ -3,21 +3,23 @@ use std::collections::HashSet;
 use crate::embed::Embedder;
 use crate::error::AgentMemoryError;
 use crate::markdown::MarkdownStore;
-use crate::store::Store;
+use crate::natural_memory::NaturalMemoryRepo;
+use crate::store::SearchStore;
 
-/// Sync markdown files into the SQLite store.
+/// Sync markdown files into the SQLite store (natural memories only).
 ///
 /// Returns the number of memories indexed.
-pub fn reindex(
-    store: &Store,
+pub async fn reindex(
+    natural_repo: &NaturalMemoryRepo,
+    search: &SearchStore,
     markdown: &MarkdownStore,
     embedder: Option<&Embedder>,
 ) -> Result<usize, AgentMemoryError> {
     tracing::info!("Starting reindex from markdown files");
 
-    // Clear existing data
-    store.clear_all()?;
-    store.migrate()?;
+    // Clear existing natural memory data and search projections.
+    natural_repo.clear_all().await?;
+    search.clear_projections().await?;
 
     let paths = markdown.walk_all()?;
     let mut count = 0;
@@ -25,14 +27,26 @@ pub fn reindex(
     for path in &paths {
         match markdown.read(path) {
             Ok(memory) => {
-                store.insert_memory(&memory)?;
+                natural_repo.insert(&memory).await?;
 
-                // Generate embedding if embedder is available
+                // Update FTS index.
+                let tags_str = memory.tags.join(", ");
+                search
+                    .upsert_fts(
+                        &memory.id,
+                        "natural",
+                        &memory.title,
+                        &memory.content,
+                        &tags_str,
+                    )
+                    .await?;
+
+                // Generate embedding if embedder is available.
                 if let Some(embedder) = embedder {
                     let text = format!("{}\n\n{}", memory.title, memory.content);
                     match embedder.embed_document(&text) {
                         Ok(embedding) => {
-                            store.upsert_embedding(&memory.id, &embedding)?;
+                            search.upsert_embedding(&memory.id, &embedding).await?;
                         }
                         Err(e) => {
                             tracing::warn!(
@@ -56,8 +70,8 @@ pub fn reindex(
         }
     }
 
-    // Clean up any DB entries whose markdown files no longer exist
-    let all_ids = store.all_ids()?;
+    // Clean up any DB entries whose markdown files no longer exist.
+    let all_ids = natural_repo.all_ids().await?;
     let file_ids: HashSet<String> = paths
         .iter()
         .filter_map(|p| markdown.read(p).ok())
@@ -66,7 +80,9 @@ pub fn reindex(
 
     for id in &all_ids {
         if !file_ids.contains(id) {
-            store.delete(id)?;
+            natural_repo.delete(id).await?;
+            search.delete_fts(id).await?;
+            search.delete_embedding(id).await?;
         }
     }
 

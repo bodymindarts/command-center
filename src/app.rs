@@ -127,6 +127,7 @@ impl<R: Runtime> ClatApp<R> {
             };
             std::fs::create_dir_all(&config.memories_dir)?;
             agent_memory::service::MemoryService::new(&config)
+                .await
                 .map_err(|e| anyhow::anyhow!("failed to initialize memory service: {e}"))?
         };
         // If the CLI flag wasn't set, check whether the dashboard wrote a
@@ -192,14 +193,16 @@ impl<R: Runtime> ClatApp<R> {
     }
 
     #[cfg(test)]
-    pub fn new(store: Store, runtime: R, paths: Paths) -> Self {
+    pub async fn new(store: Store, runtime: R, paths: Paths) -> Self {
         let jwt_signer = JwtSigner::load_or_create(&paths.data_dir.join("jwt-secret")).unwrap();
         let config = agent_memory::config::Config {
             memories_dir: paths.data_dir.join("memory"),
             db_path: paths.data_dir.join("memory.db"),
         };
         std::fs::create_dir_all(&config.memories_dir).unwrap();
-        let memory = agent_memory::service::MemoryService::new(&config).unwrap();
+        let memory = agent_memory::service::MemoryService::new(&config)
+            .await
+            .unwrap();
         Self {
             store,
             runtime,
@@ -1124,7 +1127,7 @@ prompt = "noop prompt"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths);
+        let service = ClatApp::new(store, runtime, paths).await;
 
         let output = spawn_test_task(&service).await;
 
@@ -1162,7 +1165,7 @@ prompt = "noop prompt"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths);
+        let service = ClatApp::new(store, runtime, paths).await;
 
         let spawned = spawn_test_task(&service).await;
         let result = service.close(&spawned.task_id.to_string()).await.unwrap();
@@ -1197,7 +1200,7 @@ prompt = "noop prompt"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths);
+        let service = ClatApp::new(store, runtime, paths).await;
 
         let spawned = spawn_test_task(&service).await;
         service
@@ -1217,7 +1220,7 @@ prompt = "noop prompt"
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
         *runtime.kill_should_fail.lock().unwrap() = true;
-        let service = ClatApp::new(store, runtime, paths);
+        let service = ClatApp::new(store, runtime, paths).await;
 
         let spawned = spawn_test_task(&service).await;
         let result = service.close(&spawned.task_id.to_string()).await;
@@ -1230,7 +1233,7 @@ prompt = "noop prompt"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths);
+        let service = ClatApp::new(store, runtime, paths).await;
 
         let spawned = spawn_test_task(&service).await;
         let result = service
@@ -1270,7 +1273,7 @@ prompt = "noop prompt"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths);
+        let service = ClatApp::new(store, runtime, paths).await;
 
         let spawned = spawn_test_task(&service).await;
         service.goto(&spawned.task_id.to_string()).await.unwrap();
@@ -1287,7 +1290,7 @@ prompt = "noop prompt"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths);
+        let service = ClatApp::new(store, runtime, paths).await;
 
         // Create a task without launching agent (no tmux_window)
         let new_task = NewTask {
@@ -1312,7 +1315,7 @@ prompt = "noop prompt"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths);
+        let service = ClatApp::new(store, runtime, paths).await;
 
         let spawned = spawn_test_task(&service).await;
         service
@@ -1333,7 +1336,7 @@ prompt = "noop prompt"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths);
+        let service = ClatApp::new(store, runtime, paths).await;
 
         let spawned1 = spawn_test_task(&service).await;
         let _spawned2 = spawn_test_task(&service).await;
@@ -1373,7 +1376,7 @@ prompt = "deploy to {{ env }}"
 
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths);
+        let service = ClatApp::new(store, runtime, paths).await;
 
         let skills = service.list_skills().unwrap();
         assert_eq!(skills.len(), 2);
@@ -1389,7 +1392,7 @@ prompt = "deploy to {{ env }}"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths);
+        let service = ClatApp::new(store, runtime, paths).await;
 
         let spawned = spawn_test_task(&service).await;
         service
@@ -1443,7 +1446,7 @@ prompt = "deploy to {{ env }}"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths);
+        let service = ClatApp::new(store, runtime, paths).await;
 
         let spawned = spawn_test_task(&service).await;
         service
@@ -1490,7 +1493,7 @@ prompt = "deploy to {{ env }}"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths);
+        let service = ClatApp::new(store, runtime, paths).await;
 
         let spawned = spawn_test_task(&service).await;
 
@@ -1505,7 +1508,7 @@ prompt = "deploy to {{ env }}"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths);
+        let service = ClatApp::new(store, runtime, paths).await;
 
         let output = service
             .spawn(SpawnRequest {
@@ -1552,7 +1555,7 @@ prompt = "deploy to {{ env }}"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths);
+        let service = ClatApp::new(store, runtime, paths).await;
 
         let custom_repo = tmp.path().join("other-repo");
         std::fs::create_dir_all(&custom_repo).unwrap();
@@ -1598,7 +1601,7 @@ prompt = "deploy to {{ env }}"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths);
+        let service = ClatApp::new(store, runtime, paths).await;
 
         let output = service
             .spawn(SpawnRequest {
@@ -1650,7 +1653,7 @@ prompt = "deploy to {{ env }}"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths);
+        let service = ClatApp::new(store, runtime, paths).await;
 
         let project = service
             .create_project("web-app", "frontend project")
@@ -1671,7 +1674,7 @@ prompt = "deploy to {{ env }}"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths);
+        let service = ClatApp::new(store, runtime, paths).await;
 
         service.create_project("temp-proj", "").await.unwrap();
         assert_eq!(service.list_projects().await.unwrap().len(), 1);
@@ -1686,7 +1689,7 @@ prompt = "deploy to {{ env }}"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths);
+        let service = ClatApp::new(store, runtime, paths).await;
 
         let proj = service.create_project("doomed", "").await.unwrap();
         let proj_id = proj.id;
@@ -1738,7 +1741,7 @@ prompt = "deploy to {{ env }}"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths);
+        let service = ClatApp::new(store, runtime, paths).await;
 
         let err = service.delete_project("ghost").await;
         assert!(err.is_err());
@@ -1750,7 +1753,7 @@ prompt = "deploy to {{ env }}"
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
         let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths);
+        let service = ClatApp::new(store, runtime, paths).await;
 
         let proj = service.create_project("test-proj", "").await.unwrap();
         let proj_id = proj.id;
