@@ -558,6 +558,26 @@ fn setup_worktree_config(
             }
 
             std::fs::write(&mcp_path, serde_json::to_string_pretty(&mcp_config)?)?;
+
+            // Register MCP servers as local-scoped so Claude Code trusts them
+            // immediately — no "N new MCP servers found" approval prompt.
+            let clat_url = format!("{mcp_url}?token={jwt_token}");
+            let auth_value = format!("Bearer {jwt_token}");
+            register_local_mcp_server(
+                worktree_path,
+                "clat",
+                &clat_url,
+                &[("Authorization", &auth_value)],
+            );
+            if is_port_reachable("127.0.0.1", 9222) {
+                register_local_mcp_server(
+                    worktree_path,
+                    "style-agent",
+                    "http://127.0.0.1:9222/mcp",
+                    &[],
+                );
+            }
+
             settings["enableAllProjectMcpServers"] = serde_json::json!(true);
 
             // Auto-allow MCP tools so agents don't need manual approval.
@@ -807,6 +827,45 @@ pub fn reembed_socket_in_worktrees(work_dirs: &[String], sock_path: &str) {
         };
         embed_socket_in_hooks(&mut settings, sock_path);
         let _ = std::fs::write(&settings_path, settings.to_string());
+    }
+}
+
+/// Register an MCP server as local-scoped via `claude mcp add`.
+///
+/// Local-scoped servers are trusted by Claude Code and don't trigger the
+/// "N new MCP servers found" approval prompt that project-scoped (.mcp.json)
+/// servers do. We keep .mcp.json as a fallback but use this to pre-register
+/// so agents can start working immediately.
+fn register_local_mcp_server(work_dir: &Path, name: &str, url: &str, headers: &[(&str, &str)]) {
+    let mut args = vec![
+        "mcp".to_string(),
+        "add".to_string(),
+        "--transport".to_string(),
+        "http".to_string(),
+        "--scope".to_string(),
+        "local".to_string(),
+    ];
+    for (key, value) in headers {
+        args.push("--header".to_string());
+        args.push(format!("{key}: {value}"));
+    }
+    args.push(name.to_string());
+    args.push(url.to_string());
+
+    let result = Command::new("claude")
+        .args(&args)
+        .current_dir(work_dir)
+        .output();
+
+    match result {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!("Warning: claude mcp add {name} failed: {stderr}");
+        }
+        Err(e) => {
+            eprintln!("Warning: could not run claude mcp add {name}: {e}");
+        }
     }
 }
 
