@@ -73,6 +73,8 @@ pub struct WatchService {
     timer_spawner: JobSpawner<TimerConfig>,
     command_spawner: JobSpawner<CommandConfig>,
     repo: WatchRepo,
+    /// Held to keep the background job-poller alive for the process lifetime.
+    _jobs: job::Jobs,
 }
 
 impl WatchService {
@@ -80,11 +82,13 @@ impl WatchService {
         timer_spawner: JobSpawner<TimerConfig>,
         command_spawner: JobSpawner<CommandConfig>,
         watches: WatchRepo,
+        jobs: job::Jobs,
     ) -> Self {
         Self {
             timer_spawner,
             command_spawner,
             repo: watches,
+            _jobs: jobs,
         }
     }
 
