@@ -92,6 +92,15 @@ Guidelines:
 - Include all relevant findings, file locations, and constraints in the task description
 - For independent pieces of work, spawn separate parallel tasks
 
+## Memory
+Before reporting back, persist important findings using the `store_memory` MCP tool:
+- **Review findings**: store significant architectural issues, anti-patterns, or recurring
+  problems as memories (`memory_type: "memory"`) so future reviewers don't re-discover them.
+- **Comprehensive audits**: use `memory_type: "report"` for full review reports.
+
+Include relevant `tags` and `project` if applicable.
+Search existing memories with `search_memory` before starting to check for known issues.
+
 ## Reporting back
 When your review is complete, use the `send_message` MCP tool to notify your
 project manager with a brief summary:

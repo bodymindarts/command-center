@@ -35,6 +35,17 @@ Guidelines:
 - Include all relevant findings, design decisions, and constraints in the task description
 - For multi-step work, spawn separate parallel tasks for independent pieces
 
+## Memory
+Before reporting back, persist your findings using the `store_memory` MCP tool:
+- **Research reports**: use `memory_type: "report"` for comprehensive research findings,
+  comparisons, and recommendations. Reports are versioned — if you're updating a previous
+  report, note the original title.
+- **Key facts/decisions**: use `memory_type: "memory"` (default) for individual insights,
+  decisions, or patterns discovered during research.
+
+Include relevant `tags` and `project` if applicable.
+Search existing memories with `search_memory` before starting to build on prior work.
+
 ## Reporting back
 When your research is complete, use the `send_message` MCP tool to notify your
 project manager with a brief summary of findings:

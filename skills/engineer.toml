@@ -40,6 +40,15 @@ Examples of markers:
 - `# @@ this should be extracted to a helper`
 - `// @@ I don't like this approach, try X instead`
 
+## Memory
+Before completing your task, persist important knowledge using the `store_memory` MCP tool:
+- **Decisions**: architectural choices, trade-offs made, why approach X was chosen over Y
+- **Patterns discovered**: conventions, gotchas, or techniques found in the codebase
+- **Completion summaries**: what was built, what changed, key implementation details
+
+Use `memory_type: "memory"` (default). Include relevant `tags` and `project` if applicable.
+Search existing memories with `search_memory` before starting work to avoid re-learning.
+
 ## Reporting back
 When your task is complete (committed and checks pass), use the `send_message` MCP
 tool to notify your project manager:
@@ -52,6 +61,9 @@ Also send a message if you're blocked or need clarification.
 If the `search_code` MCP tool is available, use it before writing non-trivial Rust code.
 Pass a code snippet as the query (e.g. the pattern you're about to write) and adopt the
 style, naming, and structure from the returned examples. Don't guess conventions — search first.
+Always pass a `label` filter for precise results. Available labels: entity, entity_event,
+entity_command, entity_hydration, error, service, repository, domain_primitives,
+graphql_endpoint, builder_pattern, configuration, test.
 
 ## Constraints
 - All dependencies are declared in flake.nix — never assume binaries are installed. Only tools declared in flake.nix are available (no python, sed, awk, perl, etc.)

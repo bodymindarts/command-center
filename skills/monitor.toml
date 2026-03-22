@@ -49,6 +49,13 @@ perform the next check immediately — don't ask for confirmation.
   MCP tool to notify your project manager:
   `send_message(target="pm", message="Monitor <label>: <final status>")`
 
+## Memory
+When monitoring completes (done, failed, or timed out), persist the outcome using
+the `store_memory` MCP tool if the result contains useful information:
+- CI failures with root cause → `memory_type: "memory"` with tags like "ci", "failure"
+- Patterns of recurring failures → worth storing for future monitors
+Don't store routine "CI passed" results — only store when there's something to learn.
+
 ## Constraints
 
 - Never access files outside your working directory.

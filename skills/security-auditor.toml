@@ -88,6 +88,16 @@ Each finding has:
 ### Top 3 Priorities
 The three most critical issues to fix immediately.
 
+## Memory
+Before reporting back, persist your findings using the `store_memory` MCP tool:
+- Use `memory_type: "report"` for the full audit report.
+- Use `memory_type: "memory"` for individual vulnerabilities or security patterns worth
+  tracking across audits.
+
+Include relevant `tags` (e.g. "security", "vulnerability") and `project` if applicable.
+Search existing memories with `search_memory` before starting to check for previously
+identified issues and verify they've been fixed.
+
 ## Reporting back
 When your audit is complete, use the `send_message` MCP tool to notify your
 project manager with a brief summary:
