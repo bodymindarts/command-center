@@ -14,6 +14,8 @@ pub struct PermissionLogEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
     pub outcome: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_approved: Option<bool>,
 }
 
 pub fn log_permission(data_dir: &Path, entry: &PermissionLogEntry) {
@@ -42,6 +44,7 @@ mod tests {
             tool: "Bash".to_string(),
             command: Some("git status".to_string()),
             outcome: "approved".to_string(),
+            auto_approved: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -50,6 +53,7 @@ mod tests {
         assert_eq!(parsed["command"], "git status");
         assert_eq!(parsed["outcome"], "approved");
         assert!(parsed.get("task_name").is_none());
+        assert!(parsed.get("auto_approved").is_none());
     }
 
     #[test]
@@ -61,6 +65,7 @@ mod tests {
             tool: "Edit".to_string(),
             command: None,
             outcome: "denied".to_string(),
+            auto_approved: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -79,6 +84,7 @@ mod tests {
             tool: "Bash".to_string(),
             command: Some("clat list".to_string()),
             outcome: "approved".to_string(),
+            auto_approved: None,
         };
         log_permission(dir.path(), &entry);
         let content =
@@ -97,6 +103,7 @@ mod tests {
             tool: "Bash".to_string(),
             command: Some("clat spawn test".to_string()),
             outcome: "approved".to_string(),
+            auto_approved: None,
         };
         log_permission(dir.path(), &entry);
         assert!(dir.path().join("logs/permission-log-pm.jsonl").exists());
@@ -112,6 +119,7 @@ mod tests {
             tool: "Write".to_string(),
             command: None,
             outcome: "denied".to_string(),
+            auto_approved: None,
         };
         log_permission(dir.path(), &entry);
         assert!(
@@ -131,6 +139,7 @@ mod tests {
             tool: "Bash".to_string(),
             command: Some("curl https://example.com".to_string()),
             outcome: "approved".to_string(),
+            auto_approved: None,
         };
         log_permission(dir.path(), &entry);
         assert!(
@@ -138,6 +147,23 @@ mod tests {
                 .join("logs/permission-log-researcher.jsonl")
                 .exists()
         );
+    }
+
+    #[test]
+    fn log_entry_auto_approved_serializes() {
+        let entry = PermissionLogEntry {
+            ts: "2026-03-17T10:00:00Z".to_string(),
+            role: "engineer".to_string(),
+            task_name: Some("test-task".to_string()),
+            tool: "Bash".to_string(),
+            command: Some("cargo fmt && git add -A".to_string()),
+            outcome: "auto_approved".to_string(),
+            auto_approved: Some(true),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["auto_approved"], true);
+        assert_eq!(parsed["outcome"], "auto_approved");
     }
 
     #[test]
@@ -151,6 +177,7 @@ mod tests {
                 tool: "Bash".to_string(),
                 command: Some(format!("cmd-{i}")),
                 outcome: "approved".to_string(),
+                auto_approved: None,
             };
             log_permission(dir.path(), &entry);
         }

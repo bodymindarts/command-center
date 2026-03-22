@@ -18,6 +18,53 @@ use super::telegram;
 
 const EXO_PERM_KEY: &str = "exo";
 
+// ── Logging helper ──────────────────────────────────────────────────
+
+/// Log a tool event to the JSONL permission log.
+///
+/// Resolves task name and skill/role from `cwd`, extracts the command
+/// for Bash tool calls, and writes a `PermissionLogEntry`.
+fn log_tool_event(
+    state: &ScreenState,
+    cwd: &str,
+    tool_name: &str,
+    tool_input: Option<&serde_json::Value>,
+    auto_approved: Option<bool>,
+    data_dir: &std::path::Path,
+) {
+    let task_name = state.task_name_for_cwd_or(cwd, TaskName::from(EXO_PERM_KEY.to_string()));
+    let skill_name = state.global_task_skill(&task_name).map(|s| s.to_string());
+    let role = skill_name.unwrap_or_else(|| task_name.to_string());
+    let command = if tool_name == "Bash" {
+        tool_input
+            .and_then(|v| v.get("command"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    } else {
+        None
+    };
+    let log_task_name = if role != "exo" {
+        Some(task_name.to_string())
+    } else {
+        None
+    };
+    let outcome = if auto_approved == Some(true) {
+        "auto_approved"
+    } else {
+        "pending"
+    };
+    let entry = crate::permission_log::PermissionLogEntry {
+        ts: chrono::Local::now().to_rfc3339(),
+        role,
+        task_name: log_task_name,
+        tool: tool_name.to_string(),
+        command,
+        outcome: outcome.to_string(),
+        auto_approved,
+    };
+    crate::permission_log::log_permission(data_dir, &entry);
+}
+
 // ── Helper functions ────────────────────────────────────────────────
 
 pub(super) fn write_response_to_stream(
@@ -916,7 +963,7 @@ pub(super) async fn dispatch_hook_event<R: Runtime>(
         }
         HookEvent::PreToolUse { cwd, payload } => {
             handle_hook_active(state, &cwd, tg_tx);
-            handle_pretool_compound_bash(state, stream, &cwd, &payload);
+            handle_pretool_compound_bash(state, stream, &cwd, &payload, data_dir);
         }
         HookEvent::UserPromptSubmit { cwd, .. } | HookEvent::SubagentStop { cwd, .. } => {
             handle_hook_active(state, &cwd, tg_tx);
@@ -936,6 +983,7 @@ pub(super) async fn dispatch_hook_event<R: Runtime>(
                 &tool_name,
                 &tool_input,
                 tg_tx,
+                data_dir,
             )
             .await;
         }
@@ -1004,6 +1052,7 @@ fn handle_pretool_compound_bash(
     stream: UnixStream,
     cwd: &str,
     payload: &serde_json::Value,
+    data_dir: &std::path::Path,
 ) {
     // Only process Bash tool calls
     let tool_name = payload.get("tool_name").and_then(|v| v.as_str());
@@ -1027,6 +1076,14 @@ fn handle_pretool_compound_bash(
     };
 
     if crate::compound_bash::should_approve(command, &worktree_path) {
+        log_tool_event(
+            state,
+            cwd,
+            "Bash",
+            Some(payload.get("tool_input").unwrap_or(payload)),
+            Some(true),
+            data_dir,
+        );
         use std::io::Write;
         let response = crate::compound_bash::make_pretool_allow_response(
             "all sub-commands match allowed patterns",
@@ -1145,8 +1202,19 @@ async fn handle_worktree_read_scope<R: Runtime>(
     tool_name: &str,
     tool_input: &serde_json::Value,
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
+    data_dir: &std::path::Path,
 ) {
     use std::io::Write;
+
+    // Log every Read/Grep/Glob event that arrives via this hook.
+    log_tool_event(
+        state,
+        cwd,
+        tool_name,
+        Some(tool_input),
+        Some(true),
+        data_dir,
+    );
 
     let target = crate::permission::worktree_scope_target(tool_name, tool_input);
     let is_outside = target
@@ -1179,34 +1247,17 @@ fn handle_hook_permission(
     data_dir: &std::path::Path,
 ) {
     let task_name = state.task_name_for_cwd_or(&req.cwd, TaskName::from(EXO_PERM_KEY.to_string()));
-    let skill_name = state.global_task_skill(&task_name).map(|s| s.to_string());
     state.mark_task_active_by_name(&task_name);
 
     // Log the incoming permission request immediately.
-    let role = skill_name.clone().unwrap_or_else(|| task_name.to_string());
-    let command = if req.tool_name == "Bash" {
-        req.tool_input
-            .as_ref()
-            .and_then(|v| v.get("command"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-    } else {
-        None
-    };
-    let log_task_name = if role != "exo" {
-        Some(task_name.to_string())
-    } else {
-        None
-    };
-    let entry = crate::permission_log::PermissionLogEntry {
-        ts: chrono::Local::now().to_rfc3339(),
-        role,
-        task_name: log_task_name,
-        tool: req.tool_name.clone(),
-        command,
-        outcome: "pending".to_string(),
-    };
-    crate::permission_log::log_permission(data_dir, &entry);
+    log_tool_event(
+        state,
+        &req.cwd,
+        &req.tool_name,
+        req.tool_input.as_ref(),
+        None,
+        data_dir,
+    );
     *perm_id_counter += 1;
     let perm_id = *perm_id_counter;
     if let Some(tx) = tg_tx {
