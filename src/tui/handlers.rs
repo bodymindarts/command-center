@@ -914,11 +914,11 @@ pub(super) async fn dispatch_hook_event<R: Runtime>(
                 data_dir,
             );
         }
-        // New hook events — received and dropped for now.
-        // No response needed; stream is dropped which closes the connection.
-        HookEvent::PreToolUse { cwd, .. }
-        | HookEvent::UserPromptSubmit { cwd, .. }
-        | HookEvent::SubagentStop { cwd, .. } => {
+        HookEvent::PreToolUse { cwd, payload } => {
+            handle_hook_active(state, &cwd, tg_tx);
+            handle_pretool_compound_bash(state, stream, &cwd, &payload);
+        }
+        HookEvent::UserPromptSubmit { cwd, .. } | HookEvent::SubagentStop { cwd, .. } => {
             handle_hook_active(state, &cwd, tg_tx);
         }
         HookEvent::Stop { cwd, .. } => {
@@ -975,6 +975,49 @@ fn handle_hook_active(
             text: format!("⚡ Task active: {task_name}"),
         });
     }
+}
+
+/// Check if a PreToolUse event is a compound Bash command that can be
+/// auto-approved. If all sub-commands match allowed patterns, write an
+/// allow response to the stream. Otherwise drop the stream (no response
+/// = fall through to normal permission flow).
+fn handle_pretool_compound_bash(
+    state: &ScreenState,
+    stream: UnixStream,
+    cwd: &str,
+    payload: &serde_json::Value,
+) {
+    // Only process Bash tool calls
+    let tool_name = payload.get("tool_name").and_then(|v| v.as_str());
+    if tool_name != Some("Bash") {
+        return;
+    }
+
+    let command = payload
+        .get("tool_input")
+        .and_then(|v| v.get("command"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if command.is_empty() {
+        return;
+    }
+
+    // Resolve work_dir from cwd — this is the worktree root
+    let worktree_path = match state.work_dir_for_cwd(cwd) {
+        Some(wd) => std::path::PathBuf::from(wd),
+        None => return,
+    };
+
+    if crate::compound_bash::should_approve(command, &worktree_path) {
+        use std::io::Write;
+        let response = crate::compound_bash::make_pretool_allow_response(
+            "all sub-commands match allowed patterns",
+        );
+        let mut s = stream;
+        let _ = s.write_all(response.as_bytes());
+        let _ = s.flush();
+    }
+    // If not approved, stream is dropped — no response, Claude Code falls through.
 }
 
 async fn handle_hook_pm_message<R: Runtime>(

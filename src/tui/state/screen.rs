@@ -179,6 +179,18 @@ impl ScreenState {
             .map(|(name, _)| name.clone())
     }
 
+    /// Resolve a CWD to the task's work directory (worktree root).
+    pub fn work_dir_for_cwd(&self, cwd: &str) -> Option<String> {
+        let resolved = std::fs::canonicalize(cwd).unwrap_or_else(|_| PathBuf::from(cwd));
+        self.global_task_work_dirs
+            .iter()
+            .find(|(_, wd)| {
+                let canon = std::fs::canonicalize(wd).unwrap_or_else(|_| PathBuf::from(wd));
+                resolved.starts_with(&canon)
+            })
+            .map(|(_, wd)| wd.clone())
+    }
+
     /// Find the TaskListState that contains a task with the given name.
     fn task_list_for_task_mut(&mut self, name: &TaskName) -> Option<&mut TaskListState> {
         if let Some(tl) = self.exo.task_list_for_name(name) {

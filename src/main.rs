@@ -1,6 +1,7 @@
 mod app;
 mod assistant;
 mod cli;
+mod compound_bash;
 mod config;
 mod jwt;
 mod mcp;

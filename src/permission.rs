@@ -56,9 +56,7 @@ pub enum HookEvent {
         cwd: String,
     },
     PreToolUse {
-        #[allow(dead_code)]
         cwd: String,
-        #[allow(dead_code)]
         payload: Value,
     },
     Stop {
