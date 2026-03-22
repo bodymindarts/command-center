@@ -921,6 +921,24 @@ pub(super) async fn dispatch_hook_event<R: Runtime>(
         | HookEvent::SubagentStop { cwd, .. } => {
             handle_hook_active(state, &cwd, tg_tx);
         }
+        HookEvent::WorktreeReadScope {
+            cwd,
+            tool_name,
+            tool_input,
+        } => {
+            handle_hook_active(state, &cwd, tg_tx);
+            handle_worktree_read_scope(
+                state,
+                exo_session,
+                app,
+                stream,
+                &cwd,
+                &tool_name,
+                &tool_input,
+                tg_tx,
+            )
+            .await;
+        }
         HookEvent::Stop { cwd, .. } => {
             handle_hook_idle(state, &cwd, tg_tx);
             drop(stream);
@@ -1070,6 +1088,42 @@ async fn handle_hook_exo_message<R: Runtime>(
 
     let resp = serde_json::json!({"ok": true});
     let _ = write!(&stream, "{resp}");
+}
+
+/// Handle a WorktreeReadScope event: check if the target path is outside the
+/// agent's worktree and, if so, inject a notification into the ExO session.
+#[allow(clippy::too_many_arguments)]
+async fn handle_worktree_read_scope<R: Runtime>(
+    state: &mut ScreenState,
+    exo_session: &mut AssistantSession,
+    app: &ClatApp<R>,
+    stream: UnixStream,
+    cwd: &str,
+    tool_name: &str,
+    tool_input: &serde_json::Value,
+    tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
+) {
+    use std::io::Write;
+
+    let target = crate::permission::worktree_scope_target(tool_name, tool_input);
+    let is_outside = target
+        .as_deref()
+        .map(|t| crate::permission::is_outside_worktree(cwd, t))
+        .unwrap_or(false);
+
+    if is_outside {
+        let target = target.as_deref().unwrap_or("unknown");
+        let task_name = state.task_name_for_cwd_or(cwd, TaskName::from("unknown".to_string()));
+        let message =
+            format!("[worktree-scope] {task_name}: {tool_name} outside worktree → {target}");
+
+        // Inject as an ExO message so the operator sees it
+        handle_hook_exo_message(state, exo_session, app, stream, &message, tg_tx).await;
+    } else {
+        // Inside the worktree — respond ok and move on
+        let resp = serde_json::json!({"ok": true});
+        let _ = write!(&stream, "{resp}");
+    }
 }
 
 fn handle_hook_permission(

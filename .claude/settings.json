@@ -63,6 +63,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "Read|Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/worktree-read-scope.sh",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Stop": [
