@@ -32,13 +32,7 @@ pub async fn reindex(
                 // Update FTS index.
                 let tags_str = memory.tags.join(", ");
                 search
-                    .upsert_fts(
-                        &memory.id,
-                        "memory",
-                        &memory.title,
-                        &memory.content,
-                        &tags_str,
-                    )
+                    .upsert_fts(&memory.id, &memory.title, &memory.content, &tags_str)
                     .await?;
 
                 // Generate embedding if embedder is available.

@@ -240,9 +240,9 @@ pub enum MemoryAction {
         #[arg(long)]
         project: Option<String>,
 
-        /// Memory type: memory (default) or report
-        #[arg(long, name = "type", default_value = "memory")]
-        memory_type: String,
+        /// Mark as persistent (exempt from decay)
+        #[arg(long)]
+        persistent: bool,
     },
 
     /// Search memories (hybrid keyword + vector)
@@ -265,9 +265,9 @@ pub enum MemoryAction {
         #[arg(long)]
         project: Option<String>,
 
-        /// Filter by type: memory, report, or both (default)
-        #[arg(long, name = "type")]
-        memory_type: Option<String>,
+        /// Filter to persistent memories only
+        #[arg(long)]
+        persistent: bool,
 
         /// Maximum results to return
         #[arg(long, default_value = "20")]
@@ -278,24 +278,6 @@ pub enum MemoryAction {
     Get {
         /// Memory ID (prefix match)
         id: String,
-    },
-
-    /// Update a research report
-    Update {
-        /// Report ID (prefix match)
-        id: String,
-
-        /// New title
-        #[arg(long)]
-        title: Option<String>,
-
-        /// New content
-        #[arg(long)]
-        content: Option<String>,
-
-        /// Replace tags (can be repeated)
-        #[arg(long)]
-        tag: Option<Vec<String>>,
     },
 
     /// Rebuild index from markdown files on disk

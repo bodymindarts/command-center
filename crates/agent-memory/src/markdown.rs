@@ -25,6 +25,8 @@ struct Frontmatter {
     access_count: i64,
     #[serde(default)]
     pinned: bool,
+    #[serde(default)]
+    persistent: bool,
 }
 
 /// Handles reading and writing markdown memory files.
@@ -68,6 +70,7 @@ impl MarkdownStore {
             last_accessed: memory.last_accessed,
             access_count: memory.access_count,
             pinned: memory.pinned,
+            persistent: memory.persistent,
         };
 
         let yaml = serde_yaml::to_string(&frontmatter)?;
@@ -146,6 +149,7 @@ fn parse_markdown(raw: &str, path: &Path) -> Result<Memory, AgentMemoryError> {
         last_accessed: fm.last_accessed,
         access_count: fm.access_count,
         pinned: fm.pinned,
+        persistent: fm.persistent,
     })
 }
 

@@ -5,9 +5,10 @@ pub use repo::*;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// A memory — ephemeral observation, session context, or daily note.
+/// A stored memory — observation, decision, research finding, or knowledge.
 ///
-/// These decay over time unless pinned.
+/// Memories decay over time unless pinned or persistent.
+/// Persistent memories are exempt from decay (replaces the old Report type).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Memory {
     pub id: String,
@@ -23,6 +24,8 @@ pub struct Memory {
     pub last_accessed: Option<DateTime<Utc>>,
     pub access_count: i64,
     pub pinned: bool,
+    /// Persistent memories are exempt from decay (like former reports).
+    pub persistent: bool,
 }
 
 /// Input for creating a new memory.
@@ -34,4 +37,6 @@ pub struct NewMemory {
     pub project: Option<String>,
     pub source_task: Option<String>,
     pub source_type: String,
+    /// When true, the memory is exempt from decay.
+    pub persistent: bool,
 }

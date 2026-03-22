@@ -10,7 +10,6 @@ use crate::error::AgentMemoryError;
 #[derive(Debug)]
 pub struct FtsResult {
     pub id: String,
-    pub memory_type: String,
     pub rank: f64,
 }
 
@@ -94,7 +93,6 @@ impl SearchStore {
     pub async fn upsert_fts(
         &self,
         memory_id: &str,
-        memory_type: &str,
         title: &str,
         content: &str,
         tags: &str,
@@ -106,10 +104,9 @@ impl SearchStore {
             .await?;
         sqlx::query(
             "INSERT INTO memory_fts(memory_id, memory_type, title, content, tags)
-             VALUES (?, ?, ?, ?, ?)",
+             VALUES (?, 'memory', ?, ?, ?)",
         )
         .bind(memory_id)
-        .bind(memory_type)
         .bind(title)
         .bind(content)
         .bind(tags)
@@ -134,7 +131,7 @@ impl SearchStore {
         limit: usize,
     ) -> Result<Vec<FtsResult>, AgentMemoryError> {
         let rows = sqlx::query(
-            "SELECT memory_id, memory_type, rank
+            "SELECT memory_id, rank
              FROM memory_fts
              WHERE memory_fts MATCH ?
              ORDER BY rank
@@ -149,7 +146,6 @@ impl SearchStore {
             .iter()
             .map(|row| FtsResult {
                 id: row.get("memory_id"),
-                memory_type: row.get("memory_type"),
                 rank: row.get("rank"),
             })
             .collect())

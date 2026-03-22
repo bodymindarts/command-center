@@ -10,11 +10,9 @@ use crate::error::AgentMemoryError;
 use crate::index;
 use crate::markdown::MarkdownStore;
 use crate::memory::{Memory, MemoryRepo, NewMemory};
-use crate::primitives::ReportId;
-use crate::report::{NewReport, Report, ReportRepo, ReportUpdate};
 use crate::store::SearchStore;
 
-/// A unified search result that indicates which memory type was matched.
+/// A search result with relevance scoring and decay information.
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchResult {
     pub id: String,
@@ -22,73 +20,12 @@ pub struct SearchResult {
     pub content: String,
     pub tags: Vec<String>,
     pub project: Option<String>,
-    pub memory_type: MemoryType,
     pub score: f64,
-    /// Decay factor (1.0 = fully fresh, 0.0 = fully decayed). Reports always 1.0.
+    /// Decay factor (1.0 = fully fresh, 0.0 = fully decayed).
+    /// Persistent or pinned memories always have 1.0.
     pub decay_factor: f64,
-    /// Whether this memory is pinned (always false for reports).
     pub pinned: bool,
-}
-
-/// The type of memory in a search result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MemoryType {
-    Memory,
-    Report,
-}
-
-impl std::fmt::Display for MemoryType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Memory => write!(f, "memory"),
-            Self::Report => write!(f, "report"),
-        }
-    }
-}
-
-/// Either type of memory, returned by `get`.
-#[derive(Debug, Clone)]
-pub enum MemoryItem {
-    Memory(Memory),
-    Report(Report),
-}
-
-impl MemoryItem {
-    pub fn title(&self) -> &str {
-        match self {
-            Self::Memory(m) => &m.title,
-            Self::Report(r) => &r.title,
-        }
-    }
-
-    pub fn content(&self) -> &str {
-        match self {
-            Self::Memory(m) => &m.content,
-            Self::Report(r) => &r.content,
-        }
-    }
-
-    pub fn tags(&self) -> &[String] {
-        match self {
-            Self::Memory(m) => &m.tags,
-            Self::Report(r) => &r.tags,
-        }
-    }
-
-    pub fn project(&self) -> Option<&str> {
-        match self {
-            Self::Memory(m) => m.project.as_deref(),
-            Self::Report(r) => r.project.as_deref(),
-        }
-    }
-
-    pub fn memory_type(&self) -> MemoryType {
-        match self {
-            Self::Memory(_) => MemoryType::Memory,
-            Self::Report(_) => MemoryType::Report,
-        }
-    }
+    pub persistent: bool,
 }
 
 /// Decay configuration stored in the service.
@@ -112,12 +49,9 @@ fn decay_factor(last_accessed: DateTime<Utc>, half_life_days: f64) -> f64 {
 /// High-level orchestrator for memory operations.
 ///
 /// Coordinates the SQLite store, fastembed embedder, and markdown file I/O.
-/// Exposes operations for both memories and reports,
-/// plus unified search across all types.
 pub struct MemoryService {
     search: SearchStore,
     memory_repo: MemoryRepo,
-    report_repo: ReportRepo,
     embedder: Option<Embedder>,
     markdown: MarkdownStore,
     decay: DecayConfig,
@@ -137,7 +71,6 @@ impl MemoryService {
         let pool = search.pool().clone();
 
         let memory_repo = MemoryRepo::new(&pool);
-        let report_repo = ReportRepo::new(&pool);
 
         let embedder = match Embedder::new() {
             Ok(e) if e.is_available() => {
@@ -165,18 +98,17 @@ impl MemoryService {
         Ok(Self {
             search,
             memory_repo,
-            report_repo,
             embedder,
             markdown,
             decay,
         })
     }
 
-    // ── Memories ────────────────────────────────────────────────────
+    // ── Store ───────────────────────────────────────────────────────
 
     /// Store a new memory.
-    #[tracing::instrument(name = "agent_memory.service.store_memory", skip_all, fields(title = %new.title))]
-    pub async fn store_memory(&self, new: NewMemory) -> Result<Memory, AgentMemoryError> {
+    #[tracing::instrument(name = "agent_memory.service.store", skip_all, fields(title = %new.title))]
+    pub async fn store(&self, new: NewMemory) -> Result<Memory, AgentMemoryError> {
         let now = Utc::now();
         let id = Uuid::now_v7().to_string();
 
@@ -194,6 +126,7 @@ impl MemoryService {
             last_accessed: None,
             access_count: 0,
             pinned: false,
+            persistent: new.persistent,
         };
 
         // Write markdown file.
@@ -209,7 +142,7 @@ impl MemoryService {
         // Update FTS index.
         let tags_str = memory.tags.join(", ");
         self.search
-            .upsert_fts(&id, "memory", &memory.title, &memory.content, &tags_str)
+            .upsert_fts(&id, &memory.title, &memory.content, &tags_str)
             .await?;
 
         // Generate embedding if available.
@@ -225,19 +158,24 @@ impl MemoryService {
             }
         }
 
-        tracing::info!(id = %memory.id, "Memory stored");
+        tracing::info!(id = %memory.id, persistent = memory.persistent, "Memory stored");
         Ok(memory)
     }
 
-    /// List memories.
-    #[tracing::instrument(name = "agent_memory.service.list_memories", skip_all)]
-    pub async fn list_memories(
+    // ── List ────────────────────────────────────────────────────────
+
+    /// List memories with optional filters.
+    #[tracing::instrument(name = "agent_memory.service.list", skip_all)]
+    pub async fn list(
         &self,
         project: Option<&str>,
+        persistent: Option<bool>,
         limit: usize,
     ) -> Result<Vec<Memory>, AgentMemoryError> {
-        self.memory_repo.list(project, limit).await
+        self.memory_repo.list(project, persistent, limit).await
     }
+
+    // ── Pin / Unpin ─────────────────────────────────────────────────
 
     /// Pin a memory (exempt from decay).
     #[tracing::instrument(name = "agent_memory.service.pin", skip_all, fields(id = %id_or_prefix))]
@@ -257,138 +195,9 @@ impl MemoryService {
         self.memory_repo.find_by_id(&memory.id).await
     }
 
-    // ── Reports ────────────────────────────────────────────────────
+    // ── Search ──────────────────────────────────────────────────────
 
-    /// Store a new report.
-    #[tracing::instrument(name = "agent_memory.service.store_report", skip_all, fields(title = %new.title))]
-    pub async fn store_report(&self, new: NewReport) -> Result<Report, AgentMemoryError> {
-        let id = new.id;
-        let title = new.title.clone();
-        let content = new.content.clone();
-        let tags = new.tags.clone();
-
-        let report = self
-            .report_repo
-            .create(new)
-            .await
-            .map_err(|e| AgentMemoryError::Other(e.to_string()))?;
-
-        // Update FTS index.
-        let tags_str = tags.join(", ");
-        self.search
-            .upsert_fts(&id.to_string(), "report", &title, &content, &tags_str)
-            .await?;
-
-        // Generate embedding if available.
-        if let Some(embedder) = &self.embedder {
-            let text = format!("{}\n\n{}", title, content);
-            match embedder.embed_document(&text) {
-                Ok(embedding) => {
-                    self.search
-                        .upsert_embedding(&id.to_string(), &embedding)
-                        .await?;
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to generate embedding");
-                }
-            }
-        }
-
-        tracing::info!(id = %id, "Report stored");
-        Ok(report)
-    }
-
-    /// Update a report.
-    #[tracing::instrument(name = "agent_memory.service.update_report", skip_all)]
-    pub async fn update_report(
-        &self,
-        id: &str,
-        update: ReportUpdate,
-    ) -> Result<Report, AgentMemoryError> {
-        let report_id: ReportId = id
-            .parse()
-            .map_err(|_| AgentMemoryError::NotFound(format!("report '{id}'")))?;
-        let mut report = self
-            .report_repo
-            .find_by_id(report_id)
-            .await
-            .map_err(|e| AgentMemoryError::Other(e.to_string()))?;
-        let _ = report.update(update);
-        self.report_repo
-            .update(&mut report)
-            .await
-            .map_err(|e| AgentMemoryError::Other(e.to_string()))?;
-
-        // Update FTS index.
-        let tags_str = report.tags.join(", ");
-        self.search
-            .upsert_fts(
-                &report.id.to_string(),
-                "report",
-                &report.title,
-                &report.content,
-                &tags_str,
-            )
-            .await?;
-
-        // Update embedding if available.
-        if let Some(embedder) = &self.embedder {
-            let text = format!("{}\n\n{}", report.title, report.content);
-            match embedder.embed_document(&text) {
-                Ok(embedding) => {
-                    self.search
-                        .upsert_embedding(&report.id.to_string(), &embedding)
-                        .await?;
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to generate embedding for update");
-                }
-            }
-        }
-
-        Ok(report)
-    }
-
-    /// List reports.
-    #[tracing::instrument(name = "agent_memory.service.list_reports", skip_all)]
-    pub async fn list_reports(
-        &self,
-        project: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<Report>, AgentMemoryError> {
-        if let Some(proj) = project {
-            let ret = self
-                .report_repo
-                .list_for_project_by_created_at(
-                    Some(proj.to_string()),
-                    es_entity::PaginatedQueryArgs {
-                        first: limit,
-                        after: None,
-                    },
-                    es_entity::ListDirection::Descending,
-                )
-                .await
-                .map_err(|e| AgentMemoryError::Other(e.to_string()))?;
-            Ok(ret.entities)
-        } else {
-            let ret = self
-                .report_repo
-                .list_by_created_at(
-                    es_entity::PaginatedQueryArgs {
-                        first: limit,
-                        after: None,
-                    },
-                    es_entity::ListDirection::Descending,
-                )
-                .await
-                .map_err(|e| AgentMemoryError::Other(e.to_string()))?;
-            Ok(ret.entities)
-        }
-    }
-
-    // ── Unified search ──────────────────────────────────────────────
-
-    /// Hybrid search: FTS + vector with Reciprocal Rank Fusion across both types.
+    /// Hybrid search: FTS + vector with Reciprocal Rank Fusion.
     #[tracing::instrument(name = "agent_memory.service.search", skip_all, fields(query = %query))]
     pub async fn search(
         &self,
@@ -423,11 +232,9 @@ impl MemoryService {
         // 3. Reciprocal Rank Fusion.
         let k = 60.0_f64;
         let mut scores: HashMap<String, f64> = HashMap::new();
-        let mut type_map: HashMap<String, String> = HashMap::new();
 
         for (rank, result) in fts_results.iter().enumerate() {
             *scores.entry(result.id.clone()).or_default() += 1.0 / (k + rank as f64 + 1.0);
-            type_map.insert(result.id.clone(), result.memory_type.clone());
         }
         for (rank, result) in vec_results.iter().enumerate() {
             *scores.entry(result.id.clone()).or_default() += 1.0 / (k + rank as f64 + 1.0);
@@ -441,72 +248,41 @@ impl MemoryService {
         let mut results = Vec::new();
 
         for (id, rrf_score) in &ranked {
-            let mem_type = type_map.get(id).map(|s| s.as_str()).unwrap_or("memory");
-            let result = match mem_type {
-                "report" => {
-                    // Reports never decay.
-                    let report_id: Result<ReportId, _> = id.parse();
-                    if let Ok(rid) = report_id {
-                        match self.report_repo.find_by_id(rid).await {
-                            Ok(r) => {
-                                if let Some(proj) = project
-                                    && r.project.as_deref() != Some(proj)
-                                {
-                                    continue;
-                                }
-                                Some(SearchResult {
-                                    id: r.id.to_string(),
-                                    title: r.title.clone(),
-                                    content: r.content.clone(),
-                                    tags: r.tags.clone(),
-                                    project: r.project.clone(),
-                                    memory_type: MemoryType::Report,
-                                    score: *rrf_score,
-                                    decay_factor: 1.0,
-                                    pinned: false,
-                                })
-                            }
-                            Err(_) => None,
-                        }
+            let result = match self.memory_repo.find_by_id(id).await {
+                Ok(m) => {
+                    if let Some(proj) = project
+                        && m.project.as_deref() != Some(proj)
+                    {
+                        continue;
+                    }
+
+                    let exempt = m.pinned || m.persistent;
+                    let df = if !self.decay.enabled || exempt {
+                        1.0
                     } else {
-                        None
+                        let accessed = m.last_accessed.unwrap_or(m.created_at);
+                        decay_factor(accessed, self.decay.half_life_days)
+                    };
+
+                    // Filter below min_strength.
+                    if self.decay.enabled && !exempt && df < self.decay.min_strength {
+                        continue;
                     }
+
+                    let adjusted_score = rrf_score * df;
+                    Some(SearchResult {
+                        id: m.id.clone(),
+                        title: m.title.clone(),
+                        content: m.content.clone(),
+                        tags: m.tags.clone(),
+                        project: m.project.clone(),
+                        score: adjusted_score,
+                        decay_factor: df,
+                        pinned: m.pinned,
+                        persistent: m.persistent,
+                    })
                 }
-                _ => match self.memory_repo.find_by_id(id).await {
-                    Ok(m) => {
-                        if let Some(proj) = project
-                            && m.project.as_deref() != Some(proj)
-                        {
-                            continue;
-                        }
-
-                        let df = if !self.decay.enabled || m.pinned {
-                            1.0
-                        } else {
-                            let accessed = m.last_accessed.unwrap_or(m.created_at);
-                            decay_factor(accessed, self.decay.half_life_days)
-                        };
-
-                        // Filter below min_strength.
-                        if self.decay.enabled && !m.pinned && df < self.decay.min_strength {
-                            continue;
-                        }
-
-                        let adjusted_score = rrf_score * df;
-                        Some(SearchResult {
-                            id: m.id.clone(),
-                            title: m.title.clone(),
-                            content: m.content.clone(),
-                            tags: m.tags.clone(),
-                            project: m.project.clone(),
-                            memory_type: MemoryType::Memory,
-                            score: adjusted_score,
-                            decay_factor: df,
-                            pinned: m.pinned,
-                        })
-                    }
-                    Err(_) => None,
-                },
+                Err(_) => None,
             };
 
             if let Some(r) = result {
@@ -522,14 +298,10 @@ impl MemoryService {
         });
         results.truncate(limit);
 
-        // Collect IDs of memories actually returned, then record access.
-        let returned_memory_ids: Vec<String> = results
-            .iter()
-            .filter(|r| r.memory_type == MemoryType::Memory)
-            .map(|r| r.id.clone())
-            .collect();
-        if !returned_memory_ids.is_empty()
-            && let Err(e) = self.memory_repo.record_access(&returned_memory_ids).await
+        // Record access for returned memories.
+        let returned_ids: Vec<String> = results.iter().map(|r| r.id.clone()).collect();
+        if !returned_ids.is_empty()
+            && let Err(e) = self.memory_repo.record_access(&returned_ids).await
         {
             tracing::warn!(error = %e, "Failed to record access for search results");
         }
@@ -537,77 +309,36 @@ impl MemoryService {
         Ok(results)
     }
 
-    // ── Shared operations ───────────────────────────────────────────
+    // ── Get / Delete ────────────────────────────────────────────────
 
-    /// Get a memory by ID or prefix (returns either type).
-    /// Records access for Memory (reinforcement).
+    /// Get a memory by ID or prefix. Records access (reinforcement).
     #[tracing::instrument(name = "agent_memory.service.get", skip_all, fields(id = %id_or_prefix))]
-    pub async fn get(&self, id_or_prefix: &str) -> Result<MemoryItem, AgentMemoryError> {
-        // Try memory first.
-        match self.memory_repo.resolve_id(id_or_prefix).await {
-            Ok(m) => {
-                // Record access (reinforcement).
-                if let Err(e) = self
-                    .memory_repo
-                    .record_access(std::slice::from_ref(&m.id))
-                    .await
-                {
-                    tracing::warn!(error = %e, "Failed to record access");
-                }
-                return Ok(MemoryItem::Memory(m));
-            }
-            Err(AgentMemoryError::NotFound(_)) => {}
-            Err(e) => return Err(e),
-        }
-
-        // Try report by parsing as UUID.
-        if let Ok(rid) = id_or_prefix.parse::<ReportId>()
-            && let Ok(r) = self.report_repo.find_by_id(rid).await
+    pub async fn get(&self, id_or_prefix: &str) -> Result<Memory, AgentMemoryError> {
+        let m = self.memory_repo.resolve_id(id_or_prefix).await?;
+        // Record access (reinforcement).
+        if let Err(e) = self
+            .memory_repo
+            .record_access(std::slice::from_ref(&m.id))
+            .await
         {
-            return Ok(MemoryItem::Report(r));
+            tracing::warn!(error = %e, "Failed to record access");
         }
-
-        Err(AgentMemoryError::NotFound(format!(
-            "memory '{id_or_prefix}'"
-        )))
+        Ok(m)
     }
 
-    /// Delete a memory by ID or prefix (either type).
+    /// Delete a memory by ID or prefix.
     #[tracing::instrument(name = "agent_memory.service.delete", skip_all, fields(id = %id_or_prefix))]
     pub async fn delete(&self, id_or_prefix: &str) -> Result<(), AgentMemoryError> {
-        // Try memory first.
-        match self.memory_repo.resolve_id(id_or_prefix).await {
-            Ok(memory) => {
-                self.markdown.delete(&memory.file_path)?;
-                self.memory_repo.delete(&memory.id).await?;
-                self.search.delete_fts(&memory.id).await?;
-                self.search.delete_embedding(&memory.id).await?;
-                tracing::info!(id = %memory.id, "Memory deleted");
-                return Ok(());
-            }
-            Err(AgentMemoryError::NotFound(_)) => {}
-            Err(e) => return Err(e),
-        }
-
-        // Try report.
-        if let Ok(rid) = id_or_prefix.parse::<ReportId>()
-            && let Ok(mut report) = self.report_repo.find_by_id(rid).await
-        {
-            let _ = report.supersede(ReportId::new());
-            self.report_repo
-                .update(&mut report)
-                .await
-                .map_err(|e| AgentMemoryError::Other(e.to_string()))?;
-            self.search.delete_fts(&rid.to_string()).await?;
-            self.search.delete_embedding(&rid.to_string()).await?;
-            tracing::info!(id = %rid, "Report superseded");
-            return Ok(());
-        }
-
-        Err(AgentMemoryError::NotFound(format!(
-            "memory '{id_or_prefix}'"
-        )))
+        let memory = self.memory_repo.resolve_id(id_or_prefix).await?;
+        self.markdown.delete(&memory.file_path)?;
+        self.memory_repo.delete(&memory.id).await?;
+        self.search.delete_fts(&memory.id).await?;
+        self.search.delete_embedding(&memory.id).await?;
+        tracing::info!(id = %memory.id, "Memory deleted");
+        Ok(())
     }
+
+    // ── Reindex / Stats ─────────────────────────────────────────────
 
     /// Rebuild the store from markdown files.
     #[tracing::instrument(name = "agent_memory.service.reindex", skip_all)]
