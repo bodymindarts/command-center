@@ -61,6 +61,13 @@ pub enum HookEvent {
         #[allow(dead_code)]
         payload: Value,
     },
+    /// A Read/Grep/Glob tool call forwarded for worktree scope checking.
+    /// Contains the full PreToolUse JSON from Claude Code.
+    WorktreeReadScope {
+        cwd: String,
+        tool_name: String,
+        tool_input: Value,
+    },
     Stop {
         #[allow(dead_code)]
         cwd: String,
@@ -108,6 +115,19 @@ impl<'de> serde::Deserialize<'de> for HookEvent {
                     cwd,
                     payload: value,
                 }),
+                "WorktreeReadScope" => {
+                    let tool_name = value
+                        .get("tool_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let tool_input = value.get("tool_input").cloned().unwrap_or(Value::Null);
+                    Ok(HookEvent::WorktreeReadScope {
+                        cwd,
+                        tool_name,
+                        tool_input,
+                    })
+                }
                 "Stop" => Ok(HookEvent::Stop {
                     cwd,
                     payload: value,
@@ -432,6 +452,37 @@ pub fn prompt_request(tool: &str, input_summary: &str, response_file: &str) -> a
         .with_context(|| format!("failed to write response to {response_file}"))?;
 
     Ok(())
+}
+
+/// Extract the target path from a Read/Grep/Glob tool_input.
+///
+/// - Read uses `file_path`
+/// - Grep and Glob use `path` (optional — returns None when absent,
+///   meaning the tool defaults to cwd which is inside the worktree).
+pub fn worktree_scope_target(tool_name: &str, tool_input: &Value) -> Option<String> {
+    let key = match tool_name {
+        "Read" => "file_path",
+        "Grep" | "Glob" => "path",
+        _ => return None,
+    };
+    tool_input
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Check whether `target` is outside the worktree rooted at `cwd`.
+///
+/// Resolves both paths via `fs::canonicalize` to handle symlinks,
+/// then checks the prefix relationship.
+pub fn is_outside_worktree(cwd: &str, target: &str) -> bool {
+    use std::path::Path;
+
+    let worktree = std::fs::canonicalize(cwd).unwrap_or_else(|_| PathBuf::from(cwd));
+    let resolved =
+        std::fs::canonicalize(target).unwrap_or_else(|_| Path::new(target).to_path_buf());
+
+    !resolved.starts_with(&worktree)
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -839,6 +890,114 @@ mod tests {
     fn hook_event_new_style_missing_cwd() {
         let json = r#"{"_hook":"Stop"}"#;
         assert!(matches!(deser(json), HookEvent::Stop { cwd, .. } if cwd.is_empty()));
+    }
+
+    #[test]
+    fn hook_event_worktree_read_scope() {
+        let json = r#"{"_hook":"WorktreeReadScope","cwd":"/workspace","tool_name":"Read","tool_input":{"file_path":"/etc/passwd"}}"#;
+        let event = deser(json);
+        match event {
+            HookEvent::WorktreeReadScope {
+                cwd,
+                tool_name,
+                tool_input,
+            } => {
+                assert_eq!(cwd, "/workspace");
+                assert_eq!(tool_name, "Read");
+                assert_eq!(tool_input["file_path"].as_str().unwrap(), "/etc/passwd");
+            }
+            _ => panic!("expected WorktreeReadScope variant"),
+        }
+    }
+
+    #[test]
+    fn hook_event_worktree_read_scope_grep() {
+        let json = r#"{"_hook":"WorktreeReadScope","cwd":"/workspace","tool_name":"Grep","tool_input":{"pattern":"TODO","path":"/other/repo"}}"#;
+        let event = deser(json);
+        match event {
+            HookEvent::WorktreeReadScope {
+                tool_name,
+                tool_input,
+                ..
+            } => {
+                assert_eq!(tool_name, "Grep");
+                assert_eq!(tool_input["path"].as_str().unwrap(), "/other/repo");
+            }
+            _ => panic!("expected WorktreeReadScope variant"),
+        }
+    }
+
+    #[test]
+    fn worktree_scope_target_read() {
+        let input = serde_json::json!({"file_path": "/tmp/foo.rs"});
+        assert_eq!(
+            worktree_scope_target("Read", &input),
+            Some("/tmp/foo.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn worktree_scope_target_grep_with_path() {
+        let input = serde_json::json!({"pattern": "TODO", "path": "/other/dir"});
+        assert_eq!(
+            worktree_scope_target("Grep", &input),
+            Some("/other/dir".to_string())
+        );
+    }
+
+    #[test]
+    fn worktree_scope_target_grep_no_path() {
+        let input = serde_json::json!({"pattern": "TODO"});
+        assert_eq!(worktree_scope_target("Grep", &input), None);
+    }
+
+    #[test]
+    fn worktree_scope_target_glob() {
+        let input = serde_json::json!({"pattern": "**/*.rs", "path": "/src"});
+        assert_eq!(
+            worktree_scope_target("Glob", &input),
+            Some("/src".to_string())
+        );
+    }
+
+    #[test]
+    fn worktree_scope_target_unknown_tool() {
+        let input = serde_json::json!({"file_path": "/tmp/foo"});
+        assert_eq!(worktree_scope_target("Bash", &input), None);
+    }
+
+    #[test]
+    fn is_outside_worktree_inside() {
+        let dir = TempDir::new().unwrap();
+        let inner = dir.path().join("src");
+        std::fs::create_dir_all(&inner).unwrap();
+        let file = inner.join("main.rs");
+        std::fs::write(&file, "fn main() {}").unwrap();
+
+        assert!(!is_outside_worktree(
+            dir.path().to_str().unwrap(),
+            file.to_str().unwrap()
+        ));
+    }
+
+    #[test]
+    fn is_outside_worktree_outside() {
+        let dir = TempDir::new().unwrap();
+        // /tmp always exists and is outside any tempdir
+        assert!(is_outside_worktree(
+            dir.path().to_str().unwrap(),
+            "/etc/passwd"
+        ));
+    }
+
+    #[test]
+    fn is_outside_worktree_nonexistent_target() {
+        let dir = TempDir::new().unwrap();
+        // Non-existent path outside the worktree
+        assert!(is_outside_worktree(
+            dir.path().to_str().unwrap(),
+            "/nonexistent/path/file.rs"
+        ));
     }
 
     #[test]
