@@ -123,6 +123,9 @@
             pkgs.git
             pkgs.gh
 
+            # Shell parsing (used by pre-tool-use hook for compound command approval)
+            pkgs.shfmt
+
             # Nix
             pkgs.nixpkgs-fmt
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
