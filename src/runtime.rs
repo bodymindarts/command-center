@@ -707,6 +707,14 @@ fn base_allowed_tools_full() -> Vec<&'static str> {
         "Bash(git worktree:*)",
         "Bash(git cherry-pick:*)",
         "Bash(git rebase:*)",
+        "Bash(git fetch:*)",
+        "Bash(git -C:*)",
+        "Bash(git pull:*)",
+        "Bash(git stash:*)",
+        "Bash(git rev-parse:*)",
+        "Bash(git ls-files:*)",
+        "Bash(git remote:*)",
+        "Bash(git merge:*)",
         // Nix
         "Bash(nix flake check:*)",
         "Bash(nix develop:*)",
@@ -720,7 +728,7 @@ fn base_allowed_tools_full() -> Vec<&'static str> {
         "Bash(cargo build:*)",
         "Bash(cargo test:*)",
         "Bash(cargo check:*)",
-        // Basic read-only shell commands
+        // Basic shell commands
         "Bash(ls:*)",
         "Bash(cat:*)",
         "Bash(head:*)",
@@ -728,6 +736,18 @@ fn base_allowed_tools_full() -> Vec<&'static str> {
         "Bash(wc:*)",
         "Bash(which:*)",
         "Bash(pwd)",
+        "Bash(find:*)",
+        "Bash(grep:*)",
+        "Bash(rg:*)",
+        "Bash(tree:*)",
+        "Bash(mkdir:*)",
+        "Bash(echo:*)",
+        "Bash(sort:*)",
+        "Bash(uniq:*)",
+        "Bash(jq:*)",
+        // Local HTTP (curl restricted to localhost)
+        "Bash(curl localhost:*)",
+        "Bash(curl 127.0.0.1:*)",
         // GitHub CLI
         "Bash(gh:*)",
         // Containers
