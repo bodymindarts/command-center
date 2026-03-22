@@ -15,9 +15,6 @@ use crate::jwt::JwtSigner;
 use crate::runtime::Runtime;
 
 use agent_memory::memory::NewMemory;
-use agent_memory::primitives::ReportId;
-use agent_memory::report::NewReport;
-use agent_memory::service::MemoryType;
 
 // ---------------------------------------------------------------------------
 // MCP server — generic over R: Runtime
@@ -519,7 +516,7 @@ impl<R: Runtime> ClatMcpServer<R> {
             "properties": {
                 "title": {
                     "type": "string",
-                    "description": "Descriptive title for the memory or report"
+                    "description": "Descriptive title for the memory"
                 },
                 "content": {
                     "type": "string",
@@ -593,70 +590,42 @@ impl<R: Runtime> ClatMcpServer<R> {
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
                         .or_else(|| claims.as_ref().and_then(|c| c.project.clone()));
-                    let memory_type = args
-                        .get("memory_type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("memory");
+                    // Treat memory_type=report as persistent for backwards compat.
+                    let persistent =
+                        args.get("memory_type").and_then(|v| v.as_str()) == Some("report");
                     let source_task = task_id_str.map(|s| s.to_string());
 
-                    match memory_type {
-                        "report" => {
-                            let new = NewReport {
-                                id: ReportId::new(),
-                                title: title.clone(),
-                                content,
-                                tags: tags.clone(),
-                                project,
-                                source_task,
+                    let new = NewMemory {
+                        title: title.clone(),
+                        content,
+                        tags: tags.clone(),
+                        project,
+                        source_task,
+                        source_type: "agent".to_string(),
+                        persistent,
+                    };
+                    match app.memory().store(new).await {
+                        Ok(memory) => {
+                            let short_id = &memory.id[..8.min(memory.id.len())];
+                            let tags_display = if tags.is_empty() {
+                                String::from("(none)")
+                            } else {
+                                tags.join(", ")
                             };
-                            match app.memory().store_report(new).await {
-                                Ok(report) => {
-                                    let short_id = &report.id.to_string()
-                                        [..8.min(report.id.to_string().len())];
-                                    let tags_display = if tags.is_empty() {
-                                        String::from("(none)")
-                                    } else {
-                                        tags.join(", ")
-                                    };
-                                    let text = format!(
-                                        "Stored report: \"{}\" (type: report, id: {})\nTags: {}",
-                                        title, short_id, tags_display
-                                    );
-                                    Ok(CallToolResult::success(vec![Content::text(text)]))
-                                }
-                                Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                                    "Failed to store report: {e}"
-                                ))])),
-                            }
-                        }
-                        _ => {
-                            let new = NewMemory {
-                                title: title.clone(),
-                                content,
-                                tags: tags.clone(),
-                                project,
-                                source_task,
-                                source_type: "agent".to_string(),
+                            let label = if memory.persistent {
+                                "persistent memory"
+                            } else {
+                                "memory"
                             };
-                            match app.memory().store_memory(new).await {
-                                Ok(memory) => {
-                                    let short_id = &memory.id[..8.min(memory.id.len())];
-                                    let tags_display = if tags.is_empty() {
-                                        String::from("(none)")
-                                    } else {
-                                        tags.join(", ")
-                                    };
-                                    let text = format!(
-                                        "Stored memory: \"{}\" (type: memory, id: {})\nTags: {}",
-                                        title, short_id, tags_display
-                                    );
-                                    Ok(CallToolResult::success(vec![Content::text(text)]))
-                                }
-                                Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                                    "Failed to store memory: {e}"
-                                ))])),
-                            }
+                            let text = format!(
+                                "Stored {label}: \"{}\" (id: {})\nTags: {}",
+                                title, short_id, tags_display
+                            );
+                            Ok(CallToolResult::success(vec![Content::text(text)]))
                         }
+                        Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                            "Failed to store memory: {e}"
+                        ))])),
                     }
                 })
             },
@@ -721,17 +690,14 @@ impl<R: Runtime> ClatMcpServer<R> {
 
                             for (i, r) in results.iter().enumerate() {
                                 text.push_str(&format!(
-                                    "\n### {}. {} (score: {:.2}, type: {}",
+                                    "\n### {}. {} (score: {:.2}, decay: {:.0}%",
                                     i + 1,
                                     r.title,
                                     r.score,
-                                    r.memory_type
+                                    r.decay_factor * 100.0,
                                 ));
-                                if r.memory_type == MemoryType::Memory {
-                                    text.push_str(&format!(
-                                        ", decay: {:.0}%",
-                                        r.decay_factor * 100.0
-                                    ));
+                                if r.persistent {
+                                    text.push_str(", persistent");
                                 }
                                 if r.pinned {
                                     text.push_str(", pinned");
@@ -800,94 +766,57 @@ impl<R: Runtime> ClatMcpServer<R> {
                 Box::pin(async move {
                     let args = ctx.arguments.unwrap_or_default();
                     let project = args.get("project").and_then(|v| v.as_str());
+                    // Treat memory_type=report as persistent filter for backwards compat.
                     let memory_type = args.get("memory_type").and_then(|v| v.as_str());
+                    let persistent_filter = match memory_type {
+                        Some("report") => Some(true),
+                        Some("memory") => Some(false),
+                        _ => None,
+                    };
                     let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
 
-                    let show_memories = memory_type.is_none() || memory_type == Some("memory");
-                    let show_reports = memory_type.is_none() || memory_type == Some("report");
-
-                    let mut text = String::new();
-                    let mut total = 0usize;
-
-                    if show_memories {
-                        match app.memory().list_memories(project, limit).await {
-                            Ok(memories) => {
-                                for m in &memories {
-                                    total += 1;
-                                    let short_id = &m.id[..8.min(m.id.len())];
-                                    let tags_display = if m.tags.is_empty() {
-                                        String::new()
-                                    } else {
-                                        format!("\n  Tags: {}", m.tags.join(", "))
-                                    };
-                                    let project_display = m
-                                        .project
-                                        .as_deref()
-                                        .map(|p| format!("\n  Project: {p}"))
-                                        .unwrap_or_default();
-                                    text.push_str(&format!(
-                                        "- [{}] **{}** (type: memory, created: {}){}{}\n",
-                                        short_id,
-                                        m.title,
-                                        m.created_at.format("%Y-%m-%d"),
-                                        tags_display,
-                                        project_display,
-                                    ));
-                                }
+                    match app.memory().list(project, persistent_filter, limit).await {
+                        Ok(memories) => {
+                            if memories.is_empty() {
+                                return Ok(CallToolResult::success(vec![Content::text(
+                                    "No memories found.",
+                                )]));
                             }
-                            Err(e) => {
-                                return Ok(CallToolResult::error(vec![Content::text(format!(
-                                    "Failed to list memories: {e}"
-                                ))]));
+
+                            let mut text = String::new();
+                            for m in &memories {
+                                let short_id = &m.id[..8.min(m.id.len())];
+                                let tags_display = if m.tags.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!("\n  Tags: {}", m.tags.join(", "))
+                                };
+                                let project_display = m
+                                    .project
+                                    .as_deref()
+                                    .map(|p| format!("\n  Project: {p}"))
+                                    .unwrap_or_default();
+                                let flags = if m.persistent { " [persistent]" } else { "" };
+                                text.push_str(&format!(
+                                    "- [{}] **{}** (created: {}{}){}{}\n",
+                                    short_id,
+                                    m.title,
+                                    m.created_at.format("%Y-%m-%d"),
+                                    flags,
+                                    tags_display,
+                                    project_display,
+                                ));
                             }
+
+                            let header = format!("## Memories ({} found)\n\n", memories.len());
+                            Ok(CallToolResult::success(vec![Content::text(format!(
+                                "{header}{text}"
+                            ))]))
                         }
+                        Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                            "Failed to list memories: {e}"
+                        ))])),
                     }
-
-                    if show_reports {
-                        match app.memory().list_reports(project, limit).await {
-                            Ok(reports) => {
-                                for r in &reports {
-                                    total += 1;
-                                    let id_str = r.id.to_string();
-                                    let short_id = &id_str[..8.min(id_str.len())];
-                                    let tags_display = if r.tags.is_empty() {
-                                        String::new()
-                                    } else {
-                                        format!("\n  Tags: {}", r.tags.join(", "))
-                                    };
-                                    let project_display = r
-                                        .project
-                                        .as_deref()
-                                        .map(|p| format!("\n  Project: {p}"))
-                                        .unwrap_or_default();
-                                    text.push_str(&format!(
-                                        "- [{}] **{}** (type: report, created: {}){}{}\n",
-                                        short_id,
-                                        r.title,
-                                        r.created_at.format("%Y-%m-%d"),
-                                        tags_display,
-                                        project_display,
-                                    ));
-                                }
-                            }
-                            Err(e) => {
-                                return Ok(CallToolResult::error(vec![Content::text(format!(
-                                    "Failed to list reports: {e}"
-                                ))]));
-                            }
-                        }
-                    }
-
-                    if total == 0 {
-                        return Ok(CallToolResult::success(vec![Content::text(
-                            "No memories found.",
-                        )]));
-                    }
-
-                    let header = format!("## Memories ({total} found)\n\n");
-                    Ok(CallToolResult::success(vec![Content::text(format!(
-                        "{header}{text}"
-                    ))]))
                 })
             },
         )

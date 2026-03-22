@@ -11,6 +11,9 @@ pub struct MemoryRepo {
     pool: SqlitePool,
 }
 
+const COLUMNS: &str = "id, title, content, tags, project, source_task, source_type,
+                 file_path, created_at, updated_at, last_accessed, access_count, pinned, persistent";
+
 impl MemoryRepo {
     pub fn new(pool: &SqlitePool) -> Self {
         Self { pool: pool.clone() }
@@ -22,8 +25,8 @@ impl MemoryRepo {
         sqlx::query(
             "INSERT OR REPLACE INTO memories
                 (id, title, content, tags, project, source_task, source_type,
-                 file_path, created_at, updated_at, last_accessed, access_count, pinned)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 file_path, created_at, updated_at, last_accessed, access_count, pinned, persistent)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&memory.id)
         .bind(&memory.title)
@@ -38,6 +41,7 @@ impl MemoryRepo {
         .bind(memory.last_accessed.map(|dt| dt.to_rfc3339()))
         .bind(memory.access_count)
         .bind(memory.pinned as i32)
+        .bind(memory.persistent as i32)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -45,29 +49,23 @@ impl MemoryRepo {
 
     /// Find a memory by exact ID.
     pub async fn find_by_id(&self, id: &str) -> Result<Memory, AgentMemoryError> {
-        let row = sqlx::query(
-            "SELECT id, title, content, tags, project, source_task, source_type,
-                    file_path, created_at, updated_at, last_accessed, access_count, pinned
-             FROM memories WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?
-        .ok_or_else(|| AgentMemoryError::NotFound(format!("memory '{id}'")))?;
+        let sql = format!("SELECT {COLUMNS} FROM memories WHERE id = ?");
+        let row = sqlx::query(&sql)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| AgentMemoryError::NotFound(format!("memory '{id}'")))?;
         Ok(row_to_memory(&row))
     }
 
     /// Find memories by ID prefix.
     pub async fn find_by_prefix(&self, prefix: &str) -> Result<Vec<Memory>, AgentMemoryError> {
         let pattern = format!("{prefix}%");
-        let rows = sqlx::query(
-            "SELECT id, title, content, tags, project, source_task, source_type,
-                    file_path, created_at, updated_at, last_accessed, access_count, pinned
-             FROM memories WHERE id LIKE ?",
-        )
-        .bind(&pattern)
-        .fetch_all(&self.pool)
-        .await?;
+        let sql = format!("SELECT {COLUMNS} FROM memories WHERE id LIKE ?");
+        let rows = sqlx::query(&sql)
+            .bind(&pattern)
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows.iter().map(row_to_memory).collect())
     }
 
@@ -100,33 +98,32 @@ impl MemoryRepo {
         Ok(())
     }
 
-    /// List memories with optional project filter, ordered by created_at DESC.
+    /// List memories with optional project and persistent filters, ordered by created_at DESC.
     pub async fn list(
         &self,
         project: Option<&str>,
+        persistent: Option<bool>,
         limit: usize,
     ) -> Result<Vec<Memory>, AgentMemoryError> {
-        let rows = if let Some(proj) = project {
-            sqlx::query(
-                "SELECT id, title, content, tags, project, source_task, source_type,
-                        file_path, created_at, updated_at, last_accessed, access_count, pinned
-                 FROM memories WHERE project = ?
-                 ORDER BY created_at DESC LIMIT ?",
-            )
-            .bind(proj)
-            .bind(limit as i64)
-            .fetch_all(&self.pool)
-            .await?
-        } else {
-            sqlx::query(
-                "SELECT id, title, content, tags, project, source_task, source_type,
-                        file_path, created_at, updated_at, last_accessed, access_count, pinned
-                 FROM memories ORDER BY created_at DESC LIMIT ?",
-            )
-            .bind(limit as i64)
-            .fetch_all(&self.pool)
-            .await?
-        };
+        let mut sql = format!("SELECT {COLUMNS} FROM memories WHERE 1=1");
+        if project.is_some() {
+            sql.push_str(" AND project = ?");
+        }
+        if persistent.is_some() {
+            sql.push_str(" AND persistent = ?");
+        }
+        sql.push_str(" ORDER BY created_at DESC LIMIT ?");
+
+        let mut query = sqlx::query(&sql);
+        if let Some(proj) = project {
+            query = query.bind(proj);
+        }
+        if let Some(p) = persistent {
+            query = query.bind(p as i32);
+        }
+        query = query.bind(limit as i64);
+
+        let rows = query.fetch_all(&self.pool).await?;
         Ok(rows.iter().map(row_to_memory).collect())
     }
 
@@ -195,9 +192,7 @@ impl MemoryRepo {
         }
         let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
         let sql = format!(
-            "SELECT id, title, content, tags, project, source_task, source_type,
-                    file_path, created_at, updated_at, last_accessed, access_count, pinned
-             FROM memories WHERE id IN ({})",
+            "SELECT {COLUMNS} FROM memories WHERE id IN ({})",
             placeholders.join(", ")
         );
         let mut query = sqlx::query(&sql);
@@ -216,6 +211,7 @@ fn row_to_memory(row: &sqlx::sqlite::SqliteRow) -> Memory {
     let updated_str: String = row.get("updated_at");
     let last_accessed_str: Option<String> = row.get("last_accessed");
     let pinned_int: i32 = row.get("pinned");
+    let persistent_int: i32 = row.get("persistent");
 
     Memory {
         id: row.get("id"),
@@ -231,6 +227,7 @@ fn row_to_memory(row: &sqlx::sqlite::SqliteRow) -> Memory {
         last_accessed: last_accessed_str.as_deref().map(parse_dt),
         access_count: row.get("access_count"),
         pinned: pinned_int != 0,
+        persistent: persistent_int != 0,
     }
 }
 
