@@ -452,15 +452,46 @@ pub fn worktree_scope_target(tool_name: &str, tool_input: &Value) -> Option<Stri
 /// Check whether `target` is outside the worktree rooted at `cwd`.
 ///
 /// Resolves both paths via `fs::canonicalize` to handle symlinks,
-/// then checks the prefix relationship.
+/// then checks the prefix relationship.  For non-existent targets
+/// (e.g. Write creating a new file), walks up to the closest existing
+/// ancestor, canonicalizes that, and re-appends the tail.
 pub fn is_outside_worktree(cwd: &str, target: &str) -> bool {
     use std::path::Path;
 
     let worktree = std::fs::canonicalize(cwd).unwrap_or_else(|_| PathBuf::from(cwd));
-    let resolved =
-        std::fs::canonicalize(target).unwrap_or_else(|_| Path::new(target).to_path_buf());
+    let resolved = resolve_best_effort(Path::new(target));
 
     !resolved.starts_with(&worktree)
+}
+
+/// Canonicalize as much of a path as possible.
+///
+/// If the full path doesn't exist (common for Write targets), walk up
+/// until we find an ancestor that does exist, canonicalize it, then
+/// re-append the remaining components.
+fn resolve_best_effort(path: &std::path::Path) -> PathBuf {
+    if let Ok(canon) = std::fs::canonicalize(path) {
+        return canon;
+    }
+
+    // Collect trailing components that don't exist yet.
+    let mut tail = Vec::new();
+    let mut ancestor = path.to_path_buf();
+    while !ancestor.exists() {
+        match ancestor.file_name() {
+            Some(name) => {
+                tail.push(name.to_os_string());
+                ancestor.pop();
+            }
+            None => return path.to_path_buf(), // bail — can't walk further
+        }
+    }
+
+    let mut resolved = std::fs::canonicalize(&ancestor).unwrap_or(ancestor);
+    for component in tail.into_iter().rev() {
+        resolved.push(component);
+    }
+    resolved
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -958,6 +989,17 @@ mod tests {
         assert!(is_outside_worktree(
             dir.path().to_str().unwrap(),
             "/etc/passwd"
+        ));
+    }
+
+    #[test]
+    fn is_outside_worktree_nonexistent_inside() {
+        let dir = TempDir::new().unwrap();
+        // File that doesn't exist yet but is under the worktree
+        let new_file = dir.path().join("subdir").join("new-file.rs");
+        assert!(!is_outside_worktree(
+            dir.path().to_str().unwrap(),
+            new_file.to_str().unwrap()
         ));
     }
 
