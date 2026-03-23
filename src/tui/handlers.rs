@@ -1013,8 +1013,6 @@ pub(super) async fn dispatch_hook_event<R: Runtime>(
                 &cwd,
                 &tool_name,
                 &tool_input,
-                tg_tx,
-                &mut tg_perm.ids,
                 &mut tg_perm.counter,
                 data_dir,
             )
@@ -1246,8 +1244,6 @@ async fn handle_worktree_read_scope<R: Runtime>(
     cwd: &str,
     tool_name: &str,
     tool_input: &serde_json::Value,
-    tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
-    tg_perm_ids: &mut HashSet<u64>,
     perm_id_counter: &mut u64,
     data_dir: &std::path::Path,
 ) {
@@ -1272,24 +1268,16 @@ async fn handle_worktree_read_scope<R: Runtime>(
             data_dir,
         );
 
-        // Notify ExO chat so the operator sees the request.
+        // Notify ExO chat so the operator sees the request (no Telegram —
+        // worktree-scope reads are logged but don't need mobile attention).
         let message =
             format!("[worktree-scope] {task_name}: {tool_name} outside worktree → {target_str}");
-        inject_exo_notification(state, exo_session, app, &message, tg_tx).await;
+        inject_exo_notification(state, exo_session, app, &message, None).await;
 
         // Queue as a permission prompt — hold the stream until approved/denied.
         *perm_id_counter += 1;
         let perm_id = *perm_id_counter;
         let summary = format!("{tool_name} → {target_str} (outside worktree)");
-        if let Some(tx) = tg_tx {
-            let _ = tx.send(telegram::TgOutbound::NewPermission {
-                perm_id,
-                task_name: task_name.to_string(),
-                tool_name: tool_name.to_string(),
-                tool_input_summary: summary.clone(),
-            });
-            tg_perm_ids.insert(perm_id);
-        }
         let perm = ActivePermission {
             perm_id,
             stream,
