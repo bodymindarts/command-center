@@ -15,6 +15,9 @@ pub struct ActivePermission {
     pub askuser_question: Option<String>,
     /// AskUser options (label, description pairs).
     pub askuser_options: Vec<(String, String)>,
+    /// When true, the stream expects a PreToolUse response format
+    /// (`{"decision":"allow/deny"}`) instead of PermissionRequest format.
+    pub is_pretool: bool,
 }
 
 impl ActivePermission {

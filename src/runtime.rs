@@ -690,7 +690,7 @@ fn hooks_json() -> serde_json::Value {
             { "hooks": [hook("pre-tool-use.sh", 10)] },
             {
                 "matcher": "Read|Grep|Glob",
-                "hooks": [hook("worktree-read-scope.sh", 10)]
+                "hooks": [hook("worktree-read-scope.sh", 620)]
             }
         ],
         "Stop": [
