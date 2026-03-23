@@ -4,7 +4,7 @@ description = "Security auditor — finds vulnerabilities, unsafe patterns, and 
 params = [{ name = "task", required = false, default = "Audit the full codebase for security vulnerabilities" }]
 
 [agent]
-allowed_tools = ["Read", "Glob", "Grep", "Bash", "WebSearch", "WebFetch"]
+allowed_tools = ["Bash", "WebSearch", "WebFetch"]
 base_tools = "full"
 model = "opus"
 

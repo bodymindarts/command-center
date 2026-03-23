@@ -24,20 +24,22 @@ const EXO_PERM_KEY: &str = "exo";
 ///
 /// Resolves task name and skill/role from `cwd`, extracts the command
 /// for Bash tool calls, and writes a `PermissionLogEntry`.
-fn log_tool_event(
-    state: &ScreenState,
-    cwd: &str,
-    tool_name: &str,
-    tool_input: Option<&serde_json::Value>,
-    outcome: &str,
+struct ToolEvent<'a> {
+    cwd: &'a str,
+    tool_name: &'a str,
+    tool_input: Option<&'a serde_json::Value>,
+    outcome: &'a str,
     auto_approved: Option<bool>,
-    data_dir: &std::path::Path,
-) {
-    let task_name = state.task_name_for_cwd_or(cwd, TaskName::from(EXO_PERM_KEY.to_string()));
+    hook: Option<&'a str>,
+}
+
+fn log_tool_event(state: &ScreenState, event: &ToolEvent<'_>, data_dir: &std::path::Path) {
+    let task_name = state.task_name_for_cwd_or(event.cwd, TaskName::from(EXO_PERM_KEY.to_string()));
     let skill_name = state.global_task_skill(&task_name).map(|s| s.to_string());
     let role = skill_name.unwrap_or_else(|| task_name.to_string());
-    let command = if tool_name == "Bash" {
-        tool_input
+    let command = if event.tool_name == "Bash" {
+        event
+            .tool_input
             .and_then(|v| v.get("command"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
@@ -53,10 +55,11 @@ fn log_tool_event(
         ts: chrono::Local::now().to_rfc3339(),
         role,
         task_name: log_task_name,
-        tool: tool_name.to_string(),
+        tool: event.tool_name.to_string(),
         command,
-        outcome: outcome.to_string(),
-        auto_approved,
+        outcome: event.outcome.to_string(),
+        auto_approved: event.auto_approved,
+        hook: event.hook.map(|s| s.to_string()),
     };
     crate::permission_log::log_permission(data_dir, &entry);
 }
@@ -85,32 +88,9 @@ fn write_response_with_message(
     stream.flush()
 }
 
-/// Write a PreToolUse-format response (`{"decision":"allow/deny"}`).
-pub(super) fn write_pretool_response(
-    mut stream: UnixStream,
-    allow: bool,
-    reason: &str,
-) -> std::io::Result<()> {
-    use std::io::Write;
-    let decision = if allow { "allow" } else { "deny" };
-    let response = serde_json::json!({ "decision": decision, "reason": reason }).to_string();
-    stream.write_all(response.as_bytes())?;
-    stream.flush()
-}
-
-/// Write the appropriate response format based on whether this is a
-/// PreToolUse or PermissionRequest permission. Consumes the resolved struct.
+/// Write the PermissionRequest response. Consumes the resolved struct.
 fn write_resolved_response(resolved: ResolvedPermission) {
-    if resolved.is_pretool {
-        let reason = if resolved.allow {
-            "approved by operator"
-        } else {
-            "denied by operator"
-        };
-        let _ = write_pretool_response(resolved.stream, resolved.allow, reason);
-    } else {
-        let _ = write_response_to_stream(resolved.stream, resolved.allow, None);
-    }
+    let _ = write_response_to_stream(resolved.stream, resolved.allow, None);
 }
 
 /// Extract the first question and its options from an AskUserQuestion tool_input.
@@ -146,7 +126,6 @@ struct ResolvedPermission {
     allow: bool,
     permission_suggestions: Vec<serde_json::Value>,
     perm_id: u64,
-    is_pretool: bool,
 }
 
 /// Resolve and consume the active permission request.
@@ -158,7 +137,6 @@ fn resolve_permission(state: &mut ScreenState, allow: bool) -> Option<ResolvedPe
         allow,
         permission_suggestions: perm.permission_suggestions,
         perm_id: perm.perm_id,
-        is_pretool: perm.is_pretool,
     })
 }
 
@@ -279,16 +257,11 @@ pub(super) async fn handle_global_keys<R: Runtime>(
     {
         if let Some(resolved) = resolve_permission(state, true) {
             let perm_id = resolved.perm_id;
-            if resolved.is_pretool {
-                // PreToolUse has no "trust" concept — just allow.
-                write_resolved_response(resolved);
-            } else {
-                let _ = write_response_to_stream(
-                    resolved.stream,
-                    resolved.allow,
-                    Some(&resolved.permission_suggestions),
-                );
-            }
+            let _ = write_response_to_stream(
+                resolved.stream,
+                resolved.allow,
+                Some(&resolved.permission_suggestions),
+            );
             notify_tg_resolved(tg_tx, perm_id, "✅ Trusted locally");
         }
         return true;
@@ -999,25 +972,6 @@ pub(super) async fn dispatch_hook_event<R: Runtime>(
         HookEvent::UserPromptSubmit { cwd, .. } | HookEvent::SubagentStop { cwd, .. } => {
             handle_hook_active(state, &cwd, tg_tx);
         }
-        HookEvent::WorktreeReadScope {
-            cwd,
-            tool_name,
-            tool_input,
-        } => {
-            handle_hook_active(state, &cwd, tg_tx);
-            handle_worktree_read_scope(
-                state,
-                exo_session,
-                app,
-                stream,
-                &cwd,
-                &tool_name,
-                &tool_input,
-                &mut tg_perm.counter,
-                data_dir,
-            )
-            .await;
-        }
         HookEvent::Stop { cwd, .. } => {
             handle_hook_idle(state, &cwd, tg_tx);
             drop(stream);
@@ -1109,11 +1063,14 @@ fn handle_pretool_compound_bash(
     if crate::compound_bash::should_approve(command, &worktree_path) {
         log_tool_event(
             state,
-            cwd,
-            "Bash",
-            Some(payload.get("tool_input").unwrap_or(payload)),
-            "pretool_allow",
-            None,
+            &ToolEvent {
+                cwd,
+                tool_name: "Bash",
+                tool_input: Some(payload.get("tool_input").unwrap_or(payload)),
+                outcome: "pretool_allow",
+                auto_approved: None,
+                hook: Some("PreToolUse"),
+            },
             data_dir,
         );
         use std::io::Write;
@@ -1232,79 +1189,6 @@ async fn handle_hook_exo_message<R: Runtime>(
     let _ = write!(&stream, "{resp}");
 }
 
-/// Handle a WorktreeReadScope event: check if the target path is outside the
-/// agent's worktree. Outside-worktree reads are gated by a permission prompt
-/// in the dashboard; inside-worktree reads are auto-allowed.
-#[allow(clippy::too_many_arguments)]
-async fn handle_worktree_read_scope<R: Runtime>(
-    state: &mut ScreenState,
-    exo_session: &mut AssistantSession,
-    app: &ClatApp<R>,
-    stream: UnixStream,
-    cwd: &str,
-    tool_name: &str,
-    tool_input: &serde_json::Value,
-    perm_id_counter: &mut u64,
-    data_dir: &std::path::Path,
-) {
-    let target = crate::permission::worktree_scope_target(tool_name, tool_input);
-    let is_outside = target
-        .as_deref()
-        .map(|t| crate::permission::is_outside_worktree(cwd, t))
-        .unwrap_or(false);
-
-    if is_outside {
-        let target_str = target.as_deref().unwrap_or("unknown");
-        let task_name = state.task_name_for_cwd_or(cwd, TaskName::from("unknown".to_string()));
-
-        // Log as pending (will be resolved by operator).
-        log_tool_event(
-            state,
-            cwd,
-            tool_name,
-            Some(tool_input),
-            "pending",
-            None,
-            data_dir,
-        );
-
-        // Notify ExO chat so the operator sees the request (no Telegram —
-        // worktree-scope reads are logged but don't need mobile attention).
-        let message =
-            format!("[worktree-scope] {task_name}: {tool_name} outside worktree → {target_str}");
-        inject_exo_notification(state, exo_session, app, &message, None).await;
-
-        // Queue as a permission prompt — hold the stream until approved/denied.
-        *perm_id_counter += 1;
-        let perm_id = *perm_id_counter;
-        let summary = format!("{tool_name} → {target_str} (outside worktree)");
-        let perm = ActivePermission {
-            perm_id,
-            stream,
-            task_name,
-            tool_name: tool_name.to_string(),
-            tool_input_summary: summary,
-            permission_suggestions: vec![],
-            askuser_question: None,
-            askuser_options: vec![],
-            is_pretool: true,
-        };
-        state.permissions.add(perm);
-    } else {
-        // Inside the worktree — auto-allow and log.
-        log_tool_event(
-            state,
-            cwd,
-            tool_name,
-            Some(tool_input),
-            "auto_approved",
-            Some(true),
-            data_dir,
-        );
-        let _ = write_pretool_response(stream, true, "inside worktree");
-    }
-}
-
 fn handle_hook_permission(
     state: &mut ScreenState,
     stream: UnixStream,
@@ -1317,14 +1201,49 @@ fn handle_hook_permission(
     let task_name = state.task_name_for_cwd_or(&req.cwd, TaskName::from(EXO_PERM_KEY.to_string()));
     state.mark_task_active_by_name(&task_name);
 
+    // ── Worktree-scope auto-approval ──────────────────────────────
+    // For file-targeting tools, auto-approve if the target is inside
+    // the agent's worktree. Outside-worktree ops fall through to the
+    // dashboard for operator approval.
+    const SCOPE_TOOLS: &[&str] = &["Read", "Edit", "Write", "Glob", "Grep"];
+    if SCOPE_TOOLS.contains(&req.tool_name.as_str()) {
+        let target = req
+            .tool_input
+            .as_ref()
+            .and_then(|input| crate::permission::worktree_scope_target(&req.tool_name, input));
+        let is_outside = target
+            .as_deref()
+            .map(|t| crate::permission::is_outside_worktree(&req.cwd, t))
+            .unwrap_or(false); // no target = defaults to cwd = inside
+        if !is_outside {
+            log_tool_event(
+                state,
+                &ToolEvent {
+                    cwd: &req.cwd,
+                    tool_name: &req.tool_name,
+                    tool_input: req.tool_input.as_ref(),
+                    outcome: "auto_approved",
+                    auto_approved: Some(true),
+                    hook: Some("PermissionRequest"),
+                },
+                data_dir,
+            );
+            let _ = write_response_to_stream(stream, true, None);
+            return;
+        }
+    }
+
     // Log the incoming permission request immediately.
     log_tool_event(
         state,
-        &req.cwd,
-        &req.tool_name,
-        req.tool_input.as_ref(),
-        "pending",
-        None,
+        &ToolEvent {
+            cwd: &req.cwd,
+            tool_name: &req.tool_name,
+            tool_input: req.tool_input.as_ref(),
+            outcome: "pending",
+            auto_approved: None,
+            hook: Some("PermissionRequest"),
+        },
         data_dir,
     );
     *perm_id_counter += 1;
@@ -1371,7 +1290,6 @@ fn handle_hook_permission(
         permission_suggestions: req.permission_suggestions,
         askuser_question,
         askuser_options,
-        is_pretool: false,
     };
     state.permissions.add(perm);
 }
@@ -1398,21 +1316,12 @@ pub(super) async fn dispatch_telegram_event<R: Runtime>(
                 && let Some(perm) = state.permissions.take(&name)
             {
                 let allow = !matches!(action, telegram::PermAction::Deny);
-                if perm.is_pretool {
-                    let reason = if allow {
-                        "approved via telegram"
-                    } else {
-                        "denied via telegram"
-                    };
-                    let _ = write_pretool_response(perm.stream, allow, reason);
+                let suggestions = if matches!(action, telegram::PermAction::Trust) {
+                    Some(perm.permission_suggestions.clone())
                 } else {
-                    let suggestions = if matches!(action, telegram::PermAction::Trust) {
-                        Some(perm.permission_suggestions.clone())
-                    } else {
-                        None
-                    };
-                    let _ = write_response_to_stream(perm.stream, allow, suggestions.as_deref());
-                }
+                    None
+                };
+                let _ = write_response_to_stream(perm.stream, allow, suggestions.as_deref());
             }
         }
         telegram::TgInbound::QuestionAnswer { perm_id, answer } => {
@@ -1499,11 +1408,7 @@ pub(super) async fn tick_refresh<R: Runtime>(
     state.update_global_task_mappings(projects_map, work_dirs, skills_map);
     for perm in state.permissions.drain_stale(&all_running_names) {
         notify_tg_resolved(tg_tx, perm.perm_id, "⚪ Expired (task ended)");
-        if perm.is_pretool {
-            let _ = write_pretool_response(perm.stream, false, "task ended");
-        } else {
-            let _ = write_response_to_stream(perm.stream, false, None);
-        }
+        let _ = write_response_to_stream(perm.stream, false, None);
     }
     let active = state.active_state_mut();
     active.task_list.update_window_numbers(app.window_numbers());

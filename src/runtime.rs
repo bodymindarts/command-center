@@ -687,11 +687,7 @@ fn hooks_json() -> serde_json::Value {
             { "hooks": [hook("permission-gate.sh", 620)] }
         ],
         "PreToolUse": [
-            { "hooks": [hook("pre-tool-use.sh", 10)] },
-            {
-                "matcher": "Read|Grep|Glob",
-                "hooks": [hook("worktree-read-scope.sh", 620)]
-            }
+            { "hooks": [hook("pre-tool-use.sh", 10)] }
         ],
         "Stop": [
             { "hooks": [hook("stop.sh", 10)] }

@@ -59,13 +59,6 @@ pub enum HookEvent {
         cwd: String,
         payload: Value,
     },
-    /// A Read/Grep/Glob tool call forwarded for worktree scope checking.
-    /// Contains the full PreToolUse JSON from Claude Code.
-    WorktreeReadScope {
-        cwd: String,
-        tool_name: String,
-        tool_input: Value,
-    },
     Stop {
         #[allow(dead_code)]
         cwd: String,
@@ -113,19 +106,6 @@ impl<'de> serde::Deserialize<'de> for HookEvent {
                     cwd,
                     payload: value,
                 }),
-                "WorktreeReadScope" => {
-                    let tool_name = value
-                        .get("tool_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let tool_input = value.get("tool_input").cloned().unwrap_or(Value::Null);
-                    Ok(HookEvent::WorktreeReadScope {
-                        cwd,
-                        tool_name,
-                        tool_input,
-                    })
-                }
                 "Stop" => Ok(HookEvent::Stop {
                     cwd,
                     payload: value,
@@ -452,14 +432,14 @@ pub fn prompt_request(tool: &str, input_summary: &str, response_file: &str) -> a
     Ok(())
 }
 
-/// Extract the target path from a Read/Grep/Glob tool_input.
+/// Extract the target path from a file-targeting tool_input.
 ///
-/// - Read uses `file_path`
+/// - Read, Edit, Write use `file_path`
 /// - Grep and Glob use `path` (optional — returns None when absent,
 ///   meaning the tool defaults to cwd which is inside the worktree).
 pub fn worktree_scope_target(tool_name: &str, tool_input: &Value) -> Option<String> {
     let key = match tool_name {
-        "Read" => "file_path",
+        "Read" | "Edit" | "Write" => "file_path",
         "Grep" | "Glob" => "path",
         _ => return None,
     };
@@ -891,38 +871,12 @@ mod tests {
     }
 
     #[test]
-    fn hook_event_worktree_read_scope() {
+    fn hook_event_worktree_read_scope_now_unknown() {
+        // WorktreeReadScope variant was removed; the discriminator now
+        // falls through to Unknown.
         let json = r#"{"_hook":"WorktreeReadScope","cwd":"/workspace","tool_name":"Read","tool_input":{"file_path":"/etc/passwd"}}"#;
         let event = deser(json);
-        match event {
-            HookEvent::WorktreeReadScope {
-                cwd,
-                tool_name,
-                tool_input,
-            } => {
-                assert_eq!(cwd, "/workspace");
-                assert_eq!(tool_name, "Read");
-                assert_eq!(tool_input["file_path"].as_str().unwrap(), "/etc/passwd");
-            }
-            _ => panic!("expected WorktreeReadScope variant"),
-        }
-    }
-
-    #[test]
-    fn hook_event_worktree_read_scope_grep() {
-        let json = r#"{"_hook":"WorktreeReadScope","cwd":"/workspace","tool_name":"Grep","tool_input":{"pattern":"TODO","path":"/other/repo"}}"#;
-        let event = deser(json);
-        match event {
-            HookEvent::WorktreeReadScope {
-                tool_name,
-                tool_input,
-                ..
-            } => {
-                assert_eq!(tool_name, "Grep");
-                assert_eq!(tool_input["path"].as_str().unwrap(), "/other/repo");
-            }
-            _ => panic!("expected WorktreeReadScope variant"),
-        }
+        assert!(matches!(event, HookEvent::Unknown(_)));
     }
 
     #[test]
@@ -955,6 +909,25 @@ mod tests {
         assert_eq!(
             worktree_scope_target("Glob", &input),
             Some("/src".to_string())
+        );
+    }
+
+    #[test]
+    fn worktree_scope_target_edit() {
+        let input =
+            serde_json::json!({"file_path": "/tmp/foo.rs", "old_string": "a", "new_string": "b"});
+        assert_eq!(
+            worktree_scope_target("Edit", &input),
+            Some("/tmp/foo.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn worktree_scope_target_write() {
+        let input = serde_json::json!({"file_path": "/tmp/new.rs", "content": "fn main() {}"});
+        assert_eq!(
+            worktree_scope_target("Write", &input),
+            Some("/tmp/new.rs".to_string())
         );
     }
 

@@ -315,11 +315,7 @@ pub async fn run<R: Runtime>(
                     outcome: "⚪ Denied (dashboard closed)".to_string(),
                 });
             }
-            if perm.is_pretool {
-                let _ = handlers::write_pretool_response(perm.stream, false, "dashboard closed");
-            } else {
-                let _ = handlers::write_response_to_stream(perm.stream, false, None);
-            }
+            let _ = handlers::write_response_to_stream(perm.stream, false, None);
         }
     }
     let _ = std::fs::remove_file(&socket_path);

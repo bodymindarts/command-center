@@ -197,8 +197,11 @@ fn matches_any_pattern(command: &str, patterns: &[BashPattern]) -> bool {
 /// Build the JSON response for a PreToolUse hook decision.
 pub fn make_pretool_allow_response(reason: &str) -> String {
     serde_json::json!({
-        "decision": "allow",
-        "reason": reason
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason": reason
+        }
     })
     .to_string()
 }

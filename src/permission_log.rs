@@ -16,6 +16,8 @@ pub struct PermissionLogEntry {
     pub outcome: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_approved: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hook: Option<String>,
 }
 
 pub fn log_permission(data_dir: &Path, entry: &PermissionLogEntry) {
@@ -45,6 +47,7 @@ mod tests {
             command: Some("git status".to_string()),
             outcome: "approved".to_string(),
             auto_approved: None,
+            hook: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -54,6 +57,7 @@ mod tests {
         assert_eq!(parsed["outcome"], "approved");
         assert!(parsed.get("task_name").is_none());
         assert!(parsed.get("auto_approved").is_none());
+        assert!(parsed.get("hook").is_none());
     }
 
     #[test]
@@ -66,6 +70,7 @@ mod tests {
             command: None,
             outcome: "denied".to_string(),
             auto_approved: None,
+            hook: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -85,6 +90,7 @@ mod tests {
             command: Some("clat list".to_string()),
             outcome: "approved".to_string(),
             auto_approved: None,
+            hook: None,
         };
         log_permission(dir.path(), &entry);
         let content =
@@ -104,6 +110,7 @@ mod tests {
             command: Some("clat spawn test".to_string()),
             outcome: "approved".to_string(),
             auto_approved: None,
+            hook: None,
         };
         log_permission(dir.path(), &entry);
         assert!(dir.path().join("logs/permission-log-pm.jsonl").exists());
@@ -120,6 +127,7 @@ mod tests {
             command: None,
             outcome: "denied".to_string(),
             auto_approved: None,
+            hook: None,
         };
         log_permission(dir.path(), &entry);
         assert!(
@@ -140,6 +148,7 @@ mod tests {
             command: Some("curl https://example.com".to_string()),
             outcome: "approved".to_string(),
             auto_approved: None,
+            hook: None,
         };
         log_permission(dir.path(), &entry);
         assert!(
@@ -159,6 +168,7 @@ mod tests {
             command: Some("cargo fmt && git add -A".to_string()),
             outcome: "auto_approved".to_string(),
             auto_approved: Some(true),
+            hook: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -178,6 +188,7 @@ mod tests {
                 command: Some(format!("cmd-{i}")),
                 outcome: "approved".to_string(),
                 auto_approved: None,
+                hook: None,
             };
             log_permission(dir.path(), &entry);
         }
