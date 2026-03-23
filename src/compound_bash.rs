@@ -40,10 +40,10 @@ pub fn should_approve(command: &str, worktree_path: &Path) -> bool {
         _ => return false,
     };
 
-    // Check every sub-command against allowed patterns
+    // Check every sub-command against allowed patterns or special-cased builtins
     commands
         .iter()
-        .all(|cmd| matches_any_pattern(cmd, &patterns))
+        .all(|cmd| matches_any_pattern(cmd, &patterns) || is_cd_inside_worktree(cmd, worktree_path))
 }
 
 /// Quick check for shell operators that make a command compound.
@@ -182,6 +182,29 @@ fn load_bash_patterns(worktree_path: &Path) -> Option<Vec<BashPattern>> {
         .collect();
 
     Some(patterns)
+}
+
+/// Allow `cd <dir>` only when the target resolves inside the worktree.
+///
+/// This prevents agents from using `cd /outside && git status` to escape
+/// their worktree while keeping `cd <subdir> && cargo test` working.
+fn is_cd_inside_worktree(command: &str, worktree_path: &Path) -> bool {
+    let rest = match command.strip_prefix("cd ") {
+        Some(r) => r.trim(),
+        None => return false,
+    };
+    if rest.is_empty() {
+        return false; // bare `cd` goes to $HOME
+    }
+    let target = if Path::new(rest).is_absolute() {
+        Path::new(rest).to_path_buf()
+    } else {
+        worktree_path.join(rest)
+    };
+    !crate::permission::is_outside_worktree(
+        worktree_path.to_str().unwrap_or(""),
+        target.to_str().unwrap_or(""),
+    )
 }
 
 /// Check if a command string matches any allowed Bash pattern.
@@ -486,5 +509,69 @@ mod tests {
         assert!(!should_approve("cargo fmt && rm -rf /", dir.path()));
         assert!(!should_approve("cargo fmt", dir.path())); // not compound
         assert!(!should_approve("(cargo fmt && git add -A)", dir.path())); // subshell
+    }
+
+    #[test]
+    fn cd_inside_worktree_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("src");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        assert!(is_cd_inside_worktree(
+            &format!("cd {}", sub.display()),
+            dir.path()
+        ));
+        // Relative path
+        assert!(is_cd_inside_worktree("cd src", dir.path()));
+    }
+
+    #[test]
+    fn cd_outside_worktree_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!is_cd_inside_worktree("cd /tmp", dir.path()));
+        assert!(!is_cd_inside_worktree("cd /etc", dir.path()));
+    }
+
+    #[test]
+    fn bare_cd_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!is_cd_inside_worktree("cd", dir.path()));
+        assert!(!is_cd_inside_worktree("cd ", dir.path()));
+    }
+
+    #[test]
+    fn not_cd_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!is_cd_inside_worktree("git status", dir.path()));
+    }
+
+    /// Integration test: cd inside worktree + git status compound.
+    #[test]
+    fn integration_cd_worktree_compound() {
+        if Command::new("shfmt").arg("--version").output().is_err() {
+            eprintln!("skipping: shfmt not on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let claude_dir = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(
+            claude_dir.join("settings.local.json"),
+            r#"{
+                "permissions": {
+                    "allow": [
+                        "Bash(git status:*)"
+                    ]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let cmd = format!("cd {} && git status", dir.path().display());
+        assert!(should_approve(&cmd, dir.path()));
+
+        // cd outside worktree should fail
+        assert!(!should_approve("cd /tmp && git status", dir.path()));
     }
 }
