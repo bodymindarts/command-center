@@ -170,6 +170,11 @@ fn run_bot(
             .timeout_connect(Duration::from_secs(10))
             .timeout_read(Duration::from_secs(10))
             .timeout_write(Duration::from_secs(5))
+            // Hard wall-clock cap for the entire request lifecycle.
+            // Prevents the bot thread from hanging indefinitely on a
+            // dead TCP socket in half-open state where SO_RCVTIMEO
+            // doesn't fire.
+            .timeout(Duration::from_secs(30))
             .build(),
         base: format!("https://api.telegram.org/bot{token}"),
         file_base: format!("https://api.telegram.org/file/bot{token}"),
