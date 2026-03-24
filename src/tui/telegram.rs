@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
@@ -75,6 +75,11 @@ pub enum TgInbound {
 ///
 /// Returns `(sender, receiver)` channels for bidirectional communication.
 /// The thread shuts down when `cancel` is set to `true`.
+///
+/// The bot runs inside a supervisor loop that catches panics and restarts
+/// automatically after a brief delay.  This makes the integration resilient
+/// to unexpected errors (e.g. transient network failures that trigger a
+/// panic inside `ureq`).
 pub fn start(
     token: String,
     chat_id: String,
@@ -87,10 +92,45 @@ pub fn start(
     let (in_tx, in_rx) = mpsc::unbounded_channel();
 
     std::thread::spawn(move || {
-        run_bot(&token, &chat_id, cancel, out_rx, in_tx);
+        supervisor_loop(token, chat_id, cancel, out_rx, in_tx);
     });
 
     (out_tx, in_rx)
+}
+
+/// Supervisor that (re)starts [`run_bot`] whenever it exits unexpectedly or
+/// panics.  Waits 5 seconds between restarts to avoid tight crash-loops.
+fn supervisor_loop(
+    token: String,
+    chat_id: String,
+    cancel: Arc<AtomicBool>,
+    mut out_rx: mpsc::UnboundedReceiver<TgOutbound>,
+    in_tx: mpsc::UnboundedSender<TgInbound>,
+) {
+    while !cancel.load(Ordering::Relaxed) {
+        // `AssertUnwindSafe` is acceptable here: the mpsc channels are
+        // internally synchronised and safe to reuse after an unwind.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_bot(&token, &chat_id, &cancel, &mut out_rx, &in_tx);
+        }));
+
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+
+        match result {
+            Ok(()) => {
+                tg_log("Bot loop exited unexpectedly, restarting in 5s…");
+            }
+            Err(payload) => {
+                let msg = panic_payload_message(&payload);
+                tg_log(&format!("PANIC in bot thread: {msg} — restarting in 5s…"));
+            }
+        }
+
+        sleep_cancelable(&cancel, Duration::from_secs(5));
+    }
+    tg_log("Supervisor exiting (cancel requested)");
 }
 
 // ---------------------------------------------------------------------------
@@ -117,9 +157,9 @@ struct QuestionState {
 fn run_bot(
     token: &str,
     chat_id: &str,
-    cancel: Arc<AtomicBool>,
-    mut out_rx: mpsc::UnboundedReceiver<TgOutbound>,
-    in_tx: mpsc::UnboundedSender<TgInbound>,
+    cancel: &AtomicBool,
+    out_rx: &mut mpsc::UnboundedReceiver<TgOutbound>,
+    in_tx: &mpsc::UnboundedSender<TgInbound>,
 ) {
     tg_log(&format!(
         "Bot starting (chat_id=***, token_len={})",
@@ -127,7 +167,8 @@ fn run_bot(
     ));
     let ctx = BotCtx {
         agent: ureq::AgentBuilder::new()
-            .timeout_read(Duration::from_secs(5))
+            .timeout_connect(Duration::from_secs(10))
+            .timeout_read(Duration::from_secs(10))
             .timeout_write(Duration::from_secs(5))
             .build(),
         base: format!("https://api.telegram.org/bot{token}"),
@@ -148,18 +189,41 @@ fn run_bot(
         labels: HashMap::new(),
     };
 
+    // Consecutive poll failures — drives exponential backoff.
+    let mut consecutive_errors: u32 = 0;
+
     while !cancel.load(Ordering::Relaxed) {
+        // Back off on consecutive errors to avoid hammering a dead connection.
+        if consecutive_errors > 0 {
+            // 2, 4, 8, 16, 30, 30, … seconds
+            let secs = std::cmp::min(1u64 << consecutive_errors.min(5), 30);
+            if consecutive_errors <= 3 || consecutive_errors.is_multiple_of(10) {
+                // Log the first few backoffs and then every 10th to reduce noise.
+                tg_log(&format!(
+                    "Backing off {secs}s (consecutive errors: {consecutive_errors})"
+                ));
+            }
+            sleep_cancelable(cancel, Duration::from_secs(secs));
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+        }
+
         // 1. Drain outbound messages from the TUI (non-blocking).
-        drain_outbound(
-            &ctx,
-            &mut out_rx,
-            &mut msg_map,
-            &mut exo_buf,
-            &mut questions,
-        );
+        drain_outbound(&ctx, out_rx, &mut msg_map, &mut exo_buf, &mut questions);
 
         // 2. Long-poll Telegram for updates.
-        poll_updates(&ctx, &mut offset, &in_tx, &mut msg_map, &mut questions);
+        let ok = poll_updates(&ctx, &mut offset, in_tx, &mut msg_map, &mut questions);
+        if ok {
+            if consecutive_errors > 0 {
+                tg_log(&format!(
+                    "Reconnected after {consecutive_errors} consecutive errors"
+                ));
+            }
+            consecutive_errors = 0;
+        } else {
+            consecutive_errors = consecutive_errors.saturating_add(1);
+        }
     }
 }
 
@@ -287,23 +351,26 @@ fn drain_outbound(
 }
 
 /// Long-poll Telegram for updates and forward callback queries to the TUI.
+///
+/// Returns `true` on success (even if there are zero updates), `false` on
+/// transport or API error (drives the backoff logic in [`run_bot`]).
 fn poll_updates(
     ctx: &BotCtx,
     offset: &mut i64,
     in_tx: &mpsc::UnboundedSender<TgInbound>,
     msg_map: &mut HashMap<u64, i64>,
     questions: &mut QuestionState,
-) {
+) -> bool {
     let body = serde_json::json!({
         "offset": *offset,
         "timeout": 2,
         "allowed_updates": ["callback_query", "message"],
     });
     let Some(resp) = tg_post(&ctx.agent, &format!("{}/getUpdates", ctx.base), &body) else {
-        return;
+        return false;
     };
     let Some(updates) = resp["result"].as_array() else {
-        return;
+        return false;
     };
     for update in updates {
         if let Some(uid) = update["update_id"].as_i64() {
@@ -386,6 +453,30 @@ fn poll_updates(
         {
             handle_voice(ctx, file_id, in_tx);
         }
+    }
+    true
+}
+
+// ---------------------------------------------------------------------------
+// Helpers: sleep, panic extraction
+// ---------------------------------------------------------------------------
+
+/// Sleep for `duration` in small increments, returning early if `cancel` is set.
+fn sleep_cancelable(cancel: &AtomicBool, duration: Duration) {
+    let deadline = Instant::now() + duration;
+    while Instant::now() < deadline && !cancel.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Extract a human-readable message from a `catch_unwind` panic payload.
+fn panic_payload_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
     }
 }
 
