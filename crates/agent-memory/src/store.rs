@@ -130,6 +130,11 @@ impl SearchStore {
         query: &str,
         limit: usize,
     ) -> Result<Vec<FtsResult>, AgentMemoryError> {
+        let escaped_query = escape_fts5_query(query);
+        if escaped_query.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let rows = sqlx::query(
             "SELECT memory_id, rank
              FROM memory_fts
@@ -137,7 +142,7 @@ impl SearchStore {
              ORDER BY rank
              LIMIT ?",
         )
-        .bind(query)
+        .bind(&escaped_query)
         .bind(limit as i64)
         .fetch_all(&self.pool)
         .await?;
@@ -230,4 +235,49 @@ impl SearchStore {
 /// Convert f32 embedding slice to bytes for sqlite-vec.
 fn embedding_to_bytes(embedding: &[f32]) -> Vec<u8> {
     embedding.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+/// Escape a user query for safe use in FTS5 MATCH expressions.
+///
+/// FTS5 query syntax interprets `word:term` as a column filter (e.g.,
+/// `agent:value` → search column "agent" for "value"). If the column doesn't
+/// exist, SQLite returns "no such column". By wrapping each token in double
+/// quotes we force FTS5 to treat them as literal search terms.
+fn escape_fts5_query(query: &str) -> String {
+    query
+        .split_whitespace()
+        .map(|term| format!("\"{}\"", term.replace('"', "")))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn escape_fts5_plain_terms() {
+        assert_eq!(escape_fts5_query("hello world"), "\"hello\" \"world\"");
+    }
+
+    #[test]
+    fn escape_fts5_column_like_term() {
+        // "agent" alone could be fine, but "agent:value" would fail without escaping
+        assert_eq!(escape_fts5_query("agent"), "\"agent\"");
+        assert_eq!(
+            escape_fts5_query("style-agent:value"),
+            "\"style-agent:value\""
+        );
+    }
+
+    #[test]
+    fn escape_fts5_strips_quotes() {
+        assert_eq!(escape_fts5_query("hello \"world\""), "\"hello\" \"world\"");
+    }
+
+    #[test]
+    fn escape_fts5_empty_query() {
+        assert_eq!(escape_fts5_query(""), "");
+        assert_eq!(escape_fts5_query("   "), "");
+    }
 }
