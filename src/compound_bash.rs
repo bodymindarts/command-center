@@ -217,6 +217,16 @@ fn matches_any_pattern(command: &str, patterns: &[BashPattern]) -> bool {
     })
 }
 
+/// Check if a simple (non-compound) command matches any allowed Bash pattern
+/// in the worktree's settings.
+pub fn matches_allowed_pattern(command: &str, worktree_path: &Path) -> bool {
+    let patterns = match load_bash_patterns(worktree_path) {
+        Some(p) if !p.is_empty() => p,
+        _ => return false,
+    };
+    matches_any_pattern(command, &patterns)
+}
+
 /// Build the JSON response for a PreToolUse hook decision.
 pub fn make_pretool_allow_response(reason: &str) -> String {
     serde_json::json!({

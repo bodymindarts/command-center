@@ -967,7 +967,7 @@ pub(super) async fn dispatch_hook_event<R: Runtime>(
         }
         HookEvent::PreToolUse { cwd, payload } => {
             handle_hook_active(state, &cwd, tg_tx);
-            handle_pretool_compound_bash(state, stream, &cwd, &payload, data_dir);
+            handle_pretool_bash(state, stream, &cwd, &payload, data_dir);
         }
         HookEvent::UserPromptSubmit { cwd, .. } | HookEvent::SubagentStop { cwd, .. } => {
             handle_hook_active(state, &cwd, tg_tx);
@@ -1028,11 +1028,15 @@ fn handle_hook_active(
     }
 }
 
-/// Check if a PreToolUse event is a compound Bash command that can be
-/// auto-approved. If all sub-commands match allowed patterns, write an
-/// allow response to the stream. Otherwise drop the stream (no response
-/// = fall through to normal permission flow).
-fn handle_pretool_compound_bash(
+/// Check if a PreToolUse Bash command can be auto-approved.
+///
+/// Handles two cases:
+/// 1. Compound commands (&&, ||, |, ;) where every sub-command matches
+///    allowed patterns.
+/// 2. Simple commands containing `#` (e.g. `nix run .#bats`) that Claude
+///    Code would otherwise flag with a "mid-word # parsed differently"
+///    warning, even though the command matches an allowed pattern.
+fn handle_pretool_bash(
     state: &ScreenState,
     stream: UnixStream,
     cwd: &str,
@@ -1060,7 +1064,17 @@ fn handle_pretool_compound_bash(
         None => return,
     };
 
-    if crate::compound_bash::should_approve(command, &worktree_path) {
+    let approved = if crate::compound_bash::should_approve(command, &worktree_path) {
+        true
+    } else if command.contains('#') {
+        // Claude Code flags `#` in commands as a shell safety concern.
+        // Check the command against allowed patterns to short-circuit.
+        crate::compound_bash::matches_allowed_pattern(command, &worktree_path)
+    } else {
+        false
+    };
+
+    if approved {
         log_tool_event(
             state,
             &ToolEvent {
