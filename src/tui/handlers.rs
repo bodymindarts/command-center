@@ -18,6 +18,9 @@ use super::telegram;
 
 const EXO_PERM_KEY: &str = "exo";
 
+/// Maximum number of messages to display in the task detail view.
+const MAX_VISIBLE_MESSAGES: u32 = 200;
+
 // ── Logging helper ──────────────────────────────────────────────────
 
 /// Log a tool event to the JSONL permission log.
@@ -1413,47 +1416,27 @@ pub(super) async fn tick_refresh<R: Runtime>(
     let active = state.active_state_mut();
     active.task_list.update_window_numbers(app.window_numbers());
     // Update selected messages and live output for detail view.
-    // Only reload messages when the selected task changed or new messages arrived
-    // (detected via a lightweight COUNT query).
     if let Some(task) = active.task_list.selected_task() {
-        let task_id = task.id;
-        let chat = ChatId::Task(task_id);
+        let chat = ChatId::Task(task.id);
         let is_running = task.status.is_running();
         let pane = task.tmux_pane.clone();
 
-        let should_reload = match app.message_count(&chat).await {
-            Ok(count) => {
-                if active.task_list.needs_message_reload(task_id, count) {
-                    Some(count)
-                } else {
-                    None
-                }
-            }
-            Err(_) => Some(0),
-        };
-        if let Some(db_count) = should_reload
-            && let Ok(messages) = app.messages_last(&chat, 200).await
-        {
+        if let Ok(messages) = app.messages_last(&chat, MAX_VISIBLE_MESSAGES).await {
             active.task_list.set_selected_messages(messages);
-            active.task_list.mark_messages_loaded(task_id, db_count);
         }
 
         if is_running {
-            // Throttle capture_pane subprocess calls to avoid spawning
-            // tmux capture-pane every tick (every 50ms when streaming).
-            if active.task_list.should_capture_pane() {
-                active.task_list.set_live_output(
-                    pane.as_ref()
-                        .map(|p| p.as_str())
-                        .and_then(|p| app.capture_pane(p)),
-                );
-            }
+            active.task_list.maybe_update_live_output(|| {
+                pane.as_ref()
+                    .map(|p| p.as_str())
+                    .and_then(|p| app.capture_pane(p))
+            });
         } else {
-            active.task_list.set_live_output(None);
+            active.task_list.clear_live_output();
         }
     } else {
         active.task_list.clear_selected_messages();
-        active.task_list.set_live_output(None);
+        active.task_list.clear_live_output();
     }
 }
 

@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use ratatui::widgets::ListState;
 
-use crate::primitives::{PaneId, TaskId, TaskName, WindowId};
+use crate::primitives::{PaneId, TaskName, WindowId};
 use crate::task::{Task, TaskMessage};
 
 /// Minimum interval between `capture_pane` subprocess calls.
@@ -24,12 +24,6 @@ pub struct TaskListState {
     active_panes: HashSet<PaneId>,
     /// Indices into `tasks` that match the current search query.
     filtered_indices: Vec<usize>,
-    /// Last-selected task ID — used to detect selection changes and skip
-    /// redundant message reloads.
-    last_selected_task_id: Option<TaskId>,
-    /// Cached message count for the selected task, used as a dirty flag to
-    /// skip full message reloads when nothing changed.
-    cached_message_count: Option<u32>,
 }
 
 impl TaskListState {
@@ -49,8 +43,6 @@ impl TaskListState {
             last_capture: None,
             active_panes: HashSet::new(),
             filtered_indices: Vec::new(),
-            last_selected_task_id: None,
-            cached_message_count: None,
         }
     }
 
@@ -81,49 +73,32 @@ impl TaskListState {
 
     pub fn clear_selected_messages(&mut self) {
         self.selected_messages.clear();
-        self.last_selected_task_id = None;
-        self.cached_message_count = None;
-    }
-
-    /// Returns true if messages need reloading: either the selected task
-    /// changed or the message count differs from the cached value.
-    pub fn needs_message_reload(&self, task_id: TaskId, current_count: u32) -> bool {
-        if self.last_selected_task_id != Some(task_id) {
-            return true;
-        }
-        self.cached_message_count != Some(current_count)
-    }
-
-    /// Update the cached tracking state after a successful message reload.
-    pub fn mark_messages_loaded(&mut self, task_id: TaskId, count: u32) {
-        self.last_selected_task_id = Some(task_id);
-        self.cached_message_count = Some(count);
     }
 
     pub fn selected_messages(&self) -> &[TaskMessage] {
         &self.selected_messages
     }
 
-    pub fn set_live_output(&mut self, output: Option<String>) {
-        self.detail_live_output = output;
-    }
-
-    pub fn live_output(&self) -> Option<&str> {
-        self.detail_live_output.as_deref()
-    }
-
-    /// Returns true if enough time has elapsed since the last capture to allow
-    /// another subprocess call. Also records the current instant on `true`.
-    pub fn should_capture_pane(&mut self) -> bool {
+    /// Capture live output if the throttle interval has elapsed.
+    /// Keeps existing cached output when throttled.
+    pub fn maybe_update_live_output(&mut self, capture_fn: impl FnOnce() -> Option<String>) {
         let now = Instant::now();
         if self
             .last_capture
             .is_some_and(|t| now.duration_since(t) < CAPTURE_PANE_INTERVAL)
         {
-            return false;
+            return;
         }
         self.last_capture = Some(now);
-        true
+        self.detail_live_output = capture_fn();
+    }
+
+    pub fn clear_live_output(&mut self) {
+        self.detail_live_output = None;
+    }
+
+    pub fn live_output(&self) -> Option<&str> {
+        self.detail_live_output.as_deref()
     }
 
     // ── Window numbers ───────────────────────────────────────────────

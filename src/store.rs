@@ -144,16 +144,6 @@ impl Store {
         .await?;
         rows.iter().map(row_to_message).collect()
     }
-
-    /// Lightweight count query to check if messages changed without fetching rows.
-    pub async fn message_count(&self, chat_id: &ChatId) -> anyhow::Result<u32> {
-        let row = sqlx::query("SELECT COUNT(*) as cnt FROM task_messages WHERE task_id = ?")
-            .bind(chat_id.as_db_key())
-            .fetch_one(&self.pool)
-            .await?;
-        let count: i32 = row.try_get("cnt")?;
-        Ok(count as u32)
-    }
 }
 
 /// Spawn a background task that periodically backs up the database.

@@ -664,10 +664,6 @@ impl<R: Runtime> ClatApp<R> {
         self.store.list_messages_last(chat_id, limit).await
     }
 
-    pub async fn message_count(&self, chat_id: &ChatId) -> anyhow::Result<u32> {
-        self.store.message_count(chat_id).await
-    }
-
     pub fn list_skills(&self) -> anyhow::Result<Vec<SkillSummary>> {
         let mut skills = Vec::new();
         let entries = std::fs::read_dir(&self.paths.skills_dir)?;
