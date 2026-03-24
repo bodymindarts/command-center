@@ -1205,15 +1205,21 @@ fn handle_hook_permission(
     // For file-targeting tools, auto-approve if the target is inside
     // the agent's worktree. Outside-worktree ops fall through to the
     // dashboard for operator approval.
+    //
+    // Use the registered worktree root (not raw cwd) so that agents
+    // who cd into a subdirectory still get auto-approval for files
+    // anywhere in the worktree.
     const SCOPE_TOOLS: &[&str] = &["Read", "Edit", "Write", "Glob", "Grep"];
+    let worktree_root = state.work_dir_for_cwd(&req.cwd);
     if SCOPE_TOOLS.contains(&req.tool_name.as_str()) {
         let target = req
             .tool_input
             .as_ref()
             .and_then(|input| crate::permission::worktree_scope_target(&req.tool_name, input));
+        let scope_root = worktree_root.as_deref().unwrap_or(&req.cwd);
         let is_outside = target
             .as_deref()
-            .map(|t| crate::permission::is_outside_worktree(&req.cwd, t))
+            .map(|t| crate::permission::is_outside_worktree(scope_root, t))
             .unwrap_or(false); // no target = defaults to cwd = inside
         if !is_outside {
             log_tool_event(
