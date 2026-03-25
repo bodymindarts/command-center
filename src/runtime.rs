@@ -735,12 +735,8 @@ fn base_allowed_tools_full() -> Vec<&'static str> {
         "Bash(git ls-files:*)",
         "Bash(git remote:*)",
         "Bash(git merge:*)",
-        // Nix
-        "Bash(nix flake check:*)",
-        "Bash(nix develop:*)",
-        "Bash(nix build:*)",
-        "Bash(nix log:*)",
-        "Bash(nix run:*)",
+        // Nix (blanket — covers flake check, develop, build, run, eval, etc.)
+        "Bash(nix:*)",
         // Cargo (typically run inside nix develop, but allow direct too)
         "Bash(cargo fmt:*)",
         "Bash(cargo clippy:*)",
