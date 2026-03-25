@@ -1253,6 +1253,41 @@ fn handle_hook_permission(
         }
     }
 
+    // ── Bash # auto-approval ────────────────────────────────────
+    // Claude Code flags commands containing mid-word # (e.g.
+    // `nix run .#bats`) as dangerous before PreToolUse even fires.
+    // The PermissionRequest arrives here — auto-approve if the
+    // command matches an allowed Bash pattern for the worktree.
+    if req.tool_name == "Bash" {
+        let command = req
+            .tool_input
+            .as_ref()
+            .and_then(|v| v.get("command"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if command.contains('#')
+            && let Some(ref wd) = worktree_root
+        {
+            let worktree_path = std::path::PathBuf::from(wd);
+            if crate::compound_bash::matches_allowed_pattern(command, &worktree_path) {
+                log_tool_event(
+                    state,
+                    &ToolEvent {
+                        cwd: &req.cwd,
+                        tool_name: &req.tool_name,
+                        tool_input: req.tool_input.as_ref(),
+                        outcome: "auto_approved",
+                        auto_approved: Some(true),
+                        hook: Some("PermissionRequest"),
+                    },
+                    data_dir,
+                );
+                let _ = write_response_to_stream(stream, true, None);
+                return;
+            }
+        }
+    }
+
     // Log the incoming permission request immediately.
     log_tool_event(
         state,
