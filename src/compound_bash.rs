@@ -217,6 +217,31 @@ fn matches_any_pattern(command: &str, patterns: &[BashPattern]) -> bool {
     })
 }
 
+/// Check if a tool name is in the worktree's allowed permissions list.
+///
+/// Works for non-Bash tools (e.g. MCP tools like `mcp__style-agent__search_code`).
+pub fn is_tool_allowed(tool_name: &str, worktree_path: &Path) -> bool {
+    let settings_path = worktree_path.join(".claude/settings.local.json");
+    let content = match std::fs::read_to_string(settings_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let settings: Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let Some(allow) = settings
+        .get("permissions")
+        .and_then(|v| v.get("allow"))
+        .and_then(|v| v.as_array())
+    else {
+        return false;
+    };
+    allow
+        .iter()
+        .any(|v| v.as_str().is_some_and(|s| s == tool_name))
+}
+
 /// Check if a simple (non-compound) command matches any allowed Bash pattern
 /// in the worktree's settings.
 pub fn matches_allowed_pattern(command: &str, worktree_path: &Path) -> bool {
