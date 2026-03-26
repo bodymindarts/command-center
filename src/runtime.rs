@@ -546,17 +546,6 @@ fn setup_worktree_config(
                 }),
             );
 
-            // Auto-discover style-agent on :9222.
-            if is_port_reachable("127.0.0.1", 9222) {
-                servers.insert(
-                    "style-agent".to_string(),
-                    serde_json::json!({
-                        "type": "http",
-                        "url": "http://127.0.0.1:9222/mcp"
-                    }),
-                );
-            }
-
             std::fs::write(&mcp_path, serde_json::to_string_pretty(&mcp_config)?)?;
 
             // Register MCP servers as local-scoped so Claude Code trusts them
@@ -569,15 +558,6 @@ fn setup_worktree_config(
                 &clat_url,
                 &[("Authorization", &auth_value)],
             );
-            if is_port_reachable("127.0.0.1", 9222) {
-                register_local_mcp_server(
-                    worktree_path,
-                    "style-agent",
-                    "http://127.0.0.1:9222/mcp",
-                    &[],
-                );
-            }
-
             settings["enableAllProjectMcpServers"] = serde_json::json!(true);
 
             // Auto-allow MCP tools so agents don't need manual approval.
@@ -594,8 +574,8 @@ fn setup_worktree_config(
                 perms_allow.push(serde_json::json!("mcp__clat__store_memory"));
                 perms_allow.push(serde_json::json!("mcp__clat__search_memory"));
                 perms_allow.push(serde_json::json!("mcp__clat__list_memories"));
-                perms_allow.push(serde_json::json!("mcp__style_agent__search_code"));
-                perms_allow.push(serde_json::json!("mcp__style_agent__suggest_style"));
+                perms_allow.push(serde_json::json!("mcp__galoy-agents__search_code"));
+                perms_allow.push(serde_json::json!("mcp__galoy-agents__review_code"));
             }
 
             // Use .git/info/exclude instead of .gitignore — never committed.
@@ -883,14 +863,6 @@ fn register_local_mcp_server(work_dir: &Path, name: &str, url: &str, headers: &[
             eprintln!("Warning: could not run claude mcp add {name}: {e}");
         }
     }
-}
-
-/// Check whether a TCP port is reachable with a short timeout.
-fn is_port_reachable(host: &str, port: u16) -> bool {
-    use std::net::{SocketAddr, TcpStream};
-    use std::time::Duration;
-    let addr: SocketAddr = format!("{host}:{port}").parse().unwrap();
-    TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok()
 }
 
 /// Add an entry to `.git/info/exclude` so it's ignored without touching `.gitignore`.
