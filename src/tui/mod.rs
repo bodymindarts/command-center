@@ -72,9 +72,8 @@ fn cancel_project_context(
 async fn build_project_state<R: Runtime>(app: &ClatApp<R>, project_id: &ProjectId) -> ProjectState {
     let mut assistant = chat::AssistantChat::new();
     assistant.session_id = app.read_project_session_id(project_id);
-    if let Ok(messages) = app.session_messages(Some(project_id)).await {
-        let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
-        assistant.load_history(recent.into_iter().rev().collect());
+    if let Ok(messages) = app.session_messages_last(Some(project_id), 20).await {
+        assistant.load_history(messages);
     }
     ProjectState::new(assistant, Vec::new())
 }
@@ -142,9 +141,8 @@ pub async fn run<R: Runtime>(
         } else if let Some(sid) = app.read_exo_session_id() {
             assistant.session_id = Some(sid);
         }
-        if let Ok(messages) = app.session_messages(None).await {
-            let recent: Vec<_> = messages.into_iter().rev().take(20).collect();
-            assistant.load_history(recent.into_iter().rev().collect());
+        if let Ok(messages) = app.session_messages_last(None, 20).await {
+            assistant.load_history(messages);
         }
         ProjectState::new(assistant, tasks)
     };

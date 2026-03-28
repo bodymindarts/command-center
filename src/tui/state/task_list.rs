@@ -1,9 +1,13 @@
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use ratatui::widgets::ListState;
 
 use crate::primitives::{PaneId, TaskName, WindowId};
 use crate::task::{Task, TaskMessage};
+
+/// Minimum interval between `capture_pane` subprocess calls.
+const CAPTURE_PANE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1000);
 
 pub struct TaskListState {
     pub tasks: Vec<Task>,
@@ -13,6 +17,8 @@ pub struct TaskListState {
     detail_scroll: u16,
     detail_live_output: Option<String>,
     window_numbers: HashMap<WindowId, String>,
+    /// Timestamp of the last `capture_pane` call. Used to throttle subprocess spawning.
+    last_capture: Option<Instant>,
     /// Pane IDs that are actively working (hook reported activity).
     /// Absence from this set means idle (the safe default).
     active_panes: HashSet<PaneId>,
@@ -34,6 +40,7 @@ impl TaskListState {
             detail_scroll: 0,
             detail_live_output: None,
             window_numbers: HashMap::new(),
+            last_capture: None,
             active_panes: HashSet::new(),
             filtered_indices: Vec::new(),
         }
@@ -72,8 +79,22 @@ impl TaskListState {
         &self.selected_messages
     }
 
-    pub fn set_live_output(&mut self, output: Option<String>) {
-        self.detail_live_output = output;
+    /// Capture live output if the throttle interval has elapsed.
+    /// Keeps existing cached output when throttled.
+    pub fn maybe_update_live_output(&mut self, capture_fn: impl FnOnce() -> Option<String>) {
+        let now = Instant::now();
+        if self
+            .last_capture
+            .is_some_and(|t| now.duration_since(t) < CAPTURE_PANE_INTERVAL)
+        {
+            return;
+        }
+        self.last_capture = Some(now);
+        self.detail_live_output = capture_fn();
+    }
+
+    pub fn clear_live_output(&mut self) {
+        self.detail_live_output = None;
     }
 
     pub fn live_output(&self) -> Option<&str> {

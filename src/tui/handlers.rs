@@ -18,6 +18,9 @@ use super::telegram;
 
 const EXO_PERM_KEY: &str = "exo";
 
+/// Maximum number of messages to display in the task detail view.
+const MAX_VISIBLE_MESSAGES: u32 = 200;
+
 // ── Logging helper ──────────────────────────────────────────────────
 
 /// Log a tool event to the JSONL permission log.
@@ -1490,26 +1493,28 @@ pub(super) async fn tick_refresh<R: Runtime>(
     }
     let active = state.active_state_mut();
     active.task_list.update_window_numbers(app.window_numbers());
-    // Update selected messages and live output for detail view
+    // Update selected messages and live output for detail view.
     if let Some(task) = active.task_list.selected_task() {
         let chat = ChatId::Task(task.id);
         let is_running = task.status.is_running();
         let pane = task.tmux_pane.clone();
-        if let Ok(messages) = app.messages(&chat).await {
+
+        if let Ok(messages) = app.messages_last(&chat, MAX_VISIBLE_MESSAGES).await {
             active.task_list.set_selected_messages(messages);
         }
+
         if is_running {
-            active.task_list.set_live_output(
+            active.task_list.maybe_update_live_output(|| {
                 pane.as_ref()
                     .map(|p| p.as_str())
-                    .and_then(|p| app.capture_pane(p)),
-            );
+                    .and_then(|p| app.capture_pane(p))
+            });
         } else {
-            active.task_list.set_live_output(None);
+            active.task_list.clear_live_output();
         }
     } else {
         active.task_list.clear_selected_messages();
-        active.task_list.set_live_output(None);
+        active.task_list.clear_live_output();
     }
 }
 
