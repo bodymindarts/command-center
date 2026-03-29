@@ -252,24 +252,20 @@ DASHSCRIPT
     tmux select-window -t test:0
     tmux send-keys -t "$dash_pane" "'$TEST_DIR/run-dash.sh'" Enter
 
-    # Wait for session-scoped socket to appear (includes dashboard PID)
-    local sock=""
+    # Wait for the fixed-path permission socket to appear
+    local sock="/tmp/cc-permissions.sock"
     local found_sock=false
     for i in $(seq 1 40); do
-        # shellcheck disable=SC2012
-        sock=$(ls "$TMPDIR"/cc-permissions*.sock 2>/dev/null | head -1)
         [ -S "$sock" ] && { found_sock=true; break; }
         sleep 0.5
     done
 
     if [ "$found_sock" != true ]; then
-        echo "Socket not found in: $TMPDIR" >&2
+        echo "Socket not found at: $sock" >&2
         echo "Dashboard stderr:" >&2
         cat "$TEST_DIR/dash-stderr" 2>/dev/null >&2 || true
         echo "Dashboard pane:" >&2
         tmux capture-pane -t "$dash_pane" -p >&2 || true
-        echo "Files in TMPDIR:" >&2
-        ls -la "$TMPDIR" >&2 || true
     fi
     [ "$found_sock" = true ]
 

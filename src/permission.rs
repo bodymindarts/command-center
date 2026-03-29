@@ -201,13 +201,13 @@ pub fn read_skip_permissions_breadcrumb(project_root: &std::path::Path) -> bool 
     project_root.join(SKIP_PERMS_BREADCRUMB).exists()
 }
 
-/// Stable socket path for the dashboard (no PID suffix).
-/// Only one dashboard runs at a time, so a fixed name is fine
-/// and survives dashboard restarts without staling worktree hooks.
+/// Stable socket path for the dashboard.
+/// Uses `/tmp` directly instead of `$TMPDIR` because inside `nix develop`
+/// TMPDIR points to a nested path (e.g. `/tmp/nix-shell.xxx/nix-shell.yyy/`)
+/// that changes on every new shell session, breaking hooks in existing tasks.
+/// Only one dashboard runs at a time, so a fixed name is fine.
 pub fn session_socket_path() -> PathBuf {
-    let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
-    let base = std::fs::canonicalize(&tmpdir).unwrap_or_else(|_| PathBuf::from(&tmpdir));
-    base.join("cc-permissions.sock")
+    PathBuf::from("/tmp/cc-permissions.sock")
 }
 
 pub fn make_response_json(
