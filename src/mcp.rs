@@ -42,6 +42,7 @@ impl<R: Runtime> ClatMcpServer<R> {
         router.add_route(Self::store_memory_route(Arc::clone(&app)));
         router.add_route(Self::search_memory_route(Arc::clone(&app)));
         router.add_route(Self::list_memories_route(Arc::clone(&app)));
+        router.add_route(Self::get_memory_route(Arc::clone(&app)));
         Self {
             app,
             tool_router: router,
@@ -711,10 +712,10 @@ impl<R: Runtime> ClatMcpServer<R> {
                                     text.push_str(&format!("\nProject: {proj}"));
                                 }
 
-                                // Content snippet (first 300 chars).
-                                let snippet: String = r.content.chars().take(300).collect();
+                                // Content snippet (first 2000 chars).
+                                let snippet: String = r.content.chars().take(2000).collect();
                                 text.push_str(&format!("\n\n{snippet}"));
-                                if r.content.len() > 300 {
+                                if r.content.len() > 2000 {
                                     text.push_str("...");
                                 }
                                 text.push_str("\n\n---");
@@ -815,6 +816,72 @@ impl<R: Runtime> ClatMcpServer<R> {
                         }
                         Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
                             "Failed to list memories: {e}"
+                        ))])),
+                    }
+                })
+            },
+        )
+    }
+
+    fn get_memory_route(app: Arc<ClatApp<R>>) -> ToolRoute<Self> {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["memory_id"],
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "description": "The memory ID or prefix (e.g. first 8 characters)"
+                }
+            },
+            "additionalProperties": false
+        });
+
+        let input_schema = Arc::new(schema.as_object().unwrap().clone());
+        let tool = rmcp::model::Tool::new(
+            "get_memory",
+            "Retrieve the full content of a stored memory by its ID (or ID prefix).",
+            input_schema,
+        );
+
+        ToolRoute::new_dyn(
+            tool,
+            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
+                let app = Arc::clone(&app);
+                Box::pin(async move {
+                    let args = ctx.arguments.unwrap_or_default();
+                    let memory_id = match args.get("memory_id").and_then(|v| v.as_str()) {
+                        Some(id) => id,
+                        None => {
+                            return Ok(CallToolResult::error(vec![Content::text(
+                                "Missing required field 'memory_id'",
+                            )]));
+                        }
+                    };
+
+                    match app.memory().get(memory_id).await {
+                        Ok(m) => {
+                            let short_id = &m.id[..8.min(m.id.len())];
+                            let memory_type = if m.persistent { "report" } else { "memory" };
+                            let tags_display = if m.tags.is_empty() {
+                                String::from("(none)")
+                            } else {
+                                m.tags.join(", ")
+                            };
+                            let project_display = m.project.as_deref().unwrap_or("(none)");
+                            let text = format!(
+                                "## {}\nID: {} | Type: {} | Created: {}\nTags: {}\nProject: {}\n\n{}",
+                                m.title,
+                                short_id,
+                                memory_type,
+                                m.created_at.format("%Y-%m-%d"),
+                                tags_display,
+                                project_display,
+                                m.content,
+                            );
+                            Ok(CallToolResult::success(vec![Content::text(text)]))
+                        }
+                        Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                            "Failed to retrieve memory: {e}"
                         ))])),
                     }
                 })
