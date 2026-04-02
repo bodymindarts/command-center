@@ -574,8 +574,11 @@ fn setup_worktree_config(
                 perms_allow.push(serde_json::json!("mcp__clat__store_memory"));
                 perms_allow.push(serde_json::json!("mcp__clat__search_memory"));
                 perms_allow.push(serde_json::json!("mcp__clat__list_memories"));
+                perms_allow.push(serde_json::json!("mcp__galoy-agents__search_tools"));
+                perms_allow.push(serde_json::json!("mcp__galoy-agents__describe_tool"));
+                perms_allow.push(serde_json::json!("mcp__galoy-agents__call_tool"));
+                perms_allow.push(serde_json::json!("mcp__galoy-agents__hello"));
                 perms_allow.push(serde_json::json!("mcp__galoy-agents__search_code"));
-                perms_allow.push(serde_json::json!("mcp__galoy-agents__review_code"));
             }
 
             // Use .git/info/exclude instead of .gitignore — never committed.
