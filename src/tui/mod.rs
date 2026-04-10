@@ -212,16 +212,19 @@ pub async fn run<R: Runtime>(
     let (hook_tx, mut hook_rx) = mpsc::unbounded_channel::<(HookEvent, UnixStream)>();
     let perm_cancel = Arc::clone(&cancel);
     {
-        let work_dirs: Vec<String> = state
+        let task_pairs: Vec<(String, String)> = state
             .exo
             .task_list
             .tasks
             .iter()
-            .filter_map(|t| t.work_dir.clone())
+            .filter_map(|t| {
+                let wd = t.work_dir.clone()?;
+                Some((t.name.to_string(), wd))
+            })
             .collect();
         let sock_str = socket_path.to_string_lossy().to_string();
         tokio::task::spawn_blocking(move || {
-            crate::runtime::reembed_socket_in_worktrees(&work_dirs, &sock_str);
+            crate::runtime::reembed_env_in_worktrees(&task_pairs, &sock_str);
         });
     }
     // Spawn async hook listener task

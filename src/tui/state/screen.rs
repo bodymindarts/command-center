@@ -180,14 +180,21 @@ impl ScreenState {
     }
 
     /// Resolve a CWD to the task's work directory (worktree root).
-    pub fn work_dir_for_cwd(&self, cwd: &str) -> Option<String> {
+    /// Falls back to the task name hint when CWD doesn't match any worktree.
+    pub fn work_dir_for_cwd(&self, cwd: &str, task_name_hint: Option<&str>) -> Option<String> {
         let resolved = std::fs::canonicalize(cwd).unwrap_or_else(|_| PathBuf::from(cwd));
+        if let Some((_, wd)) = self.global_task_work_dirs.iter().find(|(_, wd)| {
+            let canon = std::fs::canonicalize(wd).unwrap_or_else(|_| PathBuf::from(wd));
+            resolved.starts_with(&canon)
+        }) {
+            return Some(wd.clone());
+        }
+        // Fall back to task name hint
+        let hint = task_name_hint?;
+        let candidate = TaskName::from(hint.to_string());
         self.global_task_work_dirs
             .iter()
-            .find(|(_, wd)| {
-                let canon = std::fs::canonicalize(wd).unwrap_or_else(|_| PathBuf::from(wd));
-                resolved.starts_with(&canon)
-            })
+            .find(|(name, _)| *name == candidate)
             .map(|(_, wd)| wd.clone())
     }
 
@@ -207,8 +214,12 @@ impl ScreenState {
     /// Mark the pane for a task (identified by CWD) as active, take its
     /// pending permission, and return it. Returns `None` if CWD doesn't
     /// match any task or there is no pending permission.
-    pub fn resolve_permission(&mut self, cwd: &str) -> Option<ActivePermission> {
-        let name = self.task_name_for_cwd(cwd)?;
+    pub fn resolve_permission(
+        &mut self,
+        cwd: &str,
+        task_name_hint: Option<&str>,
+    ) -> Option<ActivePermission> {
+        let name = self.resolve_task_name(cwd, task_name_hint)?;
         if let Some(task_list) = self.task_list_for_task_mut(&name) {
             task_list.activate_task_pane(&name);
         }
@@ -217,8 +228,8 @@ impl ScreenState {
 
     /// Mark the pane for a task (identified by CWD) as idle.
     /// Returns `Some(task_name)` if the task was newly marked idle (for notification).
-    pub fn mark_task_idle(&mut self, cwd: &str) -> Option<TaskName> {
-        if let Some(name) = self.task_name_for_cwd(cwd)
+    pub fn mark_task_idle(&mut self, cwd: &str, task_name_hint: Option<&str>) -> Option<TaskName> {
+        if let Some(name) = self.resolve_task_name(cwd, task_name_hint)
             && let Some(task_list) = self.task_list_for_task_mut(&name)
             && task_list.idle_task_pane(&name)
         {
@@ -230,8 +241,12 @@ impl ScreenState {
 
     /// Mark the pane for a task (identified by CWD) as active.
     /// Returns `Some(task_name)` if the task was newly marked active (for notification).
-    pub fn mark_task_active(&mut self, cwd: &str) -> Option<TaskName> {
-        if let Some(name) = self.task_name_for_cwd(cwd)
+    pub fn mark_task_active(
+        &mut self,
+        cwd: &str,
+        task_name_hint: Option<&str>,
+    ) -> Option<TaskName> {
+        if let Some(name) = self.resolve_task_name(cwd, task_name_hint)
             && let Some(task_list) = self.task_list_for_task_mut(&name)
             && task_list.activate_task_pane(&name)
         {
@@ -241,9 +256,48 @@ impl ScreenState {
         }
     }
 
-    /// Resolve a CWD to its task name, falling back to the given default.
-    pub fn task_name_for_cwd_or(&self, cwd: &str, default: TaskName) -> TaskName {
-        self.task_name_for_cwd(cwd).unwrap_or(default)
+    /// Try CWD-based resolution first, then fall back to the task name hint.
+    fn resolve_task_name(&self, cwd: &str, hint: Option<&str>) -> Option<TaskName> {
+        if let Some(name) = self.task_name_for_cwd(cwd) {
+            return Some(name);
+        }
+        let hint = hint?;
+        let candidate = TaskName::from(hint.to_string());
+        if self
+            .global_task_work_dirs
+            .iter()
+            .any(|(name, _)| *name == candidate)
+        {
+            Some(candidate)
+        } else {
+            None
+        }
+    }
+
+    /// Resolve a CWD to its task name, using a task-name hint as fallback
+    /// before resorting to the default. This handles agents that cd outside
+    /// their worktree (e.g. scratch tasks running scripts in /tmp/).
+    pub fn task_name_for_cwd_or_hint(
+        &self,
+        cwd: &str,
+        hint: Option<&str>,
+        default: TaskName,
+    ) -> TaskName {
+        if let Some(name) = self.task_name_for_cwd(cwd) {
+            return name;
+        }
+        if let Some(hint) = hint {
+            let candidate = TaskName::from(hint.to_string());
+            // Only accept the hint if it matches a known running task.
+            if self
+                .global_task_work_dirs
+                .iter()
+                .any(|(name, _)| *name == candidate)
+            {
+                return candidate;
+            }
+        }
+        default
     }
 
     /// Mark a task's pane as active by task name.

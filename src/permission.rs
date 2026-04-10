@@ -11,6 +11,10 @@ pub struct PermissionRequest {
     pub tool_input_summary: String,
     pub cwd: String,
     pub permission_suggestions: Vec<Value>,
+    /// Task name hint injected by hook scripts via `CC_TASK_NAME`.
+    /// Used as a fallback when CWD-based task resolution fails
+    /// (e.g. when the agent cd's outside its worktree).
+    pub task_name_hint: Option<String>,
 }
 
 impl<'de> serde::Deserialize<'de> for PermissionRequest {
@@ -26,6 +30,8 @@ impl<'de> serde::Deserialize<'de> for PermissionRequest {
             cwd: String,
             #[serde(default)]
             permission_suggestions: Vec<Value>,
+            #[serde(default, rename = "_task_name")]
+            task_name_hint: Option<String>,
         }
         let raw = Raw::deserialize(deserializer)?;
         let tool_input_summary = summarize_tool_input(&raw.tool_name, raw.tool_input.as_ref());
@@ -35,6 +41,7 @@ impl<'de> serde::Deserialize<'de> for PermissionRequest {
             tool_input_summary,
             cwd: raw.cwd,
             permission_suggestions: raw.permission_suggestions,
+            task_name_hint: raw.task_name_hint,
         })
     }
 }
@@ -48,20 +55,26 @@ pub enum HookEvent {
     Permission(PermissionRequest),
     Resolved {
         cwd: String,
+        task_name_hint: Option<String>,
     },
     Idle {
         cwd: String,
+        task_name_hint: Option<String>,
     },
     Active {
         cwd: String,
+        task_name_hint: Option<String>,
     },
     PreToolUse {
         cwd: String,
+        task_name_hint: Option<String>,
         payload: Value,
     },
     Stop {
         #[allow(dead_code)]
         cwd: String,
+        #[allow(dead_code)]
+        task_name_hint: Option<String>,
         #[allow(dead_code)]
         payload: Value,
     },
@@ -69,11 +82,15 @@ pub enum HookEvent {
         #[allow(dead_code)]
         cwd: String,
         #[allow(dead_code)]
+        task_name_hint: Option<String>,
+        #[allow(dead_code)]
         payload: Value,
     },
     SubagentStop {
         #[allow(dead_code)]
         cwd: String,
+        #[allow(dead_code)]
+        task_name_hint: Option<String>,
         #[allow(dead_code)]
         payload: Value,
     },
@@ -98,24 +115,34 @@ impl<'de> serde::Deserialize<'de> for HookEvent {
     {
         let value = Value::deserialize(deserializer)?;
 
+        // Extract optional task name hint from all event types.
+        let task_name_hint = value
+            .get("_task_name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         // New-style events use a `_hook` discriminator field injected by the hook script.
         if let Some(hook_type) = value.get("_hook").and_then(|v| v.as_str()) {
             let cwd = value["cwd"].as_str().unwrap_or("").to_string();
             return match hook_type {
                 "PreToolUse" => Ok(HookEvent::PreToolUse {
                     cwd,
+                    task_name_hint,
                     payload: value,
                 }),
                 "Stop" => Ok(HookEvent::Stop {
                     cwd,
+                    task_name_hint,
                     payload: value,
                 }),
                 "UserPromptSubmit" => Ok(HookEvent::UserPromptSubmit {
                     cwd,
+                    task_name_hint,
                     payload: value,
                 }),
                 "SubagentStop" => Ok(HookEvent::SubagentStop {
                     cwd,
+                    task_name_hint,
                     payload: value,
                 }),
                 _ => Ok(HookEvent::Unknown(value)),
@@ -138,15 +165,24 @@ impl<'de> serde::Deserialize<'de> for HookEvent {
         // Legacy events: boolean flag discriminators
         if value.get("_resolved").and_then(|v| v.as_bool()) == Some(true) {
             let cwd = value["cwd"].as_str().unwrap_or("").to_string();
-            return Ok(HookEvent::Resolved { cwd });
+            return Ok(HookEvent::Resolved {
+                cwd,
+                task_name_hint: task_name_hint.clone(),
+            });
         }
         if value.get("_idle").and_then(|v| v.as_bool()) == Some(true) {
             let cwd = value["cwd"].as_str().unwrap_or("").to_string();
-            return Ok(HookEvent::Idle { cwd });
+            return Ok(HookEvent::Idle {
+                cwd,
+                task_name_hint: task_name_hint.clone(),
+            });
         }
         if value.get("_active").and_then(|v| v.as_bool()) == Some(true) {
             let cwd = value["cwd"].as_str().unwrap_or("").to_string();
-            return Ok(HookEvent::Active { cwd });
+            return Ok(HookEvent::Active {
+                cwd,
+                task_name_hint,
+            });
         }
         if value.get("tool_name").is_some() {
             let req: PermissionRequest =
@@ -160,6 +196,10 @@ impl<'de> serde::Deserialize<'de> for HookEvent {
 
 /// Environment variable that spawned agents read to locate the permission socket.
 pub const SOCKET_ENV: &str = "CC_PERM_SOCKET";
+
+/// Environment variable embedded in hook commands so the dashboard can identify
+/// the originating task even when the agent's CWD is outside its worktree.
+pub const TASK_NAME_ENV: &str = "CC_TASK_NAME";
 
 /// Breadcrumb file written by the dashboard so that CLI-spawned tasks
 /// (which don't inherit the TUI's env) can discover the active socket.
@@ -761,7 +801,9 @@ mod tests {
     #[test]
     fn hook_event_resolved() {
         let json = r#"{"_resolved": true, "cwd": "/home/user/project"}"#;
-        assert!(matches!(deser(json), HookEvent::Resolved { cwd } if cwd == "/home/user/project"));
+        assert!(
+            matches!(deser(json), HookEvent::Resolved { cwd, .. } if cwd == "/home/user/project")
+        );
     }
 
     #[test]
@@ -773,13 +815,13 @@ mod tests {
     #[test]
     fn hook_event_resolved_missing_cwd_defaults_empty() {
         let json = r#"{"_resolved": true}"#;
-        assert!(matches!(deser(json), HookEvent::Resolved { cwd } if cwd.is_empty()));
+        assert!(matches!(deser(json), HookEvent::Resolved { cwd, .. } if cwd.is_empty()));
     }
 
     #[test]
     fn hook_event_active() {
         let json = r#"{"_active": true, "cwd": "/workspace"}"#;
-        assert!(matches!(deser(json), HookEvent::Active { cwd } if cwd == "/workspace"));
+        assert!(matches!(deser(json), HookEvent::Active { cwd, .. } if cwd == "/workspace"));
     }
 
     #[test]
@@ -791,7 +833,7 @@ mod tests {
     #[test]
     fn hook_event_idle() {
         let json = r#"{"_idle": true, "cwd": "/workspace"}"#;
-        assert!(matches!(deser(json), HookEvent::Idle { cwd } if cwd == "/workspace"));
+        assert!(matches!(deser(json), HookEvent::Idle { cwd, .. } if cwd == "/workspace"));
     }
 
     #[test]
@@ -899,6 +941,43 @@ mod tests {
     fn hook_event_new_style_missing_cwd() {
         let json = r#"{"_hook":"Stop"}"#;
         assert!(matches!(deser(json), HookEvent::Stop { cwd, .. } if cwd.is_empty()));
+    }
+
+    #[test]
+    fn hook_event_task_name_hint_extracted() {
+        let json = r#"{"_idle": true, "cwd": "/workspace", "_task_name": "my-research-task"}"#;
+        match deser(json) {
+            HookEvent::Idle {
+                cwd,
+                task_name_hint,
+            } => {
+                assert_eq!(cwd, "/workspace");
+                assert_eq!(task_name_hint.as_deref(), Some("my-research-task"));
+            }
+            _ => panic!("expected Idle variant"),
+        }
+    }
+
+    #[test]
+    fn hook_event_task_name_hint_in_permission() {
+        let json = r#"{"tool_name":"Bash","tool_input":{"command":"ls"},"cwd":"/tmp","_task_name":"scratch-task"}"#;
+        match deser(json) {
+            HookEvent::Permission(req) => {
+                assert_eq!(req.task_name_hint.as_deref(), Some("scratch-task"));
+            }
+            _ => panic!("expected Permission variant"),
+        }
+    }
+
+    #[test]
+    fn hook_event_task_name_hint_in_new_style() {
+        let json = r#"{"_hook":"PreToolUse","cwd":"/workspace","tool_name":"Bash","_task_name":"my-task"}"#;
+        match deser(json) {
+            HookEvent::PreToolUse { task_name_hint, .. } => {
+                assert_eq!(task_name_hint.as_deref(), Some("my-task"));
+            }
+            _ => panic!("expected PreToolUse variant"),
+        }
     }
 
     #[test]

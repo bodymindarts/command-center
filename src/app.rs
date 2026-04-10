@@ -328,12 +328,18 @@ impl<R: Runtime> ClatApp<R> {
                     &scratch_dir,
                     &perms,
                     &jwt_token,
+                    req.task_name,
                 )?;
                 scratch_dir
             }
             WorkDirMode::Existing { dir } => {
-                self.runtime
-                    .setup_dir_config(&self.paths.root, dir, &perms, &jwt_token)?;
+                self.runtime.setup_dir_config(
+                    &self.paths.root,
+                    dir,
+                    &perms,
+                    &jwt_token,
+                    req.task_name,
+                )?;
                 dir.to_path_buf()
             }
         };
@@ -983,6 +989,7 @@ mod tests {
             work_dir: &Path,
             _perms: &crate::runtime::SkillPermissions,
             _jwt_token: &str,
+            _task_name: &str,
         ) -> anyhow::Result<()> {
             self.calls.lock().unwrap().push(Call::SetupDirConfig {
                 work_dir: work_dir.to_path_buf(),

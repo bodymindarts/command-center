@@ -65,6 +65,7 @@ pub trait Runtime: Send + Sync + 'static {
         work_dir: &Path,
         perms: &SkillPermissions,
         jwt_token: &str,
+        task_name: &str,
     ) -> anyhow::Result<()>;
     fn init_scratch_dir(&self, scratch_dir: &Path) -> anyhow::Result<()>;
     fn launch_agent(&self, config: LaunchConfig) -> anyhow::Result<SpawnResult>;
@@ -175,8 +176,9 @@ impl Runtime for TmuxRuntime {
         work_dir: &Path,
         perms: &SkillPermissions,
         jwt_token: &str,
+        task_name: &str,
     ) -> anyhow::Result<()> {
-        setup_worktree_config(hooks_source, work_dir, perms, jwt_token)
+        setup_worktree_config(hooks_source, work_dir, perms, jwt_token, Some(task_name))
     }
 
     fn init_scratch_dir(&self, scratch_dir: &Path) -> anyhow::Result<()> {
@@ -236,7 +238,7 @@ impl Runtime for TmuxRuntime {
             bail!("git worktree add failed: {stderr}");
         }
 
-        setup_worktree_config(hooks_source, &worktree_path, perms, jwt_token)?;
+        setup_worktree_config(hooks_source, &worktree_path, perms, jwt_token, Some(name))?;
         merge_repo_settings(repo_root, &worktree_path)?;
 
         Ok(worktree_path)
@@ -301,7 +303,15 @@ impl Runtime for TmuxRuntime {
             bail!("git worktree add failed: {stderr}");
         }
 
-        setup_worktree_config(repo_root, work_dir, &SkillPermissions::default(), jwt_token)?;
+        // Extract task name from worktree directory name (e.g. "my-task-abc123").
+        let wt_name = work_dir.file_name().and_then(|n| n.to_str());
+        setup_worktree_config(
+            repo_root,
+            work_dir,
+            &SkillPermissions::default(),
+            jwt_token,
+            wt_name,
+        )?;
         merge_repo_settings(repo_root, work_dir)?;
         Ok(())
     }
@@ -469,6 +479,7 @@ fn setup_worktree_config(
     worktree_path: &Path,
     perms: &SkillPermissions,
     jwt_token: &str,
+    task_name: Option<&str>,
 ) -> anyhow::Result<()> {
     let source_claude_dir = repo_root.join(".claude");
     let target_claude_dir = worktree_path.join(".claude");
@@ -509,7 +520,7 @@ fn setup_worktree_config(
             .ok()
             .or_else(|| crate::permission::read_socket_breadcrumb(repo_root));
         if let Some(sock_path) = sock_path {
-            embed_socket_in_hooks(&mut settings, &sock_path);
+            embed_env_in_hooks(&mut settings, &sock_path, task_name);
         }
 
         // Write .mcp.json at worktree root so Claude Code discovers the MCP server.
@@ -769,10 +780,15 @@ fn base_allowed_tools_minimal() -> Vec<&'static str> {
     ]
 }
 
-/// Rewrite hook commands in settings JSON to prefix `CC_PERM_SOCKET=<path>`,
-/// so spawned agents' hooks connect to the correct dashboard socket.
-/// Matches any hook command under `.claude/hooks/`.
-pub(crate) fn embed_socket_in_hooks(settings: &mut serde_json::Value, sock_path: &str) {
+/// Rewrite hook commands in settings JSON to prefix environment variables
+/// (`CC_PERM_SOCKET=<path>` and optionally `CC_TASK_NAME=<name>`), so spawned
+/// agents' hooks connect to the correct dashboard socket and can be identified
+/// even when their CWD is outside the worktree.
+pub(crate) fn embed_env_in_hooks(
+    settings: &mut serde_json::Value,
+    sock_path: &str,
+    task_name: Option<&str>,
+) {
     let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
         return;
     };
@@ -789,34 +805,47 @@ pub(crate) fn embed_socket_in_hooks(settings: &mut serde_json::Value, sock_path:
                     && let Some(cmd) = hook.get("command").and_then(|c| c.as_str())
                     && cmd.contains(".claude/hooks/")
                 {
-                    // Strip existing CC_PERM_SOCKET= prefix to avoid stacking
-                    let clean_cmd =
-                        if let Some(rest) = cmd.strip_prefix(crate::permission::SOCKET_ENV) {
-                            // Skip "=<path> " to get the original command
-                            rest.split_once(' ')
-                                .map(|(_, c)| c)
-                                .unwrap_or(rest)
-                                .trim_start_matches('=')
-                        } else {
-                            cmd
-                        };
-                    hook["command"] = serde_json::json!(format!(
-                        "{}={} {}",
-                        crate::permission::SOCKET_ENV,
-                        sock_path,
-                        clean_cmd
-                    ));
+                    // Strip existing env var prefixes to avoid stacking
+                    let clean_cmd = strip_env_prefixes(cmd);
+                    let mut prefix = format!("{}={}", crate::permission::SOCKET_ENV, sock_path,);
+                    if let Some(name) = task_name {
+                        prefix
+                            .push_str(&format!(" {}={}", crate::permission::TASK_NAME_ENV, name,));
+                    }
+                    hook["command"] = serde_json::json!(format!("{prefix} {clean_cmd}"));
                 }
             }
         }
     }
 }
 
-/// Re-embed the current socket path into all active worktrees' settings.
+/// Strip leading `CC_PERM_SOCKET=... ` and `CC_TASK_NAME=... ` prefixes from
+/// a hook command string, returning the original command.
+fn strip_env_prefixes(cmd: &str) -> &str {
+    let mut rest = cmd;
+    loop {
+        let trimmed = rest.trim_start();
+        if trimmed.starts_with(crate::permission::SOCKET_ENV)
+            || trimmed.starts_with(crate::permission::TASK_NAME_ENV)
+        {
+            // Skip "VAR=value " — find the next space after the value
+            if let Some((_prefix, after)) = trimmed.split_once(' ') {
+                rest = after;
+                continue;
+            }
+        }
+        break;
+    }
+    rest
+}
+
+/// Re-embed the current socket path and task names into all active worktrees' settings.
 /// Called at dashboard startup so hooks from pre-existing tasks connect
-/// to the new socket.
-pub fn reembed_socket_in_worktrees(work_dirs: &[String], sock_path: &str) {
-    for wd in work_dirs {
+/// to the new socket and carry the correct task identity.
+///
+/// Each entry is `(task_name, work_dir)`.
+pub fn reembed_env_in_worktrees(tasks: &[(String, String)], sock_path: &str) {
+    for (name, wd) in tasks {
         let settings_path = Path::new(wd).join(".claude/settings.local.json");
         let Ok(content) = std::fs::read_to_string(&settings_path) else {
             continue;
@@ -824,7 +853,7 @@ pub fn reembed_socket_in_worktrees(work_dirs: &[String], sock_path: &str) {
         let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) else {
             continue;
         };
-        embed_socket_in_hooks(&mut settings, sock_path);
+        embed_env_in_hooks(&mut settings, sock_path, Some(name));
         let _ = std::fs::write(&settings_path, settings.to_string());
     }
 }

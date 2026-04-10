@@ -26,6 +26,7 @@ const EXO_PERM_KEY: &str = "exo";
 /// for Bash tool calls, and writes a `PermissionLogEntry`.
 struct ToolEvent<'a> {
     cwd: &'a str,
+    task_name_hint: Option<&'a str>,
     tool_name: &'a str,
     tool_input: Option<&'a serde_json::Value>,
     outcome: &'a str,
@@ -34,7 +35,11 @@ struct ToolEvent<'a> {
 }
 
 fn log_tool_event(state: &ScreenState, event: &ToolEvent<'_>, data_dir: &std::path::Path) {
-    let task_name = state.task_name_for_cwd_or(event.cwd, TaskName::from(EXO_PERM_KEY.to_string()));
+    let task_name = state.task_name_for_cwd_or_hint(
+        event.cwd,
+        event.task_name_hint,
+        TaskName::from(EXO_PERM_KEY.to_string()),
+    );
     let skill_name = state.global_task_skill(&task_name).map(|s| s.to_string());
     let role = skill_name.unwrap_or_else(|| task_name.to_string());
     let command = if event.tool_name == "Bash" {
@@ -945,14 +950,29 @@ pub(super) async fn dispatch_hook_event<R: Runtime>(
     data_dir: &std::path::Path,
 ) {
     match event {
-        HookEvent::Resolved { cwd } => {
-            handle_hook_resolved(state, &cwd, tg_tx, &mut tg_perm.ids);
+        HookEvent::Resolved {
+            cwd,
+            task_name_hint,
+        } => {
+            handle_hook_resolved(
+                state,
+                &cwd,
+                task_name_hint.as_deref(),
+                tg_tx,
+                &mut tg_perm.ids,
+            );
         }
-        HookEvent::Idle { cwd } => {
-            handle_hook_idle(state, &cwd, tg_tx);
+        HookEvent::Idle {
+            cwd,
+            task_name_hint,
+        } => {
+            handle_hook_idle(state, &cwd, task_name_hint.as_deref(), tg_tx);
         }
-        HookEvent::Active { cwd } => {
-            handle_hook_active(state, &cwd, tg_tx);
+        HookEvent::Active {
+            cwd,
+            task_name_hint,
+        } => {
+            handle_hook_active(state, &cwd, task_name_hint.as_deref(), tg_tx);
         }
         HookEvent::Permission(request) => {
             handle_hook_permission(
@@ -965,15 +985,39 @@ pub(super) async fn dispatch_hook_event<R: Runtime>(
                 data_dir,
             );
         }
-        HookEvent::PreToolUse { cwd, payload } => {
-            handle_hook_active(state, &cwd, tg_tx);
-            handle_pretool_bash(state, stream, &cwd, &payload, data_dir);
+        HookEvent::PreToolUse {
+            cwd,
+            task_name_hint,
+            payload,
+        } => {
+            handle_hook_active(state, &cwd, task_name_hint.as_deref(), tg_tx);
+            handle_pretool_bash(
+                state,
+                stream,
+                &cwd,
+                task_name_hint.as_deref(),
+                &payload,
+                data_dir,
+            );
         }
-        HookEvent::UserPromptSubmit { cwd, .. } | HookEvent::SubagentStop { cwd, .. } => {
-            handle_hook_active(state, &cwd, tg_tx);
+        HookEvent::UserPromptSubmit {
+            cwd,
+            task_name_hint,
+            ..
         }
-        HookEvent::Stop { cwd, .. } => {
-            handle_hook_idle(state, &cwd, tg_tx);
+        | HookEvent::SubagentStop {
+            cwd,
+            task_name_hint,
+            ..
+        } => {
+            handle_hook_active(state, &cwd, task_name_hint.as_deref(), tg_tx);
+        }
+        HookEvent::Stop {
+            cwd,
+            task_name_hint,
+            ..
+        } => {
+            handle_hook_idle(state, &cwd, task_name_hint.as_deref(), tg_tx);
             drop(stream);
         }
         HookEvent::PmMessage { project, message } => {
@@ -989,10 +1033,11 @@ pub(super) async fn dispatch_hook_event<R: Runtime>(
 fn handle_hook_resolved(
     state: &mut ScreenState,
     cwd: &str,
+    task_name_hint: Option<&str>,
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
     tg_perm_ids: &mut HashSet<u64>,
 ) {
-    if let Some(perm) = state.resolve_permission(cwd) {
+    if let Some(perm) = state.resolve_permission(cwd, task_name_hint) {
         let _ = write_response_to_stream(perm.stream, false, None);
         if tg_perm_ids.remove(&perm.perm_id) {
             notify_tg_resolved(tg_tx, perm.perm_id, "✅ Resolved in pane");
@@ -1003,9 +1048,10 @@ fn handle_hook_resolved(
 fn handle_hook_idle(
     state: &mut ScreenState,
     cwd: &str,
+    task_name_hint: Option<&str>,
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
 ) {
-    if let Some(task_name) = state.mark_task_idle(cwd)
+    if let Some(task_name) = state.mark_task_idle(cwd, task_name_hint)
         && let Some(tx) = tg_tx
     {
         let _ = tx.send(telegram::TgOutbound::Notify {
@@ -1017,9 +1063,10 @@ fn handle_hook_idle(
 fn handle_hook_active(
     state: &mut ScreenState,
     cwd: &str,
+    task_name_hint: Option<&str>,
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
 ) {
-    if let Some(task_name) = state.mark_task_active(cwd)
+    if let Some(task_name) = state.mark_task_active(cwd, task_name_hint)
         && let Some(tx) = tg_tx
     {
         let _ = tx.send(telegram::TgOutbound::Notify {
@@ -1040,6 +1087,7 @@ fn handle_pretool_bash(
     state: &ScreenState,
     stream: UnixStream,
     cwd: &str,
+    task_name_hint: Option<&str>,
     payload: &serde_json::Value,
     data_dir: &std::path::Path,
 ) {
@@ -1058,8 +1106,8 @@ fn handle_pretool_bash(
         return;
     }
 
-    // Resolve work_dir from cwd — this is the worktree root
-    let worktree_path = match state.work_dir_for_cwd(cwd) {
+    // Resolve work_dir from cwd (or task name hint) — this is the worktree root
+    let worktree_path = match state.work_dir_for_cwd(cwd, task_name_hint) {
         Some(wd) => std::path::PathBuf::from(wd),
         None => return,
     };
@@ -1079,6 +1127,7 @@ fn handle_pretool_bash(
             state,
             &ToolEvent {
                 cwd,
+                task_name_hint,
                 tool_name: "Bash",
                 tool_input: Some(payload.get("tool_input").unwrap_or(payload)),
                 outcome: "pretool_allow",
@@ -1212,7 +1261,9 @@ fn handle_hook_permission(
     perm_id_counter: &mut u64,
     data_dir: &std::path::Path,
 ) {
-    let task_name = state.task_name_for_cwd_or(&req.cwd, TaskName::from(EXO_PERM_KEY.to_string()));
+    let hint = req.task_name_hint.as_deref();
+    let task_name =
+        state.task_name_for_cwd_or_hint(&req.cwd, hint, TaskName::from(EXO_PERM_KEY.to_string()));
     state.mark_task_active_by_name(&task_name);
 
     // ── Worktree-scope auto-approval ──────────────────────────────
@@ -1224,7 +1275,7 @@ fn handle_hook_permission(
     // who cd into a subdirectory still get auto-approval for files
     // anywhere in the worktree.
     const SCOPE_TOOLS: &[&str] = &["Read", "Edit", "Write", "Glob", "Grep"];
-    let worktree_root = state.work_dir_for_cwd(&req.cwd);
+    let worktree_root = state.work_dir_for_cwd(&req.cwd, hint);
     if SCOPE_TOOLS.contains(&req.tool_name.as_str()) {
         let target = req
             .tool_input
@@ -1240,6 +1291,7 @@ fn handle_hook_permission(
                 state,
                 &ToolEvent {
                     cwd: &req.cwd,
+                    task_name_hint: hint,
                     tool_name: &req.tool_name,
                     tool_input: req.tool_input.as_ref(),
                     outcome: "auto_approved",
@@ -1263,6 +1315,7 @@ fn handle_hook_permission(
                 state,
                 &ToolEvent {
                     cwd: &req.cwd,
+                    task_name_hint: hint,
                     tool_name: &req.tool_name,
                     tool_input: req.tool_input.as_ref(),
                     outcome: "auto_approved",
@@ -1297,6 +1350,7 @@ fn handle_hook_permission(
                     state,
                     &ToolEvent {
                         cwd: &req.cwd,
+                        task_name_hint: hint,
                         tool_name: &req.tool_name,
                         tool_input: req.tool_input.as_ref(),
                         outcome: "auto_approved",
@@ -1316,6 +1370,7 @@ fn handle_hook_permission(
         state,
         &ToolEvent {
             cwd: &req.cwd,
+            task_name_hint: hint,
             tool_name: &req.tool_name,
             tool_input: req.tool_input.as_ref(),
             outcome: "pending",
