@@ -572,20 +572,25 @@ async fn handle_task_chat_input_key<R: Runtime>(
     } else if kb.goto_window.matches(&key) {
         goto_task_window(state, app).await;
     } else if kb.send.matches(&key) {
-        let active = state.active_state_mut();
-        if !active.input.is_empty() {
-            let msg = active.input.take();
-            if let Some(task) = active.task_list.selected_task() {
-                let task_id = task.id.to_string();
-                let pane = task.tmux_pane.clone();
-                match app.send(&task_id, &msg).await {
-                    Ok(_) => {
-                        if let Some(pane) = pane {
-                            active.task_list.mark_pane_active(pane);
+        if state.is_paste_keystream() {
+            // Rapid Enter — part of a paste, not a deliberate send.
+            state.active_state_mut().input.insert('\n');
+        } else {
+            let active = state.active_state_mut();
+            if !active.input.is_empty() {
+                let msg = active.input.take();
+                if let Some(task) = active.task_list.selected_task() {
+                    let task_id = task.id.to_string();
+                    let pane = task.tmux_pane.clone();
+                    match app.send(&task_id, &msg).await {
+                        Ok(_) => {
+                            if let Some(pane) = pane {
+                                active.task_list.mark_pane_active(pane);
+                            }
                         }
-                    }
-                    Err(e) => {
-                        state.set_status_error(format!("send: {e}"));
+                        Err(e) => {
+                            state.set_status_error(format!("send: {e}"));
+                        }
                     }
                 }
             }
@@ -616,7 +621,12 @@ async fn handle_chat_input_key<R: Runtime>(
     } else if kb.focus_task_list.matches(&key) {
         state.focus_task_list_with_detail();
     } else if kb.send.matches(&key) {
-        handle_chat_enter(state, app, exo_session, project_contexts).await;
+        if state.is_paste_keystream() {
+            // Rapid Enter — part of a paste, not a deliberate send.
+            state.active_state_mut().input.insert('\n');
+        } else {
+            handle_chat_enter(state, app, exo_session, project_contexts).await;
+        }
     } else {
         handle_input_editing(&mut state.active_state_mut().input, &key);
     }

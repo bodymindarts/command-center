@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use crate::primitives::{ProjectId, ProjectName, TaskName};
 use crate::project::Project;
@@ -11,6 +12,10 @@ use super::project_list::ProjectListState;
 use super::project_state::ProjectState;
 use super::{Focus, InputState, PermissionStore};
 use crate::tui::permissions::ActivePermission;
+
+/// Maximum inter-key delay (in ms) for rapid-keystroke detection.
+/// Key events arriving faster than this are considered paste, not typing.
+const PASTE_DETECT_MS: u64 = 50;
 
 pub struct ScreenState {
     /// ExO workspace — always present.
@@ -47,6 +52,9 @@ pub struct ScreenState {
     global_task_skills: HashMap<TaskName, String>,
     /// User-configurable keybindings.
     pub keybindings: Keybindings,
+    /// Timestamp of the previously processed key event. Used to detect rapid
+    /// keystroke sequences (paste without bracketed-paste support).
+    prev_key_at: Option<Instant>,
 }
 
 impl ScreenState {
@@ -68,6 +76,7 @@ impl ScreenState {
             global_task_work_dirs: Vec::new(),
             global_task_skills: HashMap::new(),
             keybindings,
+            prev_key_at: None,
         }
     }
 
@@ -513,12 +522,26 @@ impl ScreenState {
         }
     }
 
-    // ── Paste ─────────────────────────────────────────────────────────
+    // ── Paste / rapid-keystroke detection ─────────────────────────────
 
     pub fn accept_paste(&mut self, text: String) {
         if matches!(self.focus, Focus::ChatInput) {
             self.active_state_mut().input.accept_paste(text);
         }
+    }
+
+    /// Record that a key event was just processed. Call this at the END of
+    /// each `Event::Key` iteration so the *next* event can measure elapsed time.
+    pub fn note_key_event(&mut self) {
+        self.prev_key_at = Some(Instant::now());
+    }
+
+    /// Returns `true` when the current key event arrived rapidly enough
+    /// after the previous one to be part of a paste (terminal without
+    /// bracketed-paste support). Call BEFORE [`note_key_event`].
+    pub fn is_paste_keystream(&self) -> bool {
+        self.prev_key_at
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(PASTE_DETECT_MS))
     }
 
     // ── Delegates to active ChatViewState ────────────────────────────

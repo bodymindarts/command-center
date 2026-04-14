@@ -421,6 +421,7 @@ async fn run_loop<R: Runtime>(
                             } else if !handlers::handle_global_keys(state, key, app, tg_tx).await {
                                 handlers::handle_focus_key(state, key, app, exo_session, project_contexts).await;
                             }
+                            state.note_key_event();
                         }
                         _ => {}
                     }

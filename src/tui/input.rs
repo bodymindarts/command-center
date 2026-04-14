@@ -49,13 +49,16 @@ impl InputState {
             .collect()
     }
 
-    /// Returns the display representation: typed text shown verbatim,
-    /// paste blocks shown as `[N lines pasted]` summaries.
+    /// Returns the display representation: typed text with newlines
+    /// shown as `↵`, paste blocks shown as `[N lines pasted]` summaries.
     pub fn display_text(&self) -> String {
         self.segments
             .iter()
             .map(|seg| match seg {
-                Segment::Typed(chars) => chars.iter().collect::<String>(),
+                Segment::Typed(chars) => chars
+                    .iter()
+                    .map(|&c| if c == '\n' { '↵' } else { c })
+                    .collect::<String>(),
                 Segment::Pasted(content) => paste_summary(content),
             })
             .collect()
@@ -660,5 +663,48 @@ mod tests {
         assert!(input.has_paste()); // first paste still there
         assert_eq!(input.buffer(), "a\nb ");
         assert_eq!(input.display_text(), "[2 lines pasted] ");
+    }
+
+    // ── newlines in typed segments (rapid-keystroke paste fallback) ──
+
+    #[test]
+    fn inserted_newline_shows_as_return_symbol() {
+        let mut input = InputState::new();
+        for c in "hello".chars() {
+            input.insert(c);
+        }
+        input.insert('\n');
+        for c in "world".chars() {
+            input.insert(c);
+        }
+        assert_eq!(input.buffer(), "hello\nworld");
+        assert_eq!(input.display_text(), "hello↵world");
+    }
+
+    #[test]
+    fn inserted_newline_cursor_position() {
+        let mut input = InputState::new();
+        input.insert('a');
+        input.insert('\n');
+        input.insert('b');
+        // Cursor at end: position 3 ('a' + '↵' + 'b')
+        assert_eq!(input.display_cursor(), 3);
+        assert_eq!(input.buffer(), "a\nb");
+        assert_eq!(input.display_text(), "a↵b");
+    }
+
+    #[test]
+    fn take_preserves_inserted_newlines() {
+        let mut input = InputState::new();
+        for c in "line1".chars() {
+            input.insert(c);
+        }
+        input.insert('\n');
+        for c in "line2".chars() {
+            input.insert(c);
+        }
+        let taken = input.take();
+        assert_eq!(taken, "line1\nline2");
+        assert!(input.is_empty());
     }
 }
