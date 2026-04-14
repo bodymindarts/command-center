@@ -872,13 +872,15 @@ fn register_local_mcp_server(work_dir: &Path, name: &str, url: &str, headers: &[
         "http".to_string(),
         "--scope".to_string(),
         "local".to_string(),
+        name.to_string(),
+        url.to_string(),
     ];
+    // --header is variadic (<header...>), so it must come after the
+    // positional <name> and <url> arguments to avoid swallowing them.
     for (key, value) in headers {
         args.push("--header".to_string());
         args.push(format!("{key}: {value}"));
     }
-    args.push(name.to_string());
-    args.push(url.to_string());
 
     let result = Command::new("claude")
         .args(&args)
@@ -889,10 +891,10 @@ fn register_local_mcp_server(work_dir: &Path, name: &str, url: &str, headers: &[
         Ok(output) if output.status.success() => {}
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            eprintln!("Warning: claude mcp add {name} failed: {stderr}");
+            tracing::warn!("claude mcp add {name} failed: {stderr}");
         }
         Err(e) => {
-            eprintln!("Warning: could not run claude mcp add {name}: {e}");
+            tracing::warn!("could not run claude mcp add {name}: {e}");
         }
     }
 }
