@@ -521,6 +521,9 @@ fn setup_worktree_config(
             .or_else(|| crate::permission::read_socket_breadcrumb(repo_root));
         if let Some(sock_path) = sock_path {
             embed_env_in_hooks(&mut settings, &sock_path, task_name);
+            // Write perm-socket breadcrumb into the worktree so that
+            // send_pm_message / send_exo_message can discover the socket.
+            let _ = std::fs::write(target_claude_dir.join("perm-socket"), &sock_path);
         }
 
         // Write .mcp.json at worktree root so Claude Code discovers the MCP server.
@@ -855,6 +858,9 @@ pub fn reembed_env_in_worktrees(tasks: &[(String, String)], sock_path: &str) {
         };
         embed_env_in_hooks(&mut settings, sock_path, Some(name));
         let _ = std::fs::write(&settings_path, settings.to_string());
+        // Also refresh the perm-socket breadcrumb so send_pm_message /
+        // send_exo_message can discover the (possibly new) socket path.
+        let _ = std::fs::write(Path::new(wd).join(".claude/perm-socket"), sock_path);
     }
 }
 
