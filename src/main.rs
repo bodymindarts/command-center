@@ -143,6 +143,32 @@ async fn cmd_dash<R: Runtime>(
     match mcp::start_mcp_server(Arc::clone(&app), MCP_PORT).await {
         Ok(url) => {
             mcp::write_mcp_url_breadcrumb(&project_root, &url);
+            // Write a project-root .mcp.json with an ExO-scoped JWT (no project)
+            // so the ExO Claude Code session connects without inheriting a stale
+            // project association.
+            let exo_claims = crate::jwt::AgentClaims {
+                sub: "exo".into(),
+                role: "exo".into(),
+                project: None,
+                iat: chrono::Utc::now().timestamp() as u64,
+            };
+            if let Ok(token) = app.jwt_signer().sign(&exo_claims) {
+                let mcp_json = serde_json::json!({
+                    "mcpServers": {
+                        "clat": {
+                            "type": "http",
+                            "url": format!("{url}?token={token}"),
+                            "headers": {
+                                "Authorization": format!("Bearer {token}")
+                            }
+                        }
+                    }
+                });
+                let _ = std::fs::write(
+                    project_root.join(".mcp.json"),
+                    serde_json::to_string_pretty(&mcp_json).unwrap(),
+                );
+            }
         }
         Err(e) => {
             eprintln!("warning: failed to start MCP server: {e}");
@@ -151,6 +177,7 @@ async fn cmd_dash<R: Runtime>(
 
     let result = tui::run(app, resume, caffeinate).await;
     mcp::remove_mcp_url_breadcrumb(&project_root);
+    let _ = std::fs::remove_file(project_root.join(".mcp.json"));
     result
 }
 
