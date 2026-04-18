@@ -821,17 +821,13 @@ impl<R: Runtime> ClatApp<R> {
             let content = format!("[from {sender} ({})] {message}", claims.role);
             if let Some(caller_project) = claims.project.as_deref() {
                 // Forward to project PM session via socket (mirrors cmd_project_send)
-                let _ = crate::permission::send_pm_message(
-                    self.project_root(),
-                    caller_project,
-                    &content,
-                );
+                crate::permission::send_pm_message(self.project_root(), caller_project, &content)?;
                 Ok(AgentSendOutput::Pm {
                     project: caller_project.to_string(),
                 })
             } else {
                 // Forward to ExO session via socket (mirrors cmd_exo_send)
-                let _ = crate::permission::send_exo_message(self.project_root(), &content);
+                crate::permission::send_exo_message(self.project_root(), &content)?;
                 Ok(AgentSendOutput::Exo)
             }
         } else {
