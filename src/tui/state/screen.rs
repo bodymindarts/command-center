@@ -977,6 +977,7 @@ mod tests {
             work_dir: Some("/tmp".to_string()),
             session_id: ClaudeSessionId::new(),
             project_id: None,
+            runtime: crate::runtime::RuntimeKind::Claude,
         };
         let events = new_task.into_events();
         Task::try_from_events(events).unwrap()

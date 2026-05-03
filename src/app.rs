@@ -8,7 +8,7 @@ use crate::primitives::{
     ChatId, ClaudeSessionId, MessageRole, ProjectId, ProjectName, TaskId, TaskName, WindowId,
 };
 use crate::project::{NewProject, Project};
-use crate::runtime::{LaunchConfig, Runtime};
+use crate::runtime::{LaunchConfig, Runtime, RuntimeKind};
 use crate::skill::SkillFile;
 use crate::store::Store;
 use crate::task::{NewTask, Task, TaskMessage};
@@ -37,6 +37,9 @@ pub struct SpawnRequest<'a> {
     pub work_dir_mode: WorkDirMode<'a>,
     pub prompt_mode: PromptMode,
     pub project: Option<String>,
+    /// Per-spawn runtime override. When `None`, the skill's configured runtime
+    /// is used (which itself defaults to `Claude`).
+    pub runtime: Option<RuntimeKind>,
 }
 
 #[derive(Debug)]
@@ -105,9 +108,12 @@ pub struct LogOutput {
 
 const EXO_CHAT: ChatId = ChatId::Exo;
 
-pub struct ClatApp<R: Runtime> {
+pub struct ClatApp {
     store: Store,
-    runtime: R,
+    /// Pluggable runtime registry, keyed by `RuntimeKind`. Phase 1 only
+    /// registers `Claude`; future phases add additional implementations
+    /// (e.g. `Goose`) by inserting into this map at construction time.
+    runtimes: HashMap<RuntimeKind, Arc<dyn Runtime>>,
     paths: Paths,
     skip_permissions: bool,
     jwt_signer: JwtSigner,
@@ -115,8 +121,16 @@ pub struct ClatApp<R: Runtime> {
     memory: agent_memory::service::MemoryService,
 }
 
-impl<R: Runtime> ClatApp<R> {
-    pub async fn init(runtime: R, skip_permissions: bool) -> anyhow::Result<Self> {
+impl ClatApp {
+    /// Look up a registered runtime by kind.
+    pub fn runtime(&self, kind: RuntimeKind) -> anyhow::Result<&dyn Runtime> {
+        self.runtimes
+            .get(&kind)
+            .map(|r| r.as_ref())
+            .ok_or_else(|| anyhow::anyhow!("runtime '{kind:?}' is not registered"))
+    }
+
+    pub async fn init(runtime: Arc<dyn Runtime>, skip_permissions: bool) -> anyhow::Result<Self> {
         let paths = Paths::resolve()?;
         paths.ensure_dirs()?;
         let store = Store::open(&paths.db_path).await?;
@@ -139,9 +153,11 @@ impl<R: Runtime> ClatApp<R> {
         let skip_permissions =
             skip_permissions || crate::permission::read_skip_permissions_breadcrumb(&paths.root);
         let jwt_signer = JwtSigner::load_or_create(&paths.data_dir.join("jwt-secret"))?;
+        let mut runtimes: HashMap<RuntimeKind, Arc<dyn Runtime>> = HashMap::new();
+        runtimes.insert(RuntimeKind::Claude, runtime);
         Ok(Self {
             store,
-            runtime,
+            runtimes,
             paths,
             skip_permissions,
             jwt_signer,
@@ -197,7 +213,7 @@ impl<R: Runtime> ClatApp<R> {
     }
 
     #[cfg(test)]
-    pub async fn new(store: Store, runtime: R, paths: Paths) -> Self {
+    pub async fn new(store: Store, runtime: Arc<dyn Runtime>, paths: Paths) -> Self {
         let jwt_signer = JwtSigner::load_or_create(&paths.data_dir.join("jwt-secret")).unwrap();
         let config = agent_memory::config::Config {
             memories_dir: paths.data_dir.join("memory"),
@@ -210,9 +226,11 @@ impl<R: Runtime> ClatApp<R> {
         let memory = agent_memory::service::MemoryService::new(&config)
             .await
             .unwrap();
+        let mut runtimes: HashMap<RuntimeKind, Arc<dyn Runtime>> = HashMap::new();
+        runtimes.insert(RuntimeKind::Claude, runtime);
         Self {
             store,
-            runtime,
+            runtimes,
             paths,
             skip_permissions: false,
             jwt_signer,
@@ -240,11 +258,6 @@ impl<R: Runtime> ClatApp<R> {
     #[cfg(test)]
     pub fn store(&self) -> &Store {
         &self.store
-    }
-
-    #[cfg(test)]
-    pub fn runtime(&self) -> &R {
-        &self.runtime
     }
 
     pub fn read_exo_session_id(&self) -> Option<String> {
@@ -297,6 +310,9 @@ impl<R: Runtime> ClatApp<R> {
             base_tools: &skill.agent.base_tools,
             bash_patterns: &skill.agent.allowed_bash_patterns,
         };
+        // Resolve runtime: per-spawn override > skill default > Claude.
+        let runtime_kind = req.runtime.or(skill.agent.runtime).unwrap_or_default();
+        let runtime = self.runtime(runtime_kind)?;
         // Sign a JWT for this task so the MCP server can identify the caller.
         let jwt_token = {
             let claims = crate::jwt::AgentClaims {
@@ -311,7 +327,7 @@ impl<R: Runtime> ClatApp<R> {
         let work_dir = match req.work_dir_mode {
             WorkDirMode::Worktree { repo, branch } => {
                 let worktree_name = format!("{}-{}", req.task_name, id.short());
-                self.runtime.create_worktree(
+                runtime.create_worktree(
                     repo,
                     &worktree_name,
                     &perms,
@@ -322,8 +338,8 @@ impl<R: Runtime> ClatApp<R> {
             }
             WorkDirMode::Scratch => {
                 let scratch_dir = self.paths.data_dir.join("scratch").join(req.task_name);
-                self.runtime.init_scratch_dir(&scratch_dir)?;
-                self.runtime.setup_dir_config(
+                runtime.init_scratch_dir(&scratch_dir)?;
+                runtime.setup_dir_config(
                     &self.paths.root,
                     &scratch_dir,
                     &perms,
@@ -333,7 +349,7 @@ impl<R: Runtime> ClatApp<R> {
                 scratch_dir
             }
             WorkDirMode::Existing { dir } => {
-                self.runtime.setup_dir_config(
+                runtime.setup_dir_config(
                     &self.paths.root,
                     dir,
                     &perms,
@@ -365,6 +381,7 @@ impl<R: Runtime> ClatApp<R> {
             work_dir: Some(work_dir.display().to_string()),
             session_id,
             project_id,
+            runtime: runtime_kind,
         };
         let mut task = self.store.tasks.create(new_task).await?;
 
@@ -378,7 +395,7 @@ impl<R: Runtime> ClatApp<R> {
 
         // 6. Launch agent
         let session_id_str = session_id.to_string();
-        let result = self.runtime.launch_agent(LaunchConfig {
+        let result = runtime.launch_agent(LaunchConfig {
             task_name: req.task_name,
             session_id: &session_id_str,
             system_prompt: system_prompt.as_deref(),
@@ -414,13 +431,14 @@ impl<R: Runtime> ClatApp<R> {
             );
         }
 
+        let runtime = self.runtime(task.runtime)?;
         let output = task
             .tmux_pane
             .as_ref()
-            .and_then(|pane| self.runtime.capture_pane_output(pane.as_str()).ok());
+            .and_then(|pane| runtime.capture_pane_output(pane.as_str()).ok());
 
         if let Some(ref window_id) = task.tmux_window {
-            let _ = self.runtime.kill_tmux_window(window_id.as_str());
+            let _ = runtime.kill_tmux_window(window_id.as_str());
         }
 
         if task.close(output).did_execute() {
@@ -435,18 +453,19 @@ impl<R: Runtime> ClatApp<R> {
 
     pub async fn delete(&self, task_id: &str) -> anyhow::Result<DeleteOutput> {
         let mut task = self.resolve_task(task_id).await?;
+        let runtime = self.runtime(task.runtime)?;
 
         if task.status.is_running()
             && let Some(ref window_id) = task.tmux_window
         {
-            let _ = self.runtime.kill_tmux_window(window_id.as_str());
+            let _ = runtime.kill_tmux_window(window_id.as_str());
         }
 
         // Clean up the git worktree if the task used one.
         if let Some(ref work_dir) = task.work_dir
             && work_dir.contains(".claude/worktrees/")
         {
-            let _ = self.runtime.remove_worktree(Path::new(work_dir));
+            let _ = runtime.remove_worktree(Path::new(work_dir));
         }
 
         let output_task_id = task.id;
@@ -465,6 +484,7 @@ impl<R: Runtime> ClatApp<R> {
 
     pub async fn reopen(&self, task_id: &str) -> anyhow::Result<WindowId> {
         let mut task = self.resolve_task(task_id).await?;
+        let runtime = self.runtime(task.runtime)?;
 
         if task.status.is_running() {
             bail!(
@@ -501,17 +521,16 @@ impl<R: Runtime> ClatApp<R> {
                     work_dir.display()
                 )
             })?;
-            self.runtime
-                .recreate_worktree(repo_root, work_dir, &jwt_token)?;
+            runtime.recreate_worktree(repo_root, work_dir, &jwt_token)?;
         }
 
         let session_id = task.session_id.map(|s| s.to_string()).unwrap_or_default();
         let result = if session_id.is_empty() {
             // Legacy task without session_id — fall back to re-running launch.sh
             // which already has the correct flags baked in from launch_agent().
-            self.runtime.relaunch_agent(task.name.as_str(), work_dir)?
+            runtime.relaunch_agent(task.name.as_str(), work_dir)?
         } else {
-            self.runtime.resume_agent(
+            runtime.resume_agent(
                 task.name.as_str(),
                 &session_id,
                 work_dir,
@@ -551,13 +570,14 @@ impl<R: Runtime> ClatApp<R> {
 
     pub async fn send(&self, id_prefix: &str, message: &str) -> anyhow::Result<SendOutput> {
         let task = self.resolve_task(id_prefix).await?;
+        let runtime = self.runtime(task.runtime)?;
 
         let pane_id = task
             .tmux_pane
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("task {} has no tmux pane", task.id.short()))?;
 
-        self.runtime.send_keys_to_pane(pane_id.as_str(), message)?;
+        runtime.send_keys_to_pane(pane_id.as_str(), message)?;
         let chat = ChatId::Task(task.id);
         self.store
             .insert_message(&chat, MessageRole::User, message)
@@ -571,17 +591,22 @@ impl<R: Runtime> ClatApp<R> {
 
     pub async fn goto(&self, id_prefix: &str) -> anyhow::Result<()> {
         let task = self.resolve_task(id_prefix).await?;
+        let runtime = self.runtime(task.runtime)?;
 
         let window_id = task
             .tmux_window
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("task {} has no tmux window", task.id.short()))?;
 
-        self.runtime.select_window(window_id.as_str())
+        runtime.select_window(window_id.as_str())
     }
 
     pub fn goto_window(&self, window_id: &WindowId) {
-        let _ = self.runtime.select_window(window_id.as_str());
+        // Window navigation isn't runtime-specific (tmux-level). Use any
+        // registered runtime — Claude is always present.
+        if let Ok(runtime) = self.runtime(RuntimeKind::Claude) {
+            let _ = runtime.select_window(window_id.as_str());
+        }
     }
 
     pub async fn log(&self, id_prefix: &str) -> anyhow::Result<LogOutput> {
@@ -590,9 +615,10 @@ impl<R: Runtime> ClatApp<R> {
         let messages = self.store.list_messages(&chat).await?;
 
         let live_output = if task.status.is_running() {
+            let runtime = self.runtime(task.runtime)?;
             task.tmux_pane
                 .as_ref()
-                .and_then(|pane| self.runtime.capture_pane_output(pane.as_str()).ok())
+                .and_then(|pane| runtime.capture_pane_output(pane.as_str()).ok())
         } else {
             None
         };
@@ -693,7 +719,11 @@ impl<R: Runtime> ClatApp<R> {
     }
 
     pub fn capture_pane(&self, pane_id: &str) -> Option<String> {
-        self.runtime.capture_pane_output(pane_id).ok()
+        // capture_pane_output is tmux-level and identical across runtimes;
+        // any registered runtime can serve.
+        self.runtime(RuntimeKind::Claude)
+            .ok()
+            .and_then(|r| r.capture_pane_output(pane_id).ok())
     }
 
     pub fn window_numbers(&self) -> HashMap<WindowId, String> {
@@ -745,15 +775,18 @@ impl<R: Runtime> ClatApp<R> {
             .list_visible_for_project(Some(&project.id))
             .await?;
         for mut task in tasks {
+            let runtime = self.runtime(task.runtime).ok();
             if task.status.is_running()
                 && let Some(ref window_id) = task.tmux_window
+                && let Some(rt) = runtime
             {
-                let _ = self.runtime.kill_tmux_window(window_id.as_str());
+                let _ = rt.kill_tmux_window(window_id.as_str());
             }
             if let Some(ref work_dir) = task.work_dir
                 && work_dir.contains(".claude/worktrees/")
+                && let Some(rt) = runtime
             {
-                let _ = self.runtime.remove_worktree(Path::new(work_dir));
+                let _ = rt.remove_worktree(Path::new(work_dir));
             }
             let _ = task.close(None);
             if task.delete().did_execute() {
@@ -880,7 +913,7 @@ mod tests {
     use anyhow::bail;
 
     use crate::primitives::{ClaudeSessionId, PaneId, TaskId, TaskName, TaskStatus, WindowId};
-    use crate::runtime::{LaunchConfig, Runtime, SpawnResult};
+    use crate::runtime::{LaunchConfig, Runtime, RuntimeKind, SpawnResult};
     use crate::store::Store;
     use crate::task::NewTask;
 
@@ -1082,6 +1115,10 @@ mod tests {
             });
             Ok(())
         }
+
+        fn is_pane_idle(&self, _pane_output: &str) -> bool {
+            true
+        }
     }
 
     fn test_paths(tmp: &Path) -> Paths {
@@ -1114,7 +1151,7 @@ prompt = "noop prompt"
         }
     }
 
-    async fn spawn_test_task(service: &ClatApp<impl Runtime>) -> SpawnOutput {
+    async fn spawn_test_task(service: &ClatApp) -> SpawnOutput {
         service
             .spawn(SpawnRequest {
                 task_name: "test-task",
@@ -1126,6 +1163,7 @@ prompt = "noop prompt"
                 },
                 prompt_mode: PromptMode::Full,
                 project: None,
+                runtime: None,
             })
             .await
             .expect("spawn should succeed")
@@ -1136,8 +1174,8 @@ prompt = "noop prompt"
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths).await;
+        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
+        let service = ClatApp::new(store, runtime.clone(), paths).await;
 
         let output = spawn_test_task(&service).await;
 
@@ -1158,7 +1196,7 @@ prompt = "noop prompt"
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, MessageRole::System);
 
-        let calls = service.runtime().calls.lock().unwrap();
+        let calls = runtime.calls.lock().unwrap();
         assert!(matches!(calls[0], Call::CreateWorktree { .. }));
         assert!(matches!(
             calls[1],
@@ -1174,8 +1212,8 @@ prompt = "noop prompt"
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths).await;
+        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
+        let service = ClatApp::new(store, runtime.clone(), paths).await;
 
         let spawned = spawn_test_task(&service).await;
         let result = service.close(&spawned.task_id.to_string()).await.unwrap();
@@ -1192,7 +1230,7 @@ prompt = "noop prompt"
         assert_eq!(task.status, TaskStatus::Closed);
         assert_eq!(task.output.as_deref(), Some("captured output"));
 
-        let calls = service.runtime().calls.lock().unwrap();
+        let calls = runtime.calls.lock().unwrap();
         let capture_pos = calls
             .iter()
             .position(|c| matches!(c, Call::CaptureOutput { .. }))
@@ -1209,8 +1247,8 @@ prompt = "noop prompt"
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths).await;
+        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
+        let service = ClatApp::new(store, runtime.clone(), paths).await;
 
         let spawned = spawn_test_task(&service).await;
         service
@@ -1228,9 +1266,9 @@ prompt = "noop prompt"
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
+        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
         *runtime.kill_should_fail.lock().unwrap() = true;
-        let service = ClatApp::new(store, runtime, paths).await;
+        let service = ClatApp::new(store, runtime.clone(), paths).await;
 
         let spawned = spawn_test_task(&service).await;
         let result = service.close(&spawned.task_id.to_string()).await;
@@ -1242,8 +1280,8 @@ prompt = "noop prompt"
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths).await;
+        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
+        let service = ClatApp::new(store, runtime.clone(), paths).await;
 
         let spawned = spawn_test_task(&service).await;
         let result = service
@@ -1254,7 +1292,7 @@ prompt = "noop prompt"
         assert_eq!(result.task_name, "test-task");
 
         {
-            let calls = service.runtime().calls.lock().unwrap();
+            let calls = runtime.calls.lock().unwrap();
             assert!(calls.iter().any(|c| matches!(c,
                 Call::SendKeys { pane_id, message }
                 if pane_id == "%fake-pane" && message == "hello agent"
@@ -1282,13 +1320,13 @@ prompt = "noop prompt"
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths).await;
+        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
+        let service = ClatApp::new(store, runtime.clone(), paths).await;
 
         let spawned = spawn_test_task(&service).await;
         service.goto(&spawned.task_id.to_string()).await.unwrap();
 
-        let calls = service.runtime().calls.lock().unwrap();
+        let calls = runtime.calls.lock().unwrap();
         assert!(calls.iter().any(|c| matches!(c,
             Call::SelectWindow { window_id } if window_id == "@fake-win"
         )));
@@ -1299,8 +1337,8 @@ prompt = "noop prompt"
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths).await;
+        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
+        let service = ClatApp::new(store, runtime.clone(), paths).await;
 
         // Create a task without launching agent (no tmux_window)
         let new_task = NewTask {
@@ -1311,6 +1349,7 @@ prompt = "noop prompt"
             work_dir: None,
             session_id: ClaudeSessionId::new(),
             project_id: None,
+            runtime: RuntimeKind::Claude,
         };
         let task = service.store().tasks.create(new_task).await.unwrap();
 
@@ -1324,8 +1363,8 @@ prompt = "noop prompt"
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths).await;
+        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
+        let service = ClatApp::new(store, runtime.clone(), paths).await;
 
         let spawned = spawn_test_task(&service).await;
         service
@@ -1345,8 +1384,8 @@ prompt = "noop prompt"
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths).await;
+        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
+        let service = ClatApp::new(store, runtime.clone(), paths).await;
 
         let spawned1 = spawn_test_task(&service).await;
         let _spawned2 = spawn_test_task(&service).await;
@@ -1385,8 +1424,8 @@ prompt = "deploy to {{ env }}"
         .unwrap();
 
         let store = Store::open_in_memory().await.unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths).await;
+        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
+        let service = ClatApp::new(store, runtime.clone(), paths).await;
 
         let skills = service.list_skills().unwrap();
         assert_eq!(skills.len(), 2);
@@ -1401,8 +1440,8 @@ prompt = "deploy to {{ env }}"
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths).await;
+        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
+        let service = ClatApp::new(store, runtime.clone(), paths).await;
 
         let spawned = spawn_test_task(&service).await;
         service
@@ -1414,7 +1453,7 @@ prompt = "deploy to {{ env }}"
         assert_eq!(window_id, "@fake-win");
 
         {
-            let calls = service.runtime().calls.lock().unwrap();
+            let calls = runtime.calls.lock().unwrap();
             let resume_call = calls
                 .iter()
                 .find(|c| matches!(c, Call::ResumeAgent { .. }))
@@ -1455,8 +1494,8 @@ prompt = "deploy to {{ env }}"
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths).await;
+        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
+        let service = ClatApp::new(store, runtime.clone(), paths).await;
 
         let spawned = spawn_test_task(&service).await;
         service
@@ -1478,7 +1517,7 @@ prompt = "deploy to {{ env }}"
         assert_eq!(window_id, "@fake-win");
 
         {
-            let calls = service.runtime().calls.lock().unwrap();
+            let calls = runtime.calls.lock().unwrap();
             assert!(
                 calls
                     .iter()
@@ -1502,8 +1541,8 @@ prompt = "deploy to {{ env }}"
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths).await;
+        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
+        let service = ClatApp::new(store, runtime.clone(), paths).await;
 
         let spawned = spawn_test_task(&service).await;
 
@@ -1517,8 +1556,8 @@ prompt = "deploy to {{ env }}"
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths).await;
+        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
+        let service = ClatApp::new(store, runtime.clone(), paths).await;
 
         let output = service
             .spawn(SpawnRequest {
@@ -1530,6 +1569,7 @@ prompt = "deploy to {{ env }}"
                 },
                 prompt_mode: PromptMode::Interactive,
                 project: None,
+                runtime: None,
             })
             .await
             .unwrap();
@@ -1542,7 +1582,7 @@ prompt = "deploy to {{ env }}"
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].name, "nw-task");
 
-        let calls = service.runtime().calls.lock().unwrap();
+        let calls = runtime.calls.lock().unwrap();
         assert!(
             !calls
                 .iter()
@@ -1564,8 +1604,8 @@ prompt = "deploy to {{ env }}"
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths).await;
+        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
+        let service = ClatApp::new(store, runtime.clone(), paths).await;
 
         let custom_repo = tmp.path().join("other-repo");
         std::fs::create_dir_all(&custom_repo).unwrap();
@@ -1578,6 +1618,7 @@ prompt = "deploy to {{ env }}"
                 work_dir_mode: WorkDirMode::Existing { dir: &custom_repo },
                 prompt_mode: PromptMode::Interactive,
                 project: None,
+                runtime: None,
             })
             .await
             .unwrap();
@@ -1595,7 +1636,7 @@ prompt = "deploy to {{ env }}"
             Some(custom_repo.to_str().unwrap())
         );
 
-        let calls = service.runtime().calls.lock().unwrap();
+        let calls = runtime.calls.lock().unwrap();
         let setup_call = calls
             .iter()
             .find(|c| matches!(c, Call::SetupDirConfig { .. }))
@@ -1610,8 +1651,8 @@ prompt = "deploy to {{ env }}"
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths).await;
+        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
+        let service = ClatApp::new(store, runtime.clone(), paths).await;
 
         let output = service
             .spawn(SpawnRequest {
@@ -1621,6 +1662,7 @@ prompt = "deploy to {{ env }}"
                 work_dir_mode: WorkDirMode::Scratch,
                 prompt_mode: PromptMode::Full,
                 project: None,
+                runtime: None,
             })
             .await
             .unwrap();
@@ -1639,7 +1681,7 @@ prompt = "deploy to {{ env }}"
             Some(expected_scratch.to_str().unwrap())
         );
 
-        let calls = service.runtime().calls.lock().unwrap();
+        let calls = runtime.calls.lock().unwrap();
         assert!(
             !calls
                 .iter()
@@ -1662,8 +1704,8 @@ prompt = "deploy to {{ env }}"
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths).await;
+        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
+        let service = ClatApp::new(store, runtime.clone(), paths).await;
 
         let project = service
             .create_project("web-app", "frontend project")
@@ -1683,8 +1725,8 @@ prompt = "deploy to {{ env }}"
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths).await;
+        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
+        let service = ClatApp::new(store, runtime.clone(), paths).await;
 
         service.create_project("temp-proj", "").await.unwrap();
         assert_eq!(service.list_projects().await.unwrap().len(), 1);
@@ -1698,8 +1740,8 @@ prompt = "deploy to {{ env }}"
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths).await;
+        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
+        let service = ClatApp::new(store, runtime.clone(), paths).await;
 
         let proj = service.create_project("doomed", "").await.unwrap();
         let proj_id = proj.id;
@@ -1716,6 +1758,7 @@ prompt = "deploy to {{ env }}"
                 },
                 prompt_mode: PromptMode::Full,
                 project: Some("doomed".to_string()),
+                runtime: None,
             })
             .await
             .unwrap();
@@ -1750,8 +1793,8 @@ prompt = "deploy to {{ env }}"
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths).await;
+        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
+        let service = ClatApp::new(store, runtime.clone(), paths).await;
 
         let err = service.delete_project("ghost").await;
         assert!(err.is_err());
@@ -1762,8 +1805,8 @@ prompt = "deploy to {{ env }}"
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let store = Store::open_in_memory().await.unwrap();
-        let runtime = FakeRuntime::new(tmp.path());
-        let service = ClatApp::new(store, runtime, paths).await;
+        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
+        let service = ClatApp::new(store, runtime.clone(), paths).await;
 
         let proj = service.create_project("test-proj", "").await.unwrap();
         let proj_id = proj.id;
@@ -1778,6 +1821,7 @@ prompt = "deploy to {{ env }}"
                 },
                 prompt_mode: PromptMode::Full,
                 project: Some("test-proj".to_string()),
+                runtime: None,
             })
             .await
             .unwrap();

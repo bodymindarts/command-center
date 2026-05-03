@@ -5,6 +5,8 @@ use anyhow::{Context, bail};
 use minijinja::context;
 use serde::Deserialize;
 
+use crate::runtime::RuntimeKind;
+
 /// Controls which set of base Bash permissions an agent inherits.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -52,6 +54,10 @@ pub struct AgentConfig {
     pub base_tools: BaseTools,
     #[serde(default)]
     pub allowed_bash_patterns: Vec<String>,
+    /// Which runtime drives this skill's task. Defaults to `Claude` when unset
+    /// so existing skill TOMLs don't need updates.
+    #[serde(default)]
+    pub runtime: Option<RuntimeKind>,
 }
 
 fn default_model() -> String {
