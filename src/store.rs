@@ -223,6 +223,7 @@ mod tests {
             work_dir: None,
             session_id: ClaudeSessionId::new(),
             project_id: None,
+            runtime: crate::runtime::RuntimeKind::Claude,
         };
         let mut task = store.tasks.create(new_task).await.unwrap();
         let _ = task.launch_agent(
@@ -246,6 +247,7 @@ mod tests {
             work_dir: None,
             session_id: ClaudeSessionId::new(),
             project_id: project_id.copied(),
+            runtime: crate::runtime::RuntimeKind::Claude,
         };
         let mut task = store.tasks.create(new_task).await.unwrap();
         let _ = task.launch_agent(

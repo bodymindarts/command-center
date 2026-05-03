@@ -25,7 +25,6 @@ use crate::app::ClatApp;
 use crate::assistant::{AssistantEvent, AssistantSession, EXO_SYSTEM_PROMPT, SessionKey};
 use crate::permission::HookEvent;
 use crate::primitives::ProjectId;
-use crate::runtime::Runtime;
 use state::{ProjectState, ScreenState};
 
 /// Holds the project session and bridge for a single project.
@@ -69,7 +68,7 @@ fn cancel_project_context(
 }
 
 /// Build a fully-initialized ProjectState: loads session ID and chat history from the DB.
-async fn build_project_state<R: Runtime>(app: &ClatApp<R>, project_id: &ProjectId) -> ProjectState {
+async fn build_project_state(app: &ClatApp, project_id: &ProjectId) -> ProjectState {
     let mut assistant = chat::AssistantChat::new();
     assistant.session_id = app.read_project_session_id(project_id);
     if let Ok(messages) = app.session_messages(Some(project_id)).await {
@@ -80,9 +79,9 @@ async fn build_project_state<R: Runtime>(app: &ClatApp<R>, project_id: &ProjectI
 }
 
 /// Initialize a project: build its ProjectState, add it to ScreenState, return a ProjectContext.
-async fn init_project_context<R: Runtime>(
+async fn init_project_context(
     state: &mut ScreenState,
-    app: &ClatApp<R>,
+    app: &ClatApp,
     project_id: &ProjectId,
     project_name: &str,
     event_tx: mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
@@ -119,8 +118,8 @@ fn spawn_caffeinate() -> Option<std::process::Child> {
     }
 }
 
-pub async fn run<R: Runtime>(
-    app: Arc<ClatApp<R>>,
+pub async fn run(
+    app: Arc<ClatApp>,
     resume_session: Option<&str>,
     caffeinate: bool,
 ) -> anyhow::Result<()> {
@@ -342,12 +341,12 @@ pub async fn run<R: Runtime>(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_loop<R: Runtime>(
+async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     state: &mut ScreenState,
     exo_session: &mut AssistantSession,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
-    app: &ClatApp<R>,
+    app: &ClatApp,
     assistant_rx: &mut mpsc::UnboundedReceiver<(SessionKey, AssistantEvent)>,
     hook_rx: &mut mpsc::UnboundedReceiver<(HookEvent, UnixStream)>,
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,

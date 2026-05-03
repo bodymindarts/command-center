@@ -3,9 +3,24 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, bail};
+use rmcp::schemars;
+use serde::{Deserialize, Serialize};
 
 use crate::primitives::{PaneId, WindowId};
 use crate::skill::BaseTools;
+
+/// Identifies which runtime implementation handles a task.
+///
+/// Phase 1 only registers `Claude`; additional variants will be added later
+/// (e.g. `Goose` for the Goose harness) without changing the registry shape.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum RuntimeKind {
+    #[default]
+    Claude,
+}
 
 pub struct SpawnResult {
     pub window_id: WindowId,
@@ -82,11 +97,16 @@ pub trait Runtime: Send + Sync + 'static {
     fn remove_worktree(&self, path: &Path) -> anyhow::Result<()>;
     fn kill_tmux_window(&self, window_id: &str) -> anyhow::Result<()>;
     fn select_window(&self, window_id: &str) -> anyhow::Result<()>;
+    /// Returns whether the captured pane output indicates the agent is idle
+    /// (i.e. not actively working on a tool call). The interpretation of
+    /// `pane_output` is runtime-specific.
+    fn is_pane_idle(&self, pane_output: &str) -> bool;
 }
 
-pub struct TmuxRuntime;
+/// Runtime that drives the Claude Code CLI inside tmux panes.
+pub struct TmuxClaudeRuntime;
 
-impl TmuxRuntime {
+impl TmuxClaudeRuntime {
     fn tmux_cmd(&self, args: &[&str]) -> anyhow::Result<String> {
         tmux_cmd(args)
     }
@@ -169,7 +189,7 @@ impl TmuxRuntime {
     }
 }
 
-impl Runtime for TmuxRuntime {
+impl Runtime for TmuxClaudeRuntime {
     fn setup_dir_config(
         &self,
         hooks_source: &Path,
@@ -469,6 +489,18 @@ impl Runtime for TmuxRuntime {
     fn select_window(&self, window_id: &str) -> anyhow::Result<()> {
         self.tmux_cmd(&["select-window", "-t", window_id])?;
         Ok(())
+    }
+
+    /// A Claude pane is idle when its last non-empty line does NOT contain
+    /// "esc" (case-insensitive); Claude Code shows "esc to interrupt" /
+    /// "Esc to cancel" while actively working on a tool call.
+    fn is_pane_idle(&self, pane_output: &str) -> bool {
+        let last_line = pane_output
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("");
+        !last_line.to_ascii_lowercase().contains("esc")
     }
 }
 
@@ -964,21 +996,15 @@ pub fn tmux_window_numbers() -> HashMap<WindowId, String> {
     map
 }
 
-/// Returns the set of pane IDs that appear idle by inspecting the Claude Code UI.
-/// A pane is idle when its last non-empty line does NOT contain "esc" (case-insensitive),
-/// since Claude Code shows "esc to interrupt" / "Esc to cancel" while actively working.
-pub fn idle_panes(pane_ids: &[&PaneId]) -> HashSet<PaneId> {
+/// Returns the set of pane IDs that appear idle, using the supplied runtime's
+/// `is_pane_idle` heuristic against each pane's captured tmux output.
+pub fn idle_panes(runtime: &dyn Runtime, pane_ids: &[&PaneId]) -> HashSet<PaneId> {
     let mut set = HashSet::new();
     for pane_id in pane_ids {
-        if let Ok(output) = tmux_cmd(&["capture-pane", "-p", "-t", pane_id.as_str()]) {
-            let last_line = output
-                .lines()
-                .rev()
-                .find(|l| !l.trim().is_empty())
-                .unwrap_or("");
-            if !last_line.to_ascii_lowercase().contains("esc") {
-                set.insert((*pane_id).clone());
-            }
+        if let Ok(output) = tmux_cmd(&["capture-pane", "-p", "-t", pane_id.as_str()])
+            && runtime.is_pane_idle(&output)
+        {
+            set.insert((*pane_id).clone());
         }
     }
     set
