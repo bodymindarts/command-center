@@ -209,9 +209,21 @@ impl AssistantSession {
         if self.skip_permissions {
             args.push("--dangerously-skip-permissions".to_string());
         } else {
+            // ExO and PM sessions auto-approve:
+            //  - basic file/shell tools
+            //  - drua gateway tools (read-only operational tooling)
             args.extend([
                 "--allowedTools".to_string(),
-                "Read,Grep,Glob,Bash,Edit,Write".to_string(),
+                concat!(
+                    "Read,Grep,Glob,Bash,Edit,Write,",
+                    "mcp__drua__whoami,",
+                    "mcp__drua__search_tools,",
+                    "mcp__drua__describe_tool,",
+                    "mcp__drua__call_tool,",
+                    "mcp__drua__compose,",
+                    "mcp__drua__compose_types",
+                )
+                .to_string(),
             ]);
         }
         args.extend([
