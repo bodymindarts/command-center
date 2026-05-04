@@ -11,13 +11,14 @@ use rmcp::schemars;
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 
 use crate::app::{AgentSendOutput, ClatApp, PromptMode, SpawnRequest, WorkDirMode};
+use crate::harness::HarnessKind;
 use crate::jwt::JwtSigner;
-use crate::runtime::RuntimeKind;
+use crate::runtime::Runtime;
 
 use agent_memory::memory::NewMemory;
 
 // ---------------------------------------------------------------------------
-// MCP server — uses ClatApp's runtime registry internally
+// MCP server — generic over R: Runtime, dispatches harnesses dynamically.
 // ---------------------------------------------------------------------------
 
 /// MCP server that exposes clat commands as tools.
@@ -25,13 +26,13 @@ use agent_memory::memory::NewMemory;
 /// Runs inside the dashboard process and serves spawned agents
 /// over HTTP on localhost.
 #[derive(Clone)]
-pub struct ClatMcpServer {
-    app: Arc<ClatApp>,
+pub struct ClatMcpServer<R: Runtime> {
+    app: Arc<ClatApp<R>>,
     tool_router: ToolRouter<Self>,
 }
 
-impl ClatMcpServer {
-    pub fn new(app: Arc<ClatApp>) -> Self {
+impl<R: Runtime> ClatMcpServer<R> {
+    pub fn new(app: Arc<ClatApp<R>>) -> Self {
         let mut router = Self::tool_router();
         router.add_route(Self::create_watch_route(Arc::clone(&app)));
         router.add_route(Self::cancel_watch_route(Arc::clone(&app)));
@@ -49,7 +50,7 @@ impl ClatMcpServer {
         }
     }
 
-    fn create_watch_route(app: Arc<ClatApp>) -> ToolRoute<Self> {
+    fn create_watch_route(app: Arc<ClatApp<R>>) -> ToolRoute<Self> {
         let schema = serde_json::json!({
             "type": "object",
             "required": ["label", "check", "name"],
@@ -112,7 +113,7 @@ impl ClatMcpServer {
 
         ToolRoute::new_dyn(
             tool,
-            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer>| {
+            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
                 let app = Arc::clone(&app);
                 Box::pin(async move {
                     // Extract task_id from JWT claims via request extensions.
@@ -201,7 +202,7 @@ impl ClatMcpServer {
             },
         )
     }
-    fn cancel_watch_route(app: Arc<ClatApp>) -> ToolRoute<Self> {
+    fn cancel_watch_route(app: Arc<ClatApp<R>>) -> ToolRoute<Self> {
         let schema = serde_json::json!({
             "type": "object",
             "required": ["watch_id"],
@@ -223,7 +224,7 @@ impl ClatMcpServer {
 
         ToolRoute::new_dyn(
             tool,
-            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer>| {
+            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
                 let app = Arc::clone(&app);
                 Box::pin(async move {
                     let task_id_str = ctx
@@ -271,7 +272,7 @@ impl ClatMcpServer {
         )
     }
 
-    fn list_watches_route(app: Arc<ClatApp>) -> ToolRoute<Self> {
+    fn list_watches_route(app: Arc<ClatApp<R>>) -> ToolRoute<Self> {
         let schema = serde_json::json!({
             "type": "object",
             "properties": {},
@@ -287,7 +288,7 @@ impl ClatMcpServer {
 
         ToolRoute::new_dyn(
             tool,
-            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer>| {
+            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
                 let app = Arc::clone(&app);
                 Box::pin(async move {
                     let task_id_str = ctx
@@ -319,7 +320,7 @@ impl ClatMcpServer {
         )
     }
 
-    fn send_message_route(app: Arc<ClatApp>) -> ToolRoute<Self> {
+    fn send_message_route(app: Arc<ClatApp<R>>) -> ToolRoute<Self> {
         let schema = serde_json::json!({
             "type": "object",
             "required": ["target", "message"],
@@ -344,7 +345,7 @@ impl ClatMcpServer {
 
         ToolRoute::new_dyn(
             tool,
-            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer>| {
+            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
                 let app = Arc::clone(&app);
                 Box::pin(async move {
                     let claims = ctx
@@ -421,7 +422,7 @@ impl ClatMcpServer {
         )
     }
 
-    fn list_tasks_route(app: Arc<ClatApp>) -> ToolRoute<Self> {
+    fn list_tasks_route(app: Arc<ClatApp<R>>) -> ToolRoute<Self> {
         let schema = serde_json::json!({
             "type": "object",
             "properties": {
@@ -442,7 +443,7 @@ impl ClatMcpServer {
 
         ToolRoute::new_dyn(
             tool,
-            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer>| {
+            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
                 let app = Arc::clone(&app);
                 Box::pin(async move {
                     // Prefer project from JWT claims, fall back to explicit parameter.
@@ -468,18 +469,19 @@ impl ClatMcpServer {
                         }
                     };
 
-                    // Determine idle/active status for running tasks.
-                    let running_pane_ids: Vec<crate::primitives::PaneId> = tasks
-                        .iter()
-                        .filter(|t| t.status.is_running())
-                        .filter_map(|t| t.tmux_pane.clone())
-                        .collect();
-                    let pane_refs: Vec<&crate::primitives::PaneId> =
-                        running_pane_ids.iter().collect();
-                    let idle = match app.runtime(RuntimeKind::Claude) {
-                        Ok(rt) => crate::runtime::idle_panes(rt, &pane_refs),
-                        Err(_) => Default::default(),
-                    };
+                    // Determine idle/active status for running tasks by
+                    // asking each task's harness to interpret its pane.
+                    let mut idle: std::collections::HashSet<crate::primitives::PaneId> =
+                        std::collections::HashSet::new();
+                    for t in tasks.iter().filter(|t| t.status.is_running()) {
+                        if let Some(ref pane) = t.tmux_pane
+                            && let Ok(output) = app.runtime().capture_pane_output(pane.as_str())
+                            && let Ok(harness) = app.harness(t.harness)
+                            && harness.is_pane_idle(&output)
+                        {
+                            idle.insert(pane.clone());
+                        }
+                    }
 
                     let items: Vec<serde_json::Value> = tasks
                         .iter()
@@ -513,7 +515,7 @@ impl ClatMcpServer {
         )
     }
 
-    fn store_memory_route(app: Arc<ClatApp>) -> ToolRoute<Self> {
+    fn store_memory_route(app: Arc<ClatApp<R>>) -> ToolRoute<Self> {
         let schema = serde_json::json!({
             "type": "object",
             "required": ["title", "content"],
@@ -552,7 +554,7 @@ impl ClatMcpServer {
 
         ToolRoute::new_dyn(
             tool,
-            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer>| {
+            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
                 let app = Arc::clone(&app);
                 Box::pin(async move {
                     let claims = ctx
@@ -636,7 +638,7 @@ impl ClatMcpServer {
         )
     }
 
-    fn search_memory_route(app: Arc<ClatApp>) -> ToolRoute<Self> {
+    fn search_memory_route(app: Arc<ClatApp<R>>) -> ToolRoute<Self> {
         let schema = serde_json::json!({
             "type": "object",
             "required": ["query"],
@@ -667,7 +669,7 @@ impl ClatMcpServer {
 
         ToolRoute::new_dyn(
             tool,
-            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer>| {
+            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
                 let app = Arc::clone(&app);
                 Box::pin(async move {
                     let args = ctx.arguments.unwrap_or_default();
@@ -735,7 +737,7 @@ impl ClatMcpServer {
         )
     }
 
-    fn list_memories_route(app: Arc<ClatApp>) -> ToolRoute<Self> {
+    fn list_memories_route(app: Arc<ClatApp<R>>) -> ToolRoute<Self> {
         let schema = serde_json::json!({
             "type": "object",
             "properties": {
@@ -765,7 +767,7 @@ impl ClatMcpServer {
 
         ToolRoute::new_dyn(
             tool,
-            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer>| {
+            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
                 let app = Arc::clone(&app);
                 Box::pin(async move {
                     let args = ctx.arguments.unwrap_or_default();
@@ -826,7 +828,7 @@ impl ClatMcpServer {
         )
     }
 
-    fn get_memory_route(app: Arc<ClatApp>) -> ToolRoute<Self> {
+    fn get_memory_route(app: Arc<ClatApp<R>>) -> ToolRoute<Self> {
         let schema = serde_json::json!({
             "type": "object",
             "required": ["memory_id"],
@@ -848,7 +850,7 @@ impl ClatMcpServer {
 
         ToolRoute::new_dyn(
             tool,
-            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer>| {
+            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
                 let app = Arc::clone(&app);
                 Box::pin(async move {
                     let args = ctx.arguments.unwrap_or_default();
@@ -892,7 +894,7 @@ impl ClatMcpServer {
         )
     }
 
-    fn task_log_route(app: Arc<ClatApp>) -> ToolRoute<Self> {
+    fn task_log_route(app: Arc<ClatApp<R>>) -> ToolRoute<Self> {
         let schema = serde_json::json!({
             "type": "object",
             "required": ["task_id"],
@@ -919,7 +921,7 @@ impl ClatMcpServer {
 
         ToolRoute::new_dyn(
             tool,
-            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer>| {
+            move |ctx: rmcp::handler::server::tool::ToolCallContext<'_, ClatMcpServer<R>>| {
                 let app = Arc::clone(&app);
                 Box::pin(async move {
                     // Extract caller's project from JWT claims for scoping.
@@ -1016,13 +1018,13 @@ struct SpawnParams {
     branch: Option<String>,
     /// If true, create a scratch directory instead of a git worktree
     scratch: Option<bool>,
-    /// Runtime to drive the spawned agent. Defaults to the skill's
-    /// configured runtime, which itself defaults to `claude`.
-    runtime: Option<RuntimeKind>,
+    /// Agent harness to drive the spawned task. Defaults to the skill's
+    /// configured harness, which itself defaults to `claude`.
+    harness: Option<HarnessKind>,
 }
 
 #[tool_router]
-impl ClatMcpServer {
+impl<R: Runtime> ClatMcpServer<R> {
     #[tool(
         description = "Spawn a new task agent. Creates a git worktree, loads the skill template, and launches a Claude Code session."
     )]
@@ -1077,7 +1079,7 @@ impl ClatMcpServer {
                 work_dir_mode,
                 prompt_mode,
                 project,
-                runtime: params.runtime,
+                harness: params.harness,
             })
             .await;
 
@@ -1101,7 +1103,7 @@ impl ClatMcpServer {
 }
 
 #[tool_handler]
-impl ServerHandler for ClatMcpServer {
+impl<R: Runtime> ServerHandler for ClatMcpServer<R> {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("clat", env!("CARGO_PKG_VERSION")))
@@ -1200,7 +1202,10 @@ async fn jwt_auth_middleware(
 /// Start the MCP HTTP server as a background tokio task.
 ///
 /// Returns the URL the server is listening on.
-pub async fn start_mcp_server(app: Arc<ClatApp>, port: u16) -> anyhow::Result<String> {
+pub async fn start_mcp_server<R: Runtime>(
+    app: Arc<ClatApp<R>>,
+    port: u16,
+) -> anyhow::Result<String> {
     use rmcp::transport::streamable_http_server::{
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
     };

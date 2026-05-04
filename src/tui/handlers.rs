@@ -9,6 +9,7 @@ use crate::app::ClatApp;
 use crate::assistant::{AssistantEvent, AssistantSession, SessionKey};
 use crate::permission::{HookEvent, PermissionRequest};
 use crate::primitives::{ChatId, MessageRole, ProjectId, TaskName};
+use crate::runtime::Runtime;
 
 use super::ProjectContext;
 use super::permissions::ActivePermission;
@@ -222,10 +223,10 @@ pub(super) fn handle_paste(state: &mut ScreenState, text: String) {
 // ── Global key handler ──────────────────────────────────────────────
 
 /// Handle global key shortcuts. Returns true if the key was consumed.
-pub(super) async fn handle_global_keys(
+pub(super) async fn handle_global_keys<R: Runtime>(
     state: &mut ScreenState,
     key: KeyEvent,
-    app: &ClatApp,
+    app: &ClatApp<R>,
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
 ) -> bool {
     let kb = &state.keybindings.global;
@@ -311,7 +312,7 @@ pub(super) async fn handle_global_keys(
     false
 }
 
-async fn handle_cycle_permissions(state: &mut ScreenState, app: &ClatApp) -> bool {
+async fn handle_cycle_permissions<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) -> bool {
     let names = state.permissions.task_names_with_pending();
     if !names.is_empty() {
         let current = state.focused_perm_key();
@@ -389,7 +390,7 @@ fn handle_askuser_select(
     }
 }
 
-async fn handle_goto_project(state: &mut ScreenState, app: &ClatApp) {
+async fn handle_goto_project<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
     // If in a project's task detail, go back to PM chat
     if state.is_detail_visible() && state.active_project_id.is_some() {
         state.close_task_detail();
@@ -436,10 +437,10 @@ async fn handle_goto_project(state: &mut ScreenState, app: &ClatApp) {
 
 // ── Per-focus key handlers ──────────────────────────────────────────
 
-pub(super) async fn handle_focus_key(
+pub(super) async fn handle_focus_key<R: Runtime>(
     state: &mut ScreenState,
     key: KeyEvent,
-    app: &ClatApp,
+    app: &ClatApp<R>,
     exo_session: &mut AssistantSession,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
 ) {
@@ -463,7 +464,11 @@ pub(super) async fn handle_focus_key(
     }
 }
 
-async fn handle_task_list_key(state: &mut ScreenState, key: KeyEvent, app: &ClatApp) {
+async fn handle_task_list_key<R: Runtime>(
+    state: &mut ScreenState,
+    key: KeyEvent,
+    app: &ClatApp<R>,
+) {
     let kb = &state.keybindings.task_list;
     if kb.close_detail.matches(&key) {
         state.close_task_detail();
@@ -509,7 +514,11 @@ fn handle_task_search_key(state: &mut ScreenState, key: KeyEvent) {
     }
 }
 
-async fn handle_project_list_key(state: &mut ScreenState, key: KeyEvent, app: &ClatApp) {
+async fn handle_project_list_key<R: Runtime>(
+    state: &mut ScreenState,
+    key: KeyEvent,
+    app: &ClatApp<R>,
+) {
     let kb = &state.keybindings.project_list;
     if kb.navigate_down.matches(&key) {
         state.next_project();
@@ -537,7 +546,11 @@ async fn handle_project_list_key(state: &mut ScreenState, key: KeyEvent, app: &C
     }
 }
 
-async fn handle_task_chat_input_key(state: &mut ScreenState, key: KeyEvent, app: &ClatApp) {
+async fn handle_task_chat_input_key<R: Runtime>(
+    state: &mut ScreenState,
+    key: KeyEvent,
+    app: &ClatApp<R>,
+) {
     let kb = &state.keybindings.task_chat;
     if kb.close_detail.matches(&key) {
         state.close_task_detail();
@@ -587,10 +600,10 @@ async fn handle_task_chat_input_key(state: &mut ScreenState, key: KeyEvent, app:
     }
 }
 
-async fn handle_chat_input_key(
+async fn handle_chat_input_key<R: Runtime>(
     state: &mut ScreenState,
     key: KeyEvent,
-    app: &ClatApp,
+    app: &ClatApp<R>,
     exo_session: &mut AssistantSession,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
 ) {
@@ -619,9 +632,9 @@ async fn handle_chat_input_key(
     }
 }
 
-async fn handle_chat_enter(
+async fn handle_chat_enter<R: Runtime>(
     state: &mut ScreenState,
-    app: &ClatApp,
+    app: &ClatApp<R>,
     exo_session: &mut AssistantSession,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
 ) {
@@ -672,7 +685,11 @@ fn handle_chat_history_key(state: &mut ScreenState, key: KeyEvent) {
     }
 }
 
-async fn handle_confirm_delete_key(state: &mut ScreenState, key: KeyEvent, app: &ClatApp) {
+async fn handle_confirm_delete_key<R: Runtime>(
+    state: &mut ScreenState,
+    key: KeyEvent,
+    app: &ClatApp<R>,
+) {
     let task_id = match state.current_focus() {
         Focus::ConfirmDelete(id) => *id,
         _ => return,
@@ -692,7 +709,11 @@ async fn handle_confirm_delete_key(state: &mut ScreenState, key: KeyEvent, app: 
     }
 }
 
-async fn handle_confirm_close_task_key(state: &mut ScreenState, key: KeyEvent, app: &ClatApp) {
+async fn handle_confirm_close_task_key<R: Runtime>(
+    state: &mut ScreenState,
+    key: KeyEvent,
+    app: &ClatApp<R>,
+) {
     let task_id = match state.current_focus() {
         Focus::ConfirmCloseTask(id) => *id,
         _ => return,
@@ -717,7 +738,11 @@ async fn handle_confirm_close_task_key(state: &mut ScreenState, key: KeyEvent, a
     }
 }
 
-async fn handle_confirm_delete_project_key(state: &mut ScreenState, key: KeyEvent, app: &ClatApp) {
+async fn handle_confirm_delete_project_key<R: Runtime>(
+    state: &mut ScreenState,
+    key: KeyEvent,
+    app: &ClatApp<R>,
+) {
     let project_name = match state.current_focus() {
         Focus::ConfirmDeleteProject(name) => name.clone(),
         _ => return,
@@ -737,10 +762,10 @@ async fn handle_confirm_delete_project_key(state: &mut ScreenState, key: KeyEven
     }
 }
 
-async fn handle_confirm_close_project_key(
+async fn handle_confirm_close_project_key<R: Runtime>(
     state: &mut ScreenState,
     key: KeyEvent,
-    app: &ClatApp,
+    app: &ClatApp<R>,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
 ) {
     match key.code {
@@ -762,7 +787,7 @@ async fn handle_confirm_close_project_key(
 }
 
 /// Shared: go to the selected task's tmux window (or reopen if closed).
-async fn goto_task_window(state: &mut ScreenState, app: &ClatApp) {
+async fn goto_task_window<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
     if let Some(task) = state.selected_task() {
         if task.status.is_running() {
             if let Some(window_id) = &task.tmux_window {
@@ -786,7 +811,7 @@ async fn goto_task_window(state: &mut ScreenState, app: &ClatApp) {
 }
 
 /// Shared: reopen a closed task.
-async fn reopen_task(state: &mut ScreenState, app: &ClatApp) {
+async fn reopen_task<R: Runtime>(state: &mut ScreenState, app: &ClatApp<R>) {
     if let Some(task) = state.selected_task()
         && !task.status.is_running()
     {
@@ -808,13 +833,13 @@ async fn reopen_task(state: &mut ScreenState, app: &ClatApp) {
 
 /// Dispatch a single assistant event (from the shared channel) to the
 /// appropriate session handler based on the session key.
-pub(super) async fn dispatch_assistant_event(
+pub(super) async fn dispatch_assistant_event<R: Runtime>(
     key: &SessionKey,
     event: AssistantEvent,
     state: &mut ScreenState,
     exo_session: &mut AssistantSession,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
-    app: &ClatApp,
+    app: &ClatApp<R>,
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
 ) {
     match key {
@@ -851,8 +876,8 @@ pub(super) async fn dispatch_assistant_event(
     }
 }
 
-async fn handle_session_event(
-    app: &ClatApp,
+async fn handle_session_event<R: Runtime>(
+    app: &ClatApp<R>,
     ps: &mut super::state::ProjectState,
     is_viewing: bool,
     session: &mut AssistantSession,
@@ -923,11 +948,11 @@ pub(super) struct TgPermState {
 
 /// Handle a single hook event from the permission socket.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn dispatch_hook_event(
+pub(super) async fn dispatch_hook_event<R: Runtime>(
     state: &mut ScreenState,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
     exo_session: &mut AssistantSession,
-    app: &ClatApp,
+    app: &ClatApp<R>,
     event: HookEvent,
     stream: UnixStream,
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
@@ -1132,10 +1157,10 @@ fn handle_pretool_bash(
     // If not approved, stream is dropped — no response, Claude Code falls through.
 }
 
-async fn handle_hook_pm_message(
+async fn handle_hook_pm_message<R: Runtime>(
     state: &mut ScreenState,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
-    app: &ClatApp,
+    app: &ClatApp<R>,
     stream: UnixStream,
     project_name: &str,
     message: &str,
@@ -1185,10 +1210,10 @@ async fn handle_hook_pm_message(
 
 /// Inject a message into the ExO session chat + telegram. Does NOT write
 /// to any hook stream — callers handle stream response separately.
-async fn inject_exo_notification(
+async fn inject_exo_notification<R: Runtime>(
     state: &mut ScreenState,
     exo_session: &mut AssistantSession,
-    app: &ClatApp,
+    app: &ClatApp<R>,
     message: &str,
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
 ) {
@@ -1223,10 +1248,10 @@ async fn inject_exo_notification(
     }
 }
 
-async fn handle_hook_exo_message(
+async fn handle_hook_exo_message<R: Runtime>(
     state: &mut ScreenState,
     exo_session: &mut AssistantSession,
-    app: &ClatApp,
+    app: &ClatApp<R>,
     stream: UnixStream,
     message: &str,
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
@@ -1413,10 +1438,10 @@ fn handle_hook_permission(
 }
 
 /// Handle a single telegram inbound event.
-pub(super) async fn dispatch_telegram_event(
+pub(super) async fn dispatch_telegram_event<R: Runtime>(
     state: &mut ScreenState,
     exo_session: &mut AssistantSession,
-    app: &ClatApp,
+    app: &ClatApp<R>,
     tg_msg: telegram::TgInbound,
 ) {
     match tg_msg {
@@ -1478,10 +1503,10 @@ pub(super) async fn dispatch_telegram_event(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn tick_refresh(
+pub(super) async fn tick_refresh<R: Runtime>(
     state: &mut ScreenState,
     project_contexts: &mut HashMap<ProjectId, ProjectContext>,
-    app: &ClatApp,
+    app: &ClatApp<R>,
     tg_tx: Option<&mpsc::UnboundedSender<telegram::TgOutbound>>,
     assistant_tx: &mpsc::UnboundedSender<(SessionKey, AssistantEvent)>,
     skip_permissions: bool,

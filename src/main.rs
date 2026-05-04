@@ -3,6 +3,7 @@ mod assistant;
 mod cli;
 mod compound_bash;
 mod config;
+mod harness;
 mod jwt;
 mod mcp;
 mod permission;
@@ -25,7 +26,7 @@ use std::sync::Arc;
 use crate::app::{ClatApp, PromptMode, SpawnRequest, WorkDirMode};
 use crate::cli::{AgentCommand, Cli, Command, MemoryAction, ProjectAction, SkillAction};
 use crate::primitives::MessageRole;
-use crate::runtime::{RuntimeKind, TmuxClaudeRuntime};
+use crate::runtime::{Runtime, TmuxRuntime};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -52,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
         } => *dangerously_skip_permissions,
         _ => false,
     };
-    let app = ClatApp::init(Arc::new(TmuxClaudeRuntime), skip_permissions).await?;
+    let app = ClatApp::init(TmuxRuntime, skip_permissions).await?;
 
     match command {
         Command::Spawn {
@@ -130,7 +131,11 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_dash(app: ClatApp, resume: Option<&str>, caffeinate: bool) -> anyhow::Result<()> {
+async fn cmd_dash<R: Runtime>(
+    app: ClatApp<R>,
+    resume: Option<&str>,
+    caffeinate: bool,
+) -> anyhow::Result<()> {
     let app = Arc::new(app);
     let project_root = app.project_root().to_path_buf();
 
@@ -188,7 +193,7 @@ struct SpawnOpts {
     project: Option<String>,
 }
 
-async fn cmd_spawn(app: ClatApp, opts: SpawnOpts) -> anyhow::Result<()> {
+async fn cmd_spawn<R: Runtime>(app: ClatApp<R>, opts: SpawnOpts) -> anyhow::Result<()> {
     // Use Full prompt mode when task params are provided (agent has work to do).
     // Interactive mode is only for truly interactive sessions (no task).
     let has_task = opts.params.iter().any(|(k, _)| k == "task");
@@ -234,7 +239,7 @@ async fn cmd_spawn(app: ClatApp, opts: SpawnOpts) -> anyhow::Result<()> {
             work_dir_mode,
             prompt_mode,
             project,
-            runtime: None,
+            harness: None,
         })
         .await?;
     println!(
@@ -247,7 +252,11 @@ async fn cmd_spawn(app: ClatApp, opts: SpawnOpts) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_list(app: ClatApp, all: bool, project: Option<String>) -> anyhow::Result<()> {
+async fn cmd_list<R: Runtime>(
+    app: ClatApp<R>,
+    all: bool,
+    project: Option<String>,
+) -> anyhow::Result<()> {
     let tasks = app.list_tasks(all, project.as_deref()).await?;
 
     if tasks.is_empty() {
@@ -276,13 +285,19 @@ async fn cmd_list(app: ClatApp, all: bool, project: Option<String>) -> anyhow::R
     }
 
     let win_numbers = app.window_numbers();
-    let running_pane_ids: Vec<crate::primitives::PaneId> = tasks
-        .iter()
-        .filter(|t| t.status.is_running())
-        .filter_map(|t| t.tmux_pane.clone())
-        .collect();
-    let pane_refs: Vec<&crate::primitives::PaneId> = running_pane_ids.iter().collect();
-    let idle = crate::runtime::idle_panes(app.runtime(RuntimeKind::Claude)?, &pane_refs);
+    // Determine each running task's idle/active state by asking its harness
+    // to interpret the pane's captured tmux output.
+    let mut idle: std::collections::HashSet<crate::primitives::PaneId> =
+        std::collections::HashSet::new();
+    for t in tasks.iter().filter(|t| t.status.is_running()) {
+        if let Some(ref pane) = t.tmux_pane
+            && let Ok(output) = app.runtime().capture_pane_output(pane.as_str())
+            && let Ok(harness) = app.harness(t.harness)
+            && harness.is_pane_idle(&output)
+        {
+            idle.insert(pane.clone());
+        }
+    }
     let rows: Vec<Row> = tasks
         .iter()
         .map(|t| {
@@ -322,7 +337,7 @@ async fn cmd_list(app: ClatApp, all: bool, project: Option<String>) -> anyhow::R
     Ok(())
 }
 
-async fn cmd_close(app: ClatApp, id: &str) -> anyhow::Result<()> {
+async fn cmd_close<R: Runtime>(app: ClatApp<R>, id: &str) -> anyhow::Result<()> {
     let result = app.close(id).await?;
     println!(
         "Closed task {} ({})",
@@ -332,13 +347,13 @@ async fn cmd_close(app: ClatApp, id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_reopen(app: ClatApp, id: &str) -> anyhow::Result<()> {
+async fn cmd_reopen<R: Runtime>(app: ClatApp<R>, id: &str) -> anyhow::Result<()> {
     let window_id = app.reopen(id).await?;
     println!("Reopened task {id} (window: {window_id})");
     Ok(())
 }
 
-async fn cmd_delete(app: ClatApp, id: &str) -> anyhow::Result<()> {
+async fn cmd_delete<R: Runtime>(app: ClatApp<R>, id: &str) -> anyhow::Result<()> {
     let result = app.delete(id).await?;
     println!(
         "Deleted task {} ({})",
@@ -348,7 +363,7 @@ async fn cmd_delete(app: ClatApp, id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_move(app: ClatApp, id: &str, project: &str) -> anyhow::Result<()> {
+async fn cmd_move<R: Runtime>(app: ClatApp<R>, id: &str, project: &str) -> anyhow::Result<()> {
     let result = app.move_task(id, project).await?;
     println!(
         "Moved task {} ({}) to project '{}'",
@@ -359,7 +374,7 @@ async fn cmd_move(app: ClatApp, id: &str, project: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_log(app: ClatApp, id_prefix: &str) -> anyhow::Result<()> {
+async fn cmd_log<R: Runtime>(app: ClatApp<R>, id_prefix: &str) -> anyhow::Result<()> {
     let log = app.log(id_prefix).await?;
 
     if log.messages.is_empty() {
@@ -399,7 +414,7 @@ async fn cmd_log(app: ClatApp, id_prefix: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_goto(app: ClatApp, id: &str) -> anyhow::Result<()> {
+async fn cmd_goto<R: Runtime>(app: ClatApp<R>, id: &str) -> anyhow::Result<()> {
     app.goto(id).await
 }
 
@@ -448,7 +463,7 @@ fn cmd_start(
     Ok(())
 }
 
-async fn cmd_send(app: ClatApp, id: &str, message: &str) -> anyhow::Result<()> {
+async fn cmd_send<R: Runtime>(app: ClatApp<R>, id: &str, message: &str) -> anyhow::Result<()> {
     let result = app.send(id, message).await?;
     println!(
         "Sent message to {} ({})",
@@ -458,8 +473,8 @@ async fn cmd_send(app: ClatApp, id: &str, message: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_complete(
-    app: ClatApp,
+async fn cmd_complete<R: Runtime>(
+    app: ClatApp<R>,
     id: &str,
     exit_code: i32,
     output_file: Option<&str>,
@@ -481,7 +496,7 @@ async fn cmd_complete(
     Ok(())
 }
 
-async fn cmd_memory(action: MemoryAction, app: &ClatApp) -> anyhow::Result<()> {
+async fn cmd_memory<R: Runtime>(action: MemoryAction, app: &ClatApp<R>) -> anyhow::Result<()> {
     let mem = app.memory();
 
     match action {
@@ -642,7 +657,7 @@ async fn cmd_memory(action: MemoryAction, app: &ClatApp) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_skill(action: SkillAction, app: ClatApp) -> anyhow::Result<()> {
+fn cmd_skill<R: Runtime>(action: SkillAction, app: ClatApp<R>) -> anyhow::Result<()> {
     match action {
         SkillAction::List => {
             let skills = app.list_skills()?;
@@ -676,7 +691,7 @@ fn cmd_skill(action: SkillAction, app: ClatApp) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_project(action: ProjectAction, app: ClatApp) -> anyhow::Result<()> {
+async fn cmd_project<R: Runtime>(action: ProjectAction, app: ClatApp<R>) -> anyhow::Result<()> {
     match action {
         ProjectAction::Create { name, description } => {
             let project = app.create_project(&name, &description).await?;
@@ -731,7 +746,11 @@ async fn cmd_project(action: ProjectAction, app: ClatApp) -> anyhow::Result<()> 
     Ok(())
 }
 
-async fn cmd_project_log(app: &ClatApp, name: &str, last: Option<u32>) -> anyhow::Result<()> {
+async fn cmd_project_log<R: Runtime>(
+    app: &ClatApp<R>,
+    name: &str,
+    last: Option<u32>,
+) -> anyhow::Result<()> {
     let (project, messages) = app.project_log(name, last).await?;
 
     if messages.is_empty() {
@@ -754,15 +773,19 @@ async fn cmd_project_log(app: &ClatApp, name: &str, last: Option<u32>) -> anyhow
     Ok(())
 }
 
-fn cmd_exo_send(app: &ClatApp, message: &str, from: Option<&str>) -> anyhow::Result<()> {
+fn cmd_exo_send<R: Runtime>(
+    app: &ClatApp<R>,
+    message: &str,
+    from: Option<&str>,
+) -> anyhow::Result<()> {
     let content = format_with_sender(message, from);
     crate::permission::send_exo_message(app.project_root(), &content)?;
     println!("Sent message to ExO");
     Ok(())
 }
 
-async fn cmd_project_send(
-    app: &ClatApp,
+async fn cmd_project_send<R: Runtime>(
+    app: &ClatApp<R>,
     name: &str,
     message: &str,
     from: Option<&str>,

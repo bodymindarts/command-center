@@ -5,10 +5,10 @@ use derive_builder::Builder;
 use es_entity::*;
 use serde::{Deserialize, Serialize};
 
+use crate::harness::HarnessKind;
 use crate::primitives::{
     ClaudeSessionId, MessageRole, PaneId, ProjectId, TaskId, TaskName, TaskStatus, WindowId,
 };
-use crate::runtime::RuntimeKind;
 
 use super::error::TaskError;
 
@@ -26,10 +26,10 @@ pub enum TaskEvent {
         work_dir: Option<String>,
         session_id: ClaudeSessionId,
         project_id: Option<ProjectId>,
-        /// Runtime that drives this task. Older events without this field
-        /// hydrate as `Claude` for backwards compatibility.
+        /// Agent harness that drives this task. Older events without this
+        /// field hydrate as `Claude` for backwards compatibility.
         #[serde(default)]
-        runtime: RuntimeKind,
+        harness: HarnessKind,
     },
     AgentLaunched {
         tmux_pane: PaneId,
@@ -68,7 +68,7 @@ pub struct Task {
     pub work_dir: Option<String>,
     pub session_id: Option<ClaudeSessionId>,
     #[builder(default)]
-    pub runtime: RuntimeKind,
+    pub harness: HarnessKind,
     #[builder(default)]
     pub started_at: DateTime<Utc>,
     #[builder(default)]
@@ -120,7 +120,7 @@ impl TryFromEvents<TaskEvent> for Task {
                     work_dir,
                     session_id,
                     project_id,
-                    runtime,
+                    harness,
                 } => {
                     builder = builder
                         .id(*id)
@@ -132,7 +132,7 @@ impl TryFromEvents<TaskEvent> for Task {
                         .tmux_window(None)
                         .work_dir(work_dir.clone())
                         .session_id(Some(*session_id))
-                        .runtime(*runtime)
+                        .harness(*harness)
                         .project_id(*project_id);
                 }
                 TaskEvent::AgentLaunched {
@@ -196,7 +196,7 @@ pub struct NewTask {
     pub work_dir: Option<String>,
     pub session_id: ClaudeSessionId,
     pub project_id: Option<ProjectId>,
-    pub runtime: RuntimeKind,
+    pub harness: HarnessKind,
 }
 
 impl NewTask {
@@ -218,7 +218,7 @@ impl IntoEvents<TaskEvent> for NewTask {
                 work_dir: self.work_dir,
                 session_id: self.session_id,
                 project_id: self.project_id,
-                runtime: self.runtime,
+                harness: self.harness,
             }],
         )
     }

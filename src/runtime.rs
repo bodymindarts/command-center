@@ -1,206 +1,61 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, bail};
-use rmcp::schemars;
-use serde::{Deserialize, Serialize};
 
 use crate::primitives::{PaneId, WindowId};
-use crate::skill::BaseTools;
-
-/// Identifies which runtime implementation handles a task.
-///
-/// Phase 1 only registers `Claude`; additional variants will be added later
-/// (e.g. `Goose` for the Goose harness) without changing the registry shape.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, schemars::JsonSchema,
-)]
-#[serde(rename_all = "lowercase")]
-pub enum RuntimeKind {
-    #[default]
-    Claude,
-}
 
 pub struct SpawnResult {
     pub window_id: WindowId,
     pub pane_id: PaneId,
 }
 
-pub struct LaunchConfig<'a> {
-    pub task_name: &'a str,
-    pub session_id: &'a str,
-    pub system_prompt: Option<&'a str>,
-    pub work_dir: &'a Path,
-    /// Some = Full mode (--system-prompt), None = Interactive (--append-system-prompt + idle prompt)
-    pub user_prompt: Option<&'a str>,
-    /// When true, pass `--dangerously-skip-permissions` to the claude subprocess.
-    pub skip_permissions: bool,
-    /// Role exported as `CC_SESSION_ROLE` in the launch script (e.g. skill name).
-    pub session_role: Option<&'a str>,
-}
-
-/// Bundled permission info extracted from a skill's `[agent]` section.
-/// Passed to worktree/config setup so the correct tools are auto-approved.
-pub struct SkillPermissions<'a> {
-    pub allowed_tools: &'a [String],
-    pub base_tools: &'a BaseTools,
-    pub bash_patterns: &'a [String],
-}
-
-impl Default for SkillPermissions<'_> {
-    fn default() -> Self {
-        Self {
-            allowed_tools: &[],
-            base_tools: &BaseTools::Full,
-            bash_patterns: &[],
-        }
-    }
-}
-
+/// `Runtime` abstracts how task agents are laid out in their environment —
+/// today this means git worktrees + tmux windows/panes. Exactly one runtime
+/// is in use at a time (the workspace's window manager), so `ClatApp` is
+/// generic over `R: Runtime` rather than dynamically dispatched.
+///
+/// Anything harness-specific (writing `.claude/`, launching the `claude`
+/// CLI, idle heuristics) lives in [`crate::harness::Harness`] instead.
 pub trait Runtime: Send + Sync + 'static {
+    // ── git worktree / scratch dir ──────────────────────────────────
     fn create_worktree(
         &self,
         repo_root: &Path,
         name: &str,
-        perms: &SkillPermissions,
         branch: Option<&str>,
-        hooks_source: &Path,
-        jwt_token: &str,
     ) -> anyhow::Result<PathBuf>;
-    fn recreate_worktree(
-        &self,
-        repo_root: &Path,
-        work_dir: &Path,
-        jwt_token: &str,
-    ) -> anyhow::Result<()>;
-    fn setup_dir_config(
-        &self,
-        hooks_source: &Path,
-        work_dir: &Path,
-        perms: &SkillPermissions,
-        jwt_token: &str,
-        task_name: &str,
-    ) -> anyhow::Result<()>;
-    fn init_scratch_dir(&self, scratch_dir: &Path) -> anyhow::Result<()>;
-    fn launch_agent(&self, config: LaunchConfig) -> anyhow::Result<SpawnResult>;
-    fn resume_agent(
-        &self,
-        task_name: &str,
-        session_id: &str,
-        work_dir: &Path,
-        skip_permissions: bool,
-    ) -> anyhow::Result<SpawnResult>;
-    fn relaunch_agent(&self, task_name: &str, work_dir: &Path) -> anyhow::Result<SpawnResult>;
-    fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> anyhow::Result<()>;
-    fn capture_pane_output(&self, pane_id: &str) -> anyhow::Result<String>;
+    fn recreate_worktree(&self, repo_root: &Path, work_dir: &Path) -> anyhow::Result<()>;
     fn remove_worktree(&self, path: &Path) -> anyhow::Result<()>;
-    fn kill_tmux_window(&self, window_id: &str) -> anyhow::Result<()>;
-    fn select_window(&self, window_id: &str) -> anyhow::Result<()>;
-    /// Returns whether the captured pane output indicates the agent is idle
-    /// (i.e. not actively working on a tool call). The interpretation of
-    /// `pane_output` is runtime-specific.
-    fn is_pane_idle(&self, pane_output: &str) -> bool;
-}
+    fn init_scratch_dir(&self, scratch_dir: &Path) -> anyhow::Result<()>;
 
-/// Runtime that drives the Claude Code CLI inside tmux panes.
-pub struct TmuxClaudeRuntime;
-
-impl TmuxClaudeRuntime {
-    fn tmux_cmd(&self, args: &[&str]) -> anyhow::Result<String> {
-        tmux_cmd(args)
-    }
-
-    fn resolve_binary(&self, name: &str) -> anyhow::Result<String> {
-        let output = Command::new("which")
-            .arg(name)
-            .output()
-            .with_context(|| format!("failed to find {name}"))?;
-
-        if !output.status.success() {
-            bail!("{name} not found in PATH");
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    }
-
+    // ── tmux window / pane ──────────────────────────────────────────
+    /// Open a new tmux window with the standard 3-pane layout (editor on top,
+    /// shell bottom-left, agent bottom-right) and run `agent_cmd` in the
+    /// agent pane. Returns the window/pane IDs.
     fn launch_agent_window(
         &self,
         task_name: &str,
         work_dir: &Path,
-        claude_cmd: &str,
-    ) -> anyhow::Result<SpawnResult> {
-        if std::env::var("TMUX").is_err() {
-            bail!("clat spawn must be run inside a tmux session");
-        }
+        agent_cmd: &str,
+    ) -> anyhow::Result<SpawnResult>;
+    fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> anyhow::Result<()>;
+    fn capture_pane_output(&self, pane_id: &str) -> anyhow::Result<String>;
+    fn select_window(&self, window_id: &str) -> anyhow::Result<()>;
+    fn kill_tmux_window(&self, window_id: &str) -> anyhow::Result<()>;
+}
 
-        let work_dir_str = work_dir.display().to_string();
-        let window_name = format!("cc:{task_name}");
+/// Default `Runtime` impl: tmux for windowing, `git worktree` for isolation.
+pub struct TmuxRuntime;
 
-        let window_id = self.tmux_cmd(&[
-            "new-window",
-            "-d",
-            "-P",
-            "-F",
-            "#{window_id}",
-            "-n",
-            &window_name,
-            "-c",
-            &work_dir_str,
-        ])?;
-
-        let top_pane = self.tmux_cmd(&["list-panes", "-t", &window_id, "-F", "#{pane_id}"])?;
-
-        let bottom_pane = self.tmux_cmd(&[
-            "split-window",
-            "-v",
-            "-t",
-            &top_pane,
-            "-P",
-            "-F",
-            "#{pane_id}",
-            "-c",
-            &work_dir_str,
-        ])?;
-
-        self.tmux_cmd(&["resize-pane", "-t", &top_pane, "-D", "8"])?;
-
-        let claude_pane = self.tmux_cmd(&[
-            "split-window",
-            "-h",
-            "-t",
-            &bottom_pane,
-            "-P",
-            "-F",
-            "#{pane_id}",
-            "-c",
-            &work_dir_str,
-        ])?;
-
-        self.tmux_cmd(&["send-keys", "-t", &claude_pane, "-l", claude_cmd])?;
-        self.tmux_cmd(&["send-keys", "-t", &claude_pane, "Enter"])?;
-        self.tmux_cmd(&["send-keys", "-t", &top_pane, "-l", "nvim ."])?;
-        self.tmux_cmd(&["send-keys", "-t", &top_pane, "Enter"])?;
-
-        Ok(SpawnResult {
-            window_id: WindowId::from(window_id),
-            pane_id: PaneId::from(claude_pane),
-        })
+impl TmuxRuntime {
+    fn tmux_cmd(&self, args: &[&str]) -> anyhow::Result<String> {
+        tmux_cmd(args)
     }
 }
 
-impl Runtime for TmuxClaudeRuntime {
-    fn setup_dir_config(
-        &self,
-        hooks_source: &Path,
-        work_dir: &Path,
-        perms: &SkillPermissions,
-        jwt_token: &str,
-        task_name: &str,
-    ) -> anyhow::Result<()> {
-        setup_worktree_config(hooks_source, work_dir, perms, jwt_token, Some(task_name))
-    }
-
+impl Runtime for TmuxRuntime {
     fn init_scratch_dir(&self, scratch_dir: &Path) -> anyhow::Result<()> {
         std::fs::create_dir_all(scratch_dir)?;
 
@@ -222,10 +77,7 @@ impl Runtime for TmuxClaudeRuntime {
         &self,
         repo_root: &Path,
         name: &str,
-        perms: &SkillPermissions,
         branch: Option<&str>,
-        hooks_source: &Path,
-        jwt_token: &str,
     ) -> anyhow::Result<PathBuf> {
         let worktree_dir = repo_root.join(".claude").join("worktrees");
         std::fs::create_dir_all(&worktree_dir)?;
@@ -258,18 +110,10 @@ impl Runtime for TmuxClaudeRuntime {
             bail!("git worktree add failed: {stderr}");
         }
 
-        setup_worktree_config(hooks_source, &worktree_path, perms, jwt_token, Some(name))?;
-        merge_repo_settings(repo_root, &worktree_path)?;
-
         Ok(worktree_path)
     }
 
-    fn recreate_worktree(
-        &self,
-        repo_root: &Path,
-        work_dir: &Path,
-        jwt_token: &str,
-    ) -> anyhow::Result<()> {
+    fn recreate_worktree(&self, repo_root: &Path, work_dir: &Path) -> anyhow::Result<()> {
         let name = work_dir
             .file_name()
             .and_then(|n| n.to_str())
@@ -323,87 +167,71 @@ impl Runtime for TmuxClaudeRuntime {
             bail!("git worktree add failed: {stderr}");
         }
 
-        // Extract task name from worktree directory name (e.g. "my-task-abc123").
-        let wt_name = work_dir.file_name().and_then(|n| n.to_str());
-        setup_worktree_config(
-            repo_root,
-            work_dir,
-            &SkillPermissions::default(),
-            jwt_token,
-            wt_name,
-        )?;
-        merge_repo_settings(repo_root, work_dir)?;
         Ok(())
     }
 
-    fn launch_agent(&self, config: LaunchConfig) -> anyhow::Result<SpawnResult> {
-        let claude_bin = self.resolve_binary("claude")?;
-
-        let claude_dir = config.work_dir.join(".claude");
-        std::fs::create_dir_all(&claude_dir)?;
-
-        let mut script = "#!/bin/sh\nunset CLAUDECODE\n".to_string();
-        if let Some(role) = config.session_role {
-            script.push_str(&format!("export CC_SESSION_ROLE={role}\n"));
-        }
-        script.push_str(&format!("exec {claude_bin}"));
-        if config.skip_permissions {
-            script.push_str(" --dangerously-skip-permissions");
-        }
-        script.push_str(&format!(" --session-id {}", config.session_id));
-
-        if let Some(user_prompt) = config.user_prompt {
-            // Full mode: write user prompt to file, use --system-prompt
-            std::fs::write(claude_dir.join("prompt.txt"), user_prompt)?;
-            script.push_str(" \"$(cat .claude/prompt.txt)\"");
-            if let Some(sys) = config.system_prompt {
-                std::fs::write(claude_dir.join("system-prompt.txt"), sys)?;
-                script.push_str(" --system-prompt \"$(cat .claude/system-prompt.txt)\"");
-            }
-        } else {
-            // Interactive mode: idle prompt, use --append-system-prompt
-            std::fs::write(
-                claude_dir.join("idle-prompt.txt"),
-                "Await further instructions.",
-            )?;
-            script.push_str(" \"$(cat .claude/idle-prompt.txt)\"");
-            if let Some(sys) = config.system_prompt {
-                std::fs::write(claude_dir.join("system-prompt.txt"), sys)?;
-                script.push_str(" --append-system-prompt \"$(cat .claude/system-prompt.txt)\"");
-            }
-        }
-
-        let script_path = claude_dir.join("launch.sh");
-        std::fs::write(&script_path, script)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
-        }
-
-        self.launch_agent_window(config.task_name, config.work_dir, "sh .claude/launch.sh")
-    }
-
-    fn resume_agent(
+    fn launch_agent_window(
         &self,
         task_name: &str,
-        session_id: &str,
         work_dir: &Path,
-        skip_permissions: bool,
+        agent_cmd: &str,
     ) -> anyhow::Result<SpawnResult> {
-        let claude_bin = self.resolve_binary("claude")?;
-        let skip_flag = if skip_permissions {
-            " --dangerously-skip-permissions"
-        } else {
-            ""
-        };
-        let claude_cmd = format!("env -u CLAUDECODE {claude_bin}{skip_flag} --resume {session_id}");
+        if std::env::var("TMUX").is_err() {
+            bail!("clat spawn must be run inside a tmux session");
+        }
 
-        self.launch_agent_window(task_name, work_dir, &claude_cmd)
-    }
+        let work_dir_str = work_dir.display().to_string();
+        let window_name = format!("cc:{task_name}");
 
-    fn relaunch_agent(&self, task_name: &str, work_dir: &Path) -> anyhow::Result<SpawnResult> {
-        self.launch_agent_window(task_name, work_dir, "sh .claude/launch.sh")
+        let window_id = self.tmux_cmd(&[
+            "new-window",
+            "-d",
+            "-P",
+            "-F",
+            "#{window_id}",
+            "-n",
+            &window_name,
+            "-c",
+            &work_dir_str,
+        ])?;
+
+        let top_pane = self.tmux_cmd(&["list-panes", "-t", &window_id, "-F", "#{pane_id}"])?;
+
+        let bottom_pane = self.tmux_cmd(&[
+            "split-window",
+            "-v",
+            "-t",
+            &top_pane,
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-c",
+            &work_dir_str,
+        ])?;
+
+        self.tmux_cmd(&["resize-pane", "-t", &top_pane, "-D", "8"])?;
+
+        let agent_pane = self.tmux_cmd(&[
+            "split-window",
+            "-h",
+            "-t",
+            &bottom_pane,
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-c",
+            &work_dir_str,
+        ])?;
+
+        self.tmux_cmd(&["send-keys", "-t", &agent_pane, "-l", agent_cmd])?;
+        self.tmux_cmd(&["send-keys", "-t", &agent_pane, "Enter"])?;
+        self.tmux_cmd(&["send-keys", "-t", &top_pane, "-l", "nvim ."])?;
+        self.tmux_cmd(&["send-keys", "-t", &top_pane, "Enter"])?;
+
+        Ok(SpawnResult {
+            window_id: WindowId::from(window_id),
+            pane_id: PaneId::from(agent_pane),
+        })
     }
 
     fn send_keys_to_pane(&self, pane_id: &str, message: &str) -> anyhow::Result<()> {
@@ -490,497 +318,6 @@ impl Runtime for TmuxClaudeRuntime {
         self.tmux_cmd(&["select-window", "-t", window_id])?;
         Ok(())
     }
-
-    /// A Claude pane is idle when its last non-empty line does NOT contain
-    /// "esc" (case-insensitive); Claude Code shows "esc to interrupt" /
-    /// "Esc to cancel" while actively working on a tool call.
-    fn is_pane_idle(&self, pane_output: &str) -> bool {
-        let last_line = pane_output
-            .lines()
-            .rev()
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or("");
-        !last_line.to_ascii_lowercase().contains("esc")
-    }
-}
-
-/// Copy hooks config and write settings into a worktree's `.claude/` directory.
-/// This is shared between initial creation and worktree recreation (reopen).
-fn setup_worktree_config(
-    repo_root: &Path,
-    worktree_path: &Path,
-    perms: &SkillPermissions,
-    jwt_token: &str,
-    task_name: Option<&str>,
-) -> anyhow::Result<()> {
-    let source_claude_dir = repo_root.join(".claude");
-    let target_claude_dir = worktree_path.join(".claude");
-    if source_claude_dir.is_dir() {
-        std::fs::create_dir_all(&target_claude_dir)?;
-
-        // Copy hooks directory
-        let source_hooks = source_claude_dir.join("hooks");
-        let target_hooks = target_claude_dir.join("hooks");
-        if source_hooks.is_dir() {
-            copy_dir_recursive(&source_hooks, &target_hooks)?;
-        }
-
-        // Write settings with hooks and base allowed tools.
-        // Hooks route permission requests to the dashboard.
-        // Base allowed tools let agents run common safe commands
-        // (git, cargo, nix, etc.) without manual approval each time.
-        let target_settings = target_claude_dir.join("settings.local.json");
-        let mut settings = serde_json::json!({
-            "hooks": hooks_json()
-        });
-        // Merge skill-level tools (Read, Glob, Edit, etc.) with base
-        // Bash-pattern tools (nix develop, cargo fmt, etc.) into a single
-        // permissions.allow list.  Claude Code reads this key from settings
-        // files — "allowedTools" is only valid as a CLI flag.
-        let mut allowed: Vec<String> = perms.allowed_tools.to_vec();
-        for tool in base_tools_for(perms.base_tools) {
-            allowed.push(tool.to_string());
-        }
-        for pattern in perms.bash_patterns {
-            allowed.push(format!("Bash({pattern})"));
-        }
-        settings["permissions"] = serde_json::json!({"allow": allowed});
-        // Embed CC_PERM_SOCKET into hook commands so agents connect
-        // to this dashboard's session-scoped permission socket.
-        // Try env var first (TUI process), then breadcrumb file (CLI spawns).
-        let sock_path = std::env::var(crate::permission::SOCKET_ENV)
-            .ok()
-            .or_else(|| crate::permission::read_socket_breadcrumb(repo_root));
-        if let Some(sock_path) = sock_path {
-            embed_env_in_hooks(&mut settings, &sock_path, task_name);
-            // Write perm-socket breadcrumb into the worktree so that
-            // send_pm_message / send_exo_message can discover the socket.
-            let _ = std::fs::write(target_claude_dir.join("perm-socket"), &sock_path);
-        }
-
-        // Write .mcp.json at worktree root so Claude Code discovers the MCP server.
-        // Claude Code reads MCP servers from .mcp.json (project scope), NOT from
-        // the mcpServers key in settings.local.json.
-        if let Some(mcp_url) = crate::mcp::read_mcp_url_breadcrumb(repo_root) {
-            // Read existing .mcp.json (target repo may have committed servers) or start fresh.
-            let mcp_path = worktree_path.join(".mcp.json");
-            let mut mcp_config: serde_json::Value = if mcp_path.exists() {
-                let content = std::fs::read_to_string(&mcp_path)?;
-                serde_json::from_str(&content)
-                    .unwrap_or_else(|_| serde_json::json!({"mcpServers": {}}))
-            } else {
-                serde_json::json!({"mcpServers": {}})
-            };
-
-            // Ensure mcpServers key exists as an object.
-            if !mcp_config.get("mcpServers").is_some_and(|v| v.is_object()) {
-                mcp_config["mcpServers"] = serde_json::json!({});
-            }
-            let servers = mcp_config["mcpServers"].as_object_mut().unwrap();
-
-            // Always add clat MCP server.
-            // Include the JWT in both the URL query param and Authorization header
-            // for resilience against Claude Code header bugs.
-            servers.insert(
-                "clat".to_string(),
-                serde_json::json!({
-                    "type": "http",
-                    "url": format!("{mcp_url}?token={jwt_token}"),
-                    "headers": {
-                        "Authorization": format!("Bearer {jwt_token}")
-                    }
-                }),
-            );
-
-            std::fs::write(&mcp_path, serde_json::to_string_pretty(&mcp_config)?)?;
-
-            // Register MCP servers as local-scoped so Claude Code trusts them
-            // immediately — no "N new MCP servers found" approval prompt.
-            let clat_url = format!("{mcp_url}?token={jwt_token}");
-            let auth_value = format!("Bearer {jwt_token}");
-            register_local_mcp_server(
-                worktree_path,
-                "clat",
-                &clat_url,
-                &[("Authorization", &auth_value)],
-            );
-            settings["enableAllProjectMcpServers"] = serde_json::json!(true);
-
-            // Auto-allow MCP tools so agents don't need manual approval.
-            if let Some(perms_allow) = settings
-                .get_mut("permissions")
-                .and_then(|p| p.get_mut("allow"))
-                .and_then(|a| a.as_array_mut())
-            {
-                perms_allow.push(serde_json::json!("mcp__clat__clat_spawn"));
-                perms_allow.push(serde_json::json!("mcp__clat__create_watch"));
-                perms_allow.push(serde_json::json!("mcp__clat__send_message"));
-                perms_allow.push(serde_json::json!("mcp__clat__list_tasks"));
-                perms_allow.push(serde_json::json!("mcp__clat__task_log"));
-                perms_allow.push(serde_json::json!("mcp__clat__store_memory"));
-                perms_allow.push(serde_json::json!("mcp__clat__search_memory"));
-                perms_allow.push(serde_json::json!("mcp__clat__list_memories"));
-                perms_allow.push(serde_json::json!("mcp__galoy-agents__search_tools"));
-                perms_allow.push(serde_json::json!("mcp__galoy-agents__describe_tool"));
-                perms_allow.push(serde_json::json!("mcp__galoy-agents__call_tool"));
-                perms_allow.push(serde_json::json!("mcp__galoy-agents__hello"));
-                perms_allow.push(serde_json::json!("mcp__galoy-agents__search_code"));
-            }
-
-            // Use .git/info/exclude instead of .gitignore — never committed.
-            exclude_from_git(worktree_path, ".mcp.json")?;
-        }
-
-        std::fs::write(&target_settings, settings.to_string())?;
-
-        // Ignore all generated files so agents don't commit them.
-        std::fs::write(
-            target_claude_dir.join(".gitignore"),
-            "launch.sh\nprompt.txt\nidle-prompt.txt\nsystem-prompt.txt\nsettings.local.json\nhooks/\n.gitignore\nperm-socket\nskip-permissions\n",
-        )?;
-    }
-    Ok(())
-}
-
-/// Merge non-managed keys from the source repo's `.claude/settings.local.json`
-/// into the worktree's settings. Keys like `mcpServers` are preserved while
-/// managed keys (`hooks`, `permissions`) already set by [`setup_worktree_config`]
-/// take precedence.
-fn merge_repo_settings(repo_root: &Path, worktree_path: &Path) -> anyhow::Result<()> {
-    let repo_settings_path = repo_root.join(".claude").join("settings.local.json");
-    if !repo_settings_path.is_file() {
-        return Ok(());
-    }
-
-    let repo_content = std::fs::read_to_string(&repo_settings_path)?;
-    let repo_settings: serde_json::Value = serde_json::from_str(&repo_content)?;
-    let Some(repo_obj) = repo_settings.as_object() else {
-        return Ok(());
-    };
-
-    let wt_settings_path = worktree_path.join(".claude").join("settings.local.json");
-    let wt_content = std::fs::read_to_string(&wt_settings_path).unwrap_or_default();
-    let mut wt_settings: serde_json::Value =
-        serde_json::from_str(&wt_content).unwrap_or_else(|_| serde_json::json!({}));
-
-    if let Some(wt_obj) = wt_settings.as_object_mut() {
-        for (key, value) in repo_obj {
-            if !wt_obj.contains_key(key) {
-                wt_obj.insert(key.clone(), value.clone());
-            }
-        }
-    }
-
-    std::fs::write(&wt_settings_path, wt_settings.to_string())?;
-    Ok(())
-}
-
-/// Generate the hooks JSON for spawned agent settings.
-///
-/// Hook events:
-/// - `Notification` with matchers for idle/active detection
-/// - `PostToolUse` for in-pane permission clearing
-/// - `PermissionRequest` for routing permissions to the dashboard
-/// - `PreToolUse` for pre-execution observation
-/// - `Stop` for agent stop signals
-/// - `UserPromptSubmit` for user prompt tracking
-/// - `SubagentStop` for sub-agent lifecycle tracking
-fn hooks_json() -> serde_json::Value {
-    let hook = |script: &str, timeout: u64| -> serde_json::Value {
-        serde_json::json!({
-            "type": "command",
-            "command": format!("\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/{script}"),
-            "timeout": timeout
-        })
-    };
-
-    serde_json::json!({
-        "Notification": [
-            {
-                "matcher": "idle_prompt",
-                "hooks": [hook("notification-idle.sh", 10)]
-            },
-            {
-                "matcher": "permission_prompt",
-                "hooks": [hook("notification-active.sh", 10)]
-            },
-            {
-                "matcher": "elicitation_dialog",
-                "hooks": [hook("notification-active.sh", 10)]
-            }
-        ],
-        "PostToolUse": [
-            { "hooks": [hook("post-tool-resolved.sh", 10)] }
-        ],
-        "PermissionRequest": [
-            { "hooks": [hook("permission-gate.sh", 620)] }
-        ],
-        "PreToolUse": [
-            { "hooks": [hook("pre-tool-use.sh", 10)] }
-        ],
-        "Stop": [
-            { "hooks": [hook("stop.sh", 10)] }
-        ],
-        "UserPromptSubmit": [
-            { "hooks": [hook("user-prompt-submit.sh", 10)] }
-        ],
-        "SubagentStop": [
-            { "hooks": [hook("subagent-stop.sh", 10)] }
-        ]
-    })
-}
-
-/// Return the base tool set for the given tier.
-fn base_tools_for(bt: &BaseTools) -> Vec<&'static str> {
-    match bt {
-        BaseTools::Full => base_allowed_tools_full(),
-        BaseTools::Minimal => base_allowed_tools_minimal(),
-        BaseTools::None => vec![],
-    }
-}
-
-/// Full base set: all git/cargo/nix/shell tools.
-/// Used by engineer, reviewer, researcher, and other dev-oriented skills.
-fn base_allowed_tools_full() -> Vec<&'static str> {
-    vec![
-        // Git (read-only + staging/committing — no push/force)
-        "Bash(git status:*)",
-        "Bash(git diff:*)",
-        "Bash(git add:*)",
-        "Bash(git log:*)",
-        "Bash(git commit:*)",
-        "Bash(git branch:*)",
-        "Bash(git show:*)",
-        "Bash(git reset:*)",
-        "Bash(git checkout:*)",
-        "Bash(git worktree:*)",
-        "Bash(git cherry-pick:*)",
-        "Bash(git rebase:*)",
-        "Bash(git fetch:*)",
-        "Bash(git -C:*)",
-        "Bash(git pull:*)",
-        "Bash(git stash:*)",
-        "Bash(git rev-parse:*)",
-        "Bash(git ls-files:*)",
-        "Bash(git remote:*)",
-        "Bash(git merge:*)",
-        // Nix (blanket — covers flake check, develop, build, run, eval, etc.)
-        "Bash(nix:*)",
-        // Cargo (typically run inside nix develop, but allow direct too)
-        "Bash(cargo fmt:*)",
-        "Bash(cargo clippy:*)",
-        "Bash(cargo nextest:*)",
-        "Bash(cargo build:*)",
-        "Bash(cargo test:*)",
-        "Bash(cargo check:*)",
-        // Basic shell commands
-        "Bash(ls:*)",
-        "Bash(cat:*)",
-        "Bash(head:*)",
-        "Bash(tail:*)",
-        "Bash(wc:*)",
-        "Bash(which:*)",
-        "Bash(pwd)",
-        "Bash(find:*)",
-        "Bash(grep:*)",
-        "Bash(rg:*)",
-        "Bash(tree:*)",
-        "Bash(mkdir:*)",
-        "Bash(echo:*)",
-        "Bash(sort:*)",
-        "Bash(uniq:*)",
-        "Bash(jq:*)",
-        // Local HTTP (curl restricted to localhost)
-        "Bash(curl localhost:*)",
-        "Bash(curl 127.0.0.1:*)",
-        // GitHub CLI
-        "Bash(gh:*)",
-        // Containers
-        "Bash(podman:*)",
-        "Bash(docker:*)",
-    ]
-}
-
-/// Minimal base set: only basic read-only shell commands.
-/// Used by non-dev skills like reporter that don't need git/cargo/nix.
-fn base_allowed_tools_minimal() -> Vec<&'static str> {
-    vec![
-        "Bash(ls:*)",
-        "Bash(cat:*)",
-        "Bash(head:*)",
-        "Bash(tail:*)",
-        "Bash(wc:*)",
-        "Bash(which:*)",
-        "Bash(pwd)",
-    ]
-}
-
-/// Rewrite hook commands in settings JSON to prefix environment variables
-/// (`CC_PERM_SOCKET=<path>` and optionally `CC_TASK_NAME=<name>`), so spawned
-/// agents' hooks connect to the correct dashboard socket and can be identified
-/// even when their CWD is outside the worktree.
-pub(crate) fn embed_env_in_hooks(
-    settings: &mut serde_json::Value,
-    sock_path: &str,
-    task_name: Option<&str>,
-) {
-    let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
-        return;
-    };
-    for hook_list in hooks.values_mut() {
-        let Some(matchers) = hook_list.as_array_mut() else {
-            continue;
-        };
-        for matcher in matchers {
-            let Some(hook_arr) = matcher.get_mut("hooks").and_then(|h| h.as_array_mut()) else {
-                continue;
-            };
-            for hook in hook_arr {
-                if hook.get("type").and_then(|t| t.as_str()) == Some("command")
-                    && let Some(cmd) = hook.get("command").and_then(|c| c.as_str())
-                    && cmd.contains(".claude/hooks/")
-                {
-                    // Strip existing env var prefixes to avoid stacking
-                    let clean_cmd = strip_env_prefixes(cmd);
-                    let mut prefix = format!("{}={}", crate::permission::SOCKET_ENV, sock_path,);
-                    if let Some(name) = task_name {
-                        prefix
-                            .push_str(&format!(" {}={}", crate::permission::TASK_NAME_ENV, name,));
-                    }
-                    hook["command"] = serde_json::json!(format!("{prefix} {clean_cmd}"));
-                }
-            }
-        }
-    }
-}
-
-/// Strip leading `CC_PERM_SOCKET=... ` and `CC_TASK_NAME=... ` prefixes from
-/// a hook command string, returning the original command.
-fn strip_env_prefixes(cmd: &str) -> &str {
-    let mut rest = cmd;
-    loop {
-        let trimmed = rest.trim_start();
-        if trimmed.starts_with(crate::permission::SOCKET_ENV)
-            || trimmed.starts_with(crate::permission::TASK_NAME_ENV)
-        {
-            // Skip "VAR=value " — find the next space after the value
-            if let Some((_prefix, after)) = trimmed.split_once(' ') {
-                rest = after;
-                continue;
-            }
-        }
-        break;
-    }
-    rest
-}
-
-/// Re-embed the current socket path and task names into all active worktrees' settings.
-/// Called at dashboard startup so hooks from pre-existing tasks connect
-/// to the new socket and carry the correct task identity.
-///
-/// Each entry is `(task_name, work_dir)`.
-pub fn reembed_env_in_worktrees(tasks: &[(String, String)], sock_path: &str) {
-    for (name, wd) in tasks {
-        let settings_path = Path::new(wd).join(".claude/settings.local.json");
-        let Ok(content) = std::fs::read_to_string(&settings_path) else {
-            continue;
-        };
-        let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) else {
-            continue;
-        };
-        embed_env_in_hooks(&mut settings, sock_path, Some(name));
-        let _ = std::fs::write(&settings_path, settings.to_string());
-        // Also refresh the perm-socket breadcrumb so send_pm_message /
-        // send_exo_message can discover the (possibly new) socket path.
-        let _ = std::fs::write(Path::new(wd).join(".claude/perm-socket"), sock_path);
-    }
-}
-
-/// Register an MCP server as local-scoped via `claude mcp add`.
-///
-/// Local-scoped servers are trusted by Claude Code and don't trigger the
-/// "N new MCP servers found" approval prompt that project-scoped (.mcp.json)
-/// servers do. We keep .mcp.json as a fallback but use this to pre-register
-/// so agents can start working immediately.
-fn register_local_mcp_server(work_dir: &Path, name: &str, url: &str, headers: &[(&str, &str)]) {
-    let mut args = vec![
-        "mcp".to_string(),
-        "add".to_string(),
-        "--transport".to_string(),
-        "http".to_string(),
-        "--scope".to_string(),
-        "local".to_string(),
-        name.to_string(),
-        url.to_string(),
-    ];
-    // --header is variadic (<header...>), so it must come after the
-    // positional <name> and <url> arguments to avoid swallowing them.
-    for (key, value) in headers {
-        args.push("--header".to_string());
-        args.push(format!("{key}: {value}"));
-    }
-
-    let result = Command::new("claude")
-        .args(&args)
-        .current_dir(work_dir)
-        .output();
-
-    match result {
-        Ok(output) if output.status.success() => {}
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::warn!("claude mcp add {name} failed: {stderr}");
-        }
-        Err(e) => {
-            tracing::warn!("could not run claude mcp add {name}: {e}");
-        }
-    }
-}
-
-/// Add an entry to `.git/info/exclude` so it's ignored without touching `.gitignore`.
-fn exclude_from_git(worktree_path: &Path, pattern: &str) -> anyhow::Result<()> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--git-common-dir"])
-        .current_dir(worktree_path)
-        .output()
-        .context("failed to run git rev-parse --git-common-dir")?;
-    if !output.status.success() {
-        bail!(
-            "git rev-parse --git-common-dir failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    let git_common_dir = String::from_utf8(output.stdout)?.trim().to_string();
-    let exclude_path = PathBuf::from(&git_common_dir).join("info").join("exclude");
-
-    std::fs::create_dir_all(exclude_path.parent().unwrap())?;
-
-    let content = std::fs::read_to_string(&exclude_path).unwrap_or_default();
-    if !content.lines().any(|l| l.trim() == pattern) {
-        let mut new_content = content;
-        if !new_content.is_empty() && !new_content.ends_with('\n') {
-            new_content.push('\n');
-        }
-        new_content.push_str(pattern);
-        new_content.push('\n');
-        std::fs::write(&exclude_path, new_content)?;
-    }
-    Ok(())
-}
-
-fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        if src_path.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else {
-            std::fs::copy(&src_path, &dst_path)?;
-        }
-    }
-    Ok(())
 }
 
 /// Returns a mapping from tmux window ID (e.g. "@24") to window index (e.g. "2").
@@ -994,20 +331,6 @@ pub fn tmux_window_numbers() -> HashMap<WindowId, String> {
         }
     }
     map
-}
-
-/// Returns the set of pane IDs that appear idle, using the supplied runtime's
-/// `is_pane_idle` heuristic against each pane's captured tmux output.
-pub fn idle_panes(runtime: &dyn Runtime, pane_ids: &[&PaneId]) -> HashSet<PaneId> {
-    let mut set = HashSet::new();
-    for pane_id in pane_ids {
-        if let Ok(output) = tmux_cmd(&["capture-pane", "-p", "-t", pane_id.as_str()])
-            && runtime.is_pane_idle(&output)
-        {
-            set.insert((*pane_id).clone());
-        }
-    }
-    set
 }
 
 /// Free function for workspace bootstrapping (cmd_start), not a task operation.
