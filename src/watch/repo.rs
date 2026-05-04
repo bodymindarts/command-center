@@ -57,7 +57,7 @@ impl WatchRepo {
     pub async fn list_active_for_task(&self, task_id: TaskId) -> anyhow::Result<Vec<Watch>> {
         let status = WatchStatus::Active;
         let ret = es_query!(
-            "SELECT id FROM watches WHERE task_id = $1 AND status = $2 ORDER BY created_at ASC",
+            "SELECT id FROM watches WHERE task_id = $1 AND status = $2 ORDER BY watches.created_at ASC",
             task_id as TaskId,
             status as WatchStatus,
         )
