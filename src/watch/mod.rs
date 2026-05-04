@@ -13,6 +13,7 @@ use job::{Job, JobCompletion, JobInitializer, JobRunner, JobSpawner};
 
 use crate::app::ClatApp;
 use crate::primitives::{CheckType, TaskId, WatchId};
+use crate::runtime::Runtime;
 
 /// Commands allowed in the `command` check variant.
 ///
@@ -247,11 +248,11 @@ impl WatchService {
 
 // ── Timer Initializer ────────────────────────────────────────────────
 
-pub(crate) struct TimerJobInitializer {
-    pub app: Arc<ClatApp>,
+pub(crate) struct TimerJobInitializer<R: Runtime> {
+    pub app: Arc<ClatApp<R>>,
 }
 
-impl JobInitializer for TimerJobInitializer {
+impl<R: Runtime> JobInitializer for TimerJobInitializer<R> {
     type Config = TimerConfig;
 
     fn job_type(&self) -> job::JobType {
@@ -274,14 +275,14 @@ impl JobInitializer for TimerJobInitializer {
 
 // ── Timer Runner ─────────────────────────────────────────────────────
 
-struct TimerJobRunner {
+struct TimerJobRunner<R: Runtime> {
     job_id: String,
     config: TimerConfig,
-    app: Arc<ClatApp>,
+    app: Arc<ClatApp<R>>,
 }
 
 #[async_trait]
-impl JobRunner for TimerJobRunner {
+impl<R: Runtime> JobRunner for TimerJobRunner<R> {
     async fn run(
         &self,
         _current_job: job::CurrentJob,
@@ -317,11 +318,11 @@ impl JobRunner for TimerJobRunner {
 
 // ── Command Initializer ──────────────────────────────────────────────
 
-pub(crate) struct CommandJobInitializer {
-    pub app: Arc<ClatApp>,
+pub(crate) struct CommandJobInitializer<R: Runtime> {
+    pub app: Arc<ClatApp<R>>,
 }
 
-impl JobInitializer for CommandJobInitializer {
+impl<R: Runtime> JobInitializer for CommandJobInitializer<R> {
     type Config = CommandConfig;
 
     fn job_type(&self) -> job::JobType {
@@ -344,14 +345,14 @@ impl JobInitializer for CommandJobInitializer {
 
 // ── Command Runner ───────────────────────────────────────────────────
 
-struct CommandJobRunner {
+struct CommandJobRunner<R: Runtime> {
     job_id: String,
     config: CommandConfig,
-    app: Arc<ClatApp>,
+    app: Arc<ClatApp<R>>,
 }
 
 #[async_trait]
-impl JobRunner for CommandJobRunner {
+impl<R: Runtime> JobRunner for CommandJobRunner<R> {
     async fn run(
         &self,
         _current_job: job::CurrentJob,

@@ -3,12 +3,13 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use crate::config::Paths;
+use crate::harness::{Harness, HarnessKind, LaunchConfig, SkillPermissions};
 use crate::jwt::JwtSigner;
 use crate::primitives::{
     ChatId, ClaudeSessionId, MessageRole, ProjectId, ProjectName, TaskId, TaskName, WindowId,
 };
 use crate::project::{NewProject, Project};
-use crate::runtime::{LaunchConfig, Runtime, RuntimeKind};
+use crate::runtime::Runtime;
 use crate::skill::SkillFile;
 use crate::store::Store;
 use crate::task::{NewTask, Task, TaskMessage};
@@ -37,9 +38,9 @@ pub struct SpawnRequest<'a> {
     pub work_dir_mode: WorkDirMode<'a>,
     pub prompt_mode: PromptMode,
     pub project: Option<String>,
-    /// Per-spawn runtime override. When `None`, the skill's configured runtime
-    /// is used (which itself defaults to `Claude`).
-    pub runtime: Option<RuntimeKind>,
+    /// Per-spawn harness override. When `None`, the skill's configured
+    /// harness is used (which itself defaults to `Claude`).
+    pub harness: Option<HarnessKind>,
 }
 
 #[derive(Debug)]
@@ -108,12 +109,20 @@ pub struct LogOutput {
 
 const EXO_CHAT: ChatId = ChatId::Exo;
 
-pub struct ClatApp {
+/// Top-level application service.
+///
+/// Generic over `R: Runtime` because exactly one runtime (the workspace's
+/// window manager — today, tmux) is in use at a time, so it can be
+/// monomorphised at the call site. Per-task agent harnesses live in
+/// `harnesses` and are dispatched dynamically by `HarnessKind` since
+/// multiple harness impls can be active concurrently across tasks.
+pub struct ClatApp<R: Runtime> {
     store: Store,
-    /// Pluggable runtime registry, keyed by `RuntimeKind`. Phase 1 only
+    runtime: R,
+    /// Pluggable harness registry, keyed by `HarnessKind`. Phase 1 only
     /// registers `Claude`; future phases add additional implementations
     /// (e.g. `Goose`) by inserting into this map at construction time.
-    runtimes: HashMap<RuntimeKind, Arc<dyn Runtime>>,
+    harnesses: HashMap<HarnessKind, Arc<dyn Harness<R>>>,
     paths: Paths,
     skip_permissions: bool,
     jwt_signer: JwtSigner,
@@ -121,16 +130,21 @@ pub struct ClatApp {
     memory: agent_memory::service::MemoryService,
 }
 
-impl ClatApp {
-    /// Look up a registered runtime by kind.
-    pub fn runtime(&self, kind: RuntimeKind) -> anyhow::Result<&dyn Runtime> {
-        self.runtimes
-            .get(&kind)
-            .map(|r| r.as_ref())
-            .ok_or_else(|| anyhow::anyhow!("runtime '{kind:?}' is not registered"))
+impl<R: Runtime> ClatApp<R> {
+    /// Borrow the runtime.
+    pub fn runtime(&self) -> &R {
+        &self.runtime
     }
 
-    pub async fn init(runtime: Arc<dyn Runtime>, skip_permissions: bool) -> anyhow::Result<Self> {
+    /// Look up a registered harness by kind.
+    pub fn harness(&self, kind: HarnessKind) -> anyhow::Result<&dyn Harness<R>> {
+        self.harnesses
+            .get(&kind)
+            .map(|h| h.as_ref())
+            .ok_or_else(|| anyhow::anyhow!("harness '{kind:?}' is not registered"))
+    }
+
+    pub async fn init(runtime: R, skip_permissions: bool) -> anyhow::Result<Self> {
         let paths = Paths::resolve()?;
         paths.ensure_dirs()?;
         let store = Store::open(&paths.db_path).await?;
@@ -153,11 +167,12 @@ impl ClatApp {
         let skip_permissions =
             skip_permissions || crate::permission::read_skip_permissions_breadcrumb(&paths.root);
         let jwt_signer = JwtSigner::load_or_create(&paths.data_dir.join("jwt-secret"))?;
-        let mut runtimes: HashMap<RuntimeKind, Arc<dyn Runtime>> = HashMap::new();
-        runtimes.insert(RuntimeKind::Claude, runtime);
+        let mut harnesses: HashMap<HarnessKind, Arc<dyn Harness<R>>> = HashMap::new();
+        harnesses.insert(HarnessKind::Claude, Arc::new(crate::harness::ClaudeHarness));
         Ok(Self {
             store,
-            runtimes,
+            runtime,
+            harnesses,
             paths,
             skip_permissions,
             jwt_signer,
@@ -213,7 +228,12 @@ impl ClatApp {
     }
 
     #[cfg(test)]
-    pub async fn new(store: Store, runtime: Arc<dyn Runtime>, paths: Paths) -> Self {
+    pub async fn new_with_harness(
+        store: Store,
+        runtime: R,
+        harness: Arc<dyn Harness<R>>,
+        paths: Paths,
+    ) -> Self {
         let jwt_signer = JwtSigner::load_or_create(&paths.data_dir.join("jwt-secret")).unwrap();
         let config = agent_memory::config::Config {
             memories_dir: paths.data_dir.join("memory"),
@@ -226,11 +246,12 @@ impl ClatApp {
         let memory = agent_memory::service::MemoryService::new(&config)
             .await
             .unwrap();
-        let mut runtimes: HashMap<RuntimeKind, Arc<dyn Runtime>> = HashMap::new();
-        runtimes.insert(RuntimeKind::Claude, runtime);
+        let mut harnesses: HashMap<HarnessKind, Arc<dyn Harness<R>>> = HashMap::new();
+        harnesses.insert(HarnessKind::Claude, harness);
         Self {
             store,
-            runtimes,
+            runtime,
+            harnesses,
             paths,
             skip_permissions: false,
             jwt_signer,
@@ -305,14 +326,14 @@ impl ClatApp {
         // 3. Set up working directory
         // For Worktree mode, generate TaskId first since worktree name includes id.short()
         let id = TaskId::new();
-        let perms = crate::runtime::SkillPermissions {
+        let perms = SkillPermissions {
             allowed_tools: &skill.agent.allowed_tools,
             base_tools: &skill.agent.base_tools,
             bash_patterns: &skill.agent.allowed_bash_patterns,
         };
-        // Resolve runtime: per-spawn override > skill default > Claude.
-        let runtime_kind = req.runtime.or(skill.agent.runtime).unwrap_or_default();
-        let runtime = self.runtime(runtime_kind)?;
+        // Resolve harness: per-spawn override > skill default > Claude.
+        let harness_kind = req.harness.or(skill.agent.harness).unwrap_or_default();
+        let harness = self.harness(harness_kind)?;
         // Sign a JWT for this task so the MCP server can identify the caller.
         let jwt_token = {
             let claims = crate::jwt::AgentClaims {
@@ -327,34 +348,35 @@ impl ClatApp {
         let work_dir = match req.work_dir_mode {
             WorkDirMode::Worktree { repo, branch } => {
                 let worktree_name = format!("{}-{}", req.task_name, id.short());
-                runtime.create_worktree(
-                    repo,
-                    &worktree_name,
-                    &perms,
-                    branch,
+                let path = self.runtime.create_worktree(repo, &worktree_name, branch)?;
+                harness.setup_dir_config(
                     &self.paths.root,
+                    &path,
+                    &perms,
                     &jwt_token,
-                )?
+                    Some(req.task_name),
+                )?;
+                path
             }
             WorkDirMode::Scratch => {
                 let scratch_dir = self.paths.data_dir.join("scratch").join(req.task_name);
-                runtime.init_scratch_dir(&scratch_dir)?;
-                runtime.setup_dir_config(
+                self.runtime.init_scratch_dir(&scratch_dir)?;
+                harness.setup_dir_config(
                     &self.paths.root,
                     &scratch_dir,
                     &perms,
                     &jwt_token,
-                    req.task_name,
+                    Some(req.task_name),
                 )?;
                 scratch_dir
             }
             WorkDirMode::Existing { dir } => {
-                runtime.setup_dir_config(
+                harness.setup_dir_config(
                     &self.paths.root,
                     dir,
                     &perms,
                     &jwt_token,
-                    req.task_name,
+                    Some(req.task_name),
                 )?;
                 dir.to_path_buf()
             }
@@ -381,7 +403,7 @@ impl ClatApp {
             work_dir: Some(work_dir.display().to_string()),
             session_id,
             project_id,
-            runtime: runtime_kind,
+            harness: harness_kind,
         };
         let mut task = self.store.tasks.create(new_task).await?;
 
@@ -395,15 +417,18 @@ impl ClatApp {
 
         // 6. Launch agent
         let session_id_str = session_id.to_string();
-        let result = runtime.launch_agent(LaunchConfig {
-            task_name: req.task_name,
-            session_id: &session_id_str,
-            system_prompt: system_prompt.as_deref(),
-            work_dir: &work_dir,
-            user_prompt: user_prompt.as_deref(),
-            skip_permissions: self.skip_permissions,
-            session_role: Some(req.skill_name),
-        })?;
+        let result = harness.launch_agent(
+            &self.runtime,
+            LaunchConfig {
+                task_name: req.task_name,
+                session_id: &session_id_str,
+                system_prompt: system_prompt.as_deref(),
+                work_dir: &work_dir,
+                user_prompt: user_prompt.as_deref(),
+                skip_permissions: self.skip_permissions,
+                session_role: Some(req.skill_name),
+            },
+        )?;
         if task
             .launch_agent(result.pane_id.clone(), result.window_id.clone())
             .did_execute()
@@ -431,14 +456,13 @@ impl ClatApp {
             );
         }
 
-        let runtime = self.runtime(task.runtime)?;
         let output = task
             .tmux_pane
             .as_ref()
-            .and_then(|pane| runtime.capture_pane_output(pane.as_str()).ok());
+            .and_then(|pane| self.runtime.capture_pane_output(pane.as_str()).ok());
 
         if let Some(ref window_id) = task.tmux_window {
-            let _ = runtime.kill_tmux_window(window_id.as_str());
+            let _ = self.runtime.kill_tmux_window(window_id.as_str());
         }
 
         if task.close(output).did_execute() {
@@ -453,19 +477,18 @@ impl ClatApp {
 
     pub async fn delete(&self, task_id: &str) -> anyhow::Result<DeleteOutput> {
         let mut task = self.resolve_task(task_id).await?;
-        let runtime = self.runtime(task.runtime)?;
 
         if task.status.is_running()
             && let Some(ref window_id) = task.tmux_window
         {
-            let _ = runtime.kill_tmux_window(window_id.as_str());
+            let _ = self.runtime.kill_tmux_window(window_id.as_str());
         }
 
         // Clean up the git worktree if the task used one.
         if let Some(ref work_dir) = task.work_dir
             && work_dir.contains(".claude/worktrees/")
         {
-            let _ = runtime.remove_worktree(Path::new(work_dir));
+            let _ = self.runtime.remove_worktree(Path::new(work_dir));
         }
 
         let output_task_id = task.id;
@@ -484,7 +507,7 @@ impl ClatApp {
 
     pub async fn reopen(&self, task_id: &str) -> anyhow::Result<WindowId> {
         let mut task = self.resolve_task(task_id).await?;
-        let runtime = self.runtime(task.runtime)?;
+        let harness = self.harness(task.harness)?;
 
         if task.status.is_running() {
             bail!(
@@ -521,16 +544,26 @@ impl ClatApp {
                     work_dir.display()
                 )
             })?;
-            runtime.recreate_worktree(repo_root, work_dir, &jwt_token)?;
+            self.runtime.recreate_worktree(repo_root, work_dir)?;
+            // Extract task name from worktree dir for hook env embedding.
+            let wt_name = work_dir.file_name().and_then(|n| n.to_str());
+            harness.setup_dir_config(
+                repo_root,
+                work_dir,
+                &SkillPermissions::default(),
+                &jwt_token,
+                wt_name,
+            )?;
         }
 
         let session_id = task.session_id.map(|s| s.to_string()).unwrap_or_default();
         let result = if session_id.is_empty() {
             // Legacy task without session_id — fall back to re-running launch.sh
             // which already has the correct flags baked in from launch_agent().
-            runtime.relaunch_agent(task.name.as_str(), work_dir)?
+            harness.relaunch_agent(&self.runtime, task.name.as_str(), work_dir)?
         } else {
-            runtime.resume_agent(
+            harness.resume_agent(
+                &self.runtime,
                 task.name.as_str(),
                 &session_id,
                 work_dir,
@@ -570,14 +603,13 @@ impl ClatApp {
 
     pub async fn send(&self, id_prefix: &str, message: &str) -> anyhow::Result<SendOutput> {
         let task = self.resolve_task(id_prefix).await?;
-        let runtime = self.runtime(task.runtime)?;
 
         let pane_id = task
             .tmux_pane
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("task {} has no tmux pane", task.id.short()))?;
 
-        runtime.send_keys_to_pane(pane_id.as_str(), message)?;
+        self.runtime.send_keys_to_pane(pane_id.as_str(), message)?;
         let chat = ChatId::Task(task.id);
         self.store
             .insert_message(&chat, MessageRole::User, message)
@@ -591,22 +623,17 @@ impl ClatApp {
 
     pub async fn goto(&self, id_prefix: &str) -> anyhow::Result<()> {
         let task = self.resolve_task(id_prefix).await?;
-        let runtime = self.runtime(task.runtime)?;
 
         let window_id = task
             .tmux_window
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("task {} has no tmux window", task.id.short()))?;
 
-        runtime.select_window(window_id.as_str())
+        self.runtime.select_window(window_id.as_str())
     }
 
     pub fn goto_window(&self, window_id: &WindowId) {
-        // Window navigation isn't runtime-specific (tmux-level). Use any
-        // registered runtime — Claude is always present.
-        if let Ok(runtime) = self.runtime(RuntimeKind::Claude) {
-            let _ = runtime.select_window(window_id.as_str());
-        }
+        let _ = self.runtime.select_window(window_id.as_str());
     }
 
     pub async fn log(&self, id_prefix: &str) -> anyhow::Result<LogOutput> {
@@ -615,10 +642,9 @@ impl ClatApp {
         let messages = self.store.list_messages(&chat).await?;
 
         let live_output = if task.status.is_running() {
-            let runtime = self.runtime(task.runtime)?;
             task.tmux_pane
                 .as_ref()
-                .and_then(|pane| runtime.capture_pane_output(pane.as_str()).ok())
+                .and_then(|pane| self.runtime.capture_pane_output(pane.as_str()).ok())
         } else {
             None
         };
@@ -719,11 +745,7 @@ impl ClatApp {
     }
 
     pub fn capture_pane(&self, pane_id: &str) -> Option<String> {
-        // capture_pane_output is tmux-level and identical across runtimes;
-        // any registered runtime can serve.
-        self.runtime(RuntimeKind::Claude)
-            .ok()
-            .and_then(|r| r.capture_pane_output(pane_id).ok())
+        self.runtime.capture_pane_output(pane_id).ok()
     }
 
     pub fn window_numbers(&self) -> HashMap<WindowId, String> {
@@ -775,18 +797,15 @@ impl ClatApp {
             .list_visible_for_project(Some(&project.id))
             .await?;
         for mut task in tasks {
-            let runtime = self.runtime(task.runtime).ok();
             if task.status.is_running()
                 && let Some(ref window_id) = task.tmux_window
-                && let Some(rt) = runtime
             {
-                let _ = rt.kill_tmux_window(window_id.as_str());
+                let _ = self.runtime.kill_tmux_window(window_id.as_str());
             }
             if let Some(ref work_dir) = task.work_dir
                 && work_dir.contains(".claude/worktrees/")
-                && let Some(rt) = runtime
             {
-                let _ = rt.remove_worktree(Path::new(work_dir));
+                let _ = self.runtime.remove_worktree(Path::new(work_dir));
             }
             let _ = task.close(None);
             if task.delete().did_execute() {
@@ -908,12 +927,13 @@ impl ClatApp {
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     use anyhow::bail;
 
+    use crate::harness::{Harness, HarnessKind, LaunchConfig, SkillPermissions};
     use crate::primitives::{ClaudeSessionId, PaneId, TaskId, TaskName, TaskStatus, WindowId};
-    use crate::runtime::{LaunchConfig, Runtime, RuntimeKind, SpawnResult};
+    use crate::runtime::{Runtime, SpawnResult};
     use crate::store::Store;
     use crate::task::NewTask;
 
@@ -959,8 +979,13 @@ mod tests {
         },
     }
 
+    /// Shared call log so a test can inspect both runtime and harness calls
+    /// in a single ordered sequence.
+    type Calls = Arc<Mutex<Vec<Call>>>;
+
+    /// Tracks tmux/worktree-level calls from `ClatApp` to its `Runtime`.
     struct FakeRuntime {
-        calls: Mutex<Vec<Call>>,
+        calls: Calls,
         worktree_dir: PathBuf,
         spawn_window_id: WindowId,
         spawn_pane_id: PaneId,
@@ -969,9 +994,9 @@ mod tests {
     }
 
     impl FakeRuntime {
-        fn new(worktree_dir: &Path) -> Self {
+        fn new(worktree_dir: &Path, calls: Calls) -> Self {
             Self {
-                calls: Mutex::new(Vec::new()),
+                calls,
                 worktree_dir: worktree_dir.to_path_buf(),
                 spawn_window_id: WindowId::from("@fake-win".to_string()),
                 spawn_pane_id: PaneId::from("%fake-pane".to_string()),
@@ -986,10 +1011,7 @@ mod tests {
             &self,
             _repo_root: &Path,
             name: &str,
-            _perms: &crate::runtime::SkillPermissions,
             _branch: Option<&str>,
-            _hooks_source: &Path,
-            _jwt_token: &str,
         ) -> anyhow::Result<PathBuf> {
             self.calls.lock().unwrap().push(Call::CreateWorktree {
                 name: name.to_string(),
@@ -999,30 +1021,11 @@ mod tests {
             Ok(path)
         }
 
-        fn recreate_worktree(
-            &self,
-            _repo_root: &Path,
-            work_dir: &Path,
-            _jwt_token: &str,
-        ) -> anyhow::Result<()> {
+        fn recreate_worktree(&self, _repo_root: &Path, work_dir: &Path) -> anyhow::Result<()> {
             self.calls.lock().unwrap().push(Call::RecreateWorktree {
                 work_dir: work_dir.to_path_buf(),
             });
             std::fs::create_dir_all(work_dir)?;
-            Ok(())
-        }
-
-        fn setup_dir_config(
-            &self,
-            _hooks_source: &Path,
-            work_dir: &Path,
-            _perms: &crate::runtime::SkillPermissions,
-            _jwt_token: &str,
-            _task_name: &str,
-        ) -> anyhow::Result<()> {
-            self.calls.lock().unwrap().push(Call::SetupDirConfig {
-                work_dir: work_dir.to_path_buf(),
-            });
             Ok(())
         }
 
@@ -1034,39 +1037,12 @@ mod tests {
             Ok(())
         }
 
-        fn launch_agent(&self, config: LaunchConfig) -> anyhow::Result<SpawnResult> {
-            self.calls.lock().unwrap().push(Call::LaunchAgent {
-                task_name: config.task_name.to_string(),
-                has_user_prompt: config.user_prompt.is_some(),
-            });
-            Ok(SpawnResult {
-                window_id: self.spawn_window_id.clone(),
-                pane_id: self.spawn_pane_id.clone(),
-            })
-        }
-
-        fn resume_agent(
+        fn launch_agent_window(
             &self,
-            task_name: &str,
-            _session_id: &str,
-            work_dir: &Path,
-            _skip_permissions: bool,
+            _task_name: &str,
+            _work_dir: &Path,
+            _agent_cmd: &str,
         ) -> anyhow::Result<SpawnResult> {
-            self.calls.lock().unwrap().push(Call::ResumeAgent {
-                task_name: task_name.to_string(),
-                work_dir: work_dir.to_path_buf(),
-            });
-            Ok(SpawnResult {
-                window_id: self.spawn_window_id.clone(),
-                pane_id: self.spawn_pane_id.clone(),
-            })
-        }
-
-        fn relaunch_agent(&self, task_name: &str, work_dir: &Path) -> anyhow::Result<SpawnResult> {
-            self.calls.lock().unwrap().push(Call::ResumeAgent {
-                task_name: task_name.to_string(),
-                work_dir: work_dir.to_path_buf(),
-            });
             Ok(SpawnResult {
                 window_id: self.spawn_window_id.clone(),
                 pane_id: self.spawn_pane_id.clone(),
@@ -1115,10 +1091,112 @@ mod tests {
             });
             Ok(())
         }
+    }
+
+    /// Tracks harness-level calls (`setup_dir_config`, `launch_agent`, …).
+    struct FakeHarness {
+        calls: Calls,
+        spawn_window_id: WindowId,
+        spawn_pane_id: PaneId,
+    }
+
+    impl FakeHarness {
+        fn new(calls: Calls) -> Self {
+            Self {
+                calls,
+                spawn_window_id: WindowId::from("@fake-win".to_string()),
+                spawn_pane_id: PaneId::from("%fake-pane".to_string()),
+            }
+        }
+
+        fn spawn_result(&self) -> SpawnResult {
+            SpawnResult {
+                window_id: self.spawn_window_id.clone(),
+                pane_id: self.spawn_pane_id.clone(),
+            }
+        }
+    }
+
+    impl Harness<FakeRuntime> for FakeHarness {
+        fn setup_dir_config(
+            &self,
+            _repo_root: &Path,
+            work_dir: &Path,
+            _perms: &SkillPermissions,
+            _jwt_token: &str,
+            _task_name: Option<&str>,
+        ) -> anyhow::Result<()> {
+            self.calls.lock().unwrap().push(Call::SetupDirConfig {
+                work_dir: work_dir.to_path_buf(),
+            });
+            Ok(())
+        }
+
+        fn launch_agent(
+            &self,
+            _runtime: &FakeRuntime,
+            config: LaunchConfig,
+        ) -> anyhow::Result<SpawnResult> {
+            self.calls.lock().unwrap().push(Call::LaunchAgent {
+                task_name: config.task_name.to_string(),
+                has_user_prompt: config.user_prompt.is_some(),
+            });
+            Ok(self.spawn_result())
+        }
+
+        fn resume_agent(
+            &self,
+            _runtime: &FakeRuntime,
+            task_name: &str,
+            _session_id: &str,
+            work_dir: &Path,
+            _skip_permissions: bool,
+        ) -> anyhow::Result<SpawnResult> {
+            self.calls.lock().unwrap().push(Call::ResumeAgent {
+                task_name: task_name.to_string(),
+                work_dir: work_dir.to_path_buf(),
+            });
+            Ok(self.spawn_result())
+        }
+
+        fn relaunch_agent(
+            &self,
+            _runtime: &FakeRuntime,
+            task_name: &str,
+            work_dir: &Path,
+        ) -> anyhow::Result<SpawnResult> {
+            self.calls.lock().unwrap().push(Call::ResumeAgent {
+                task_name: task_name.to_string(),
+                work_dir: work_dir.to_path_buf(),
+            });
+            Ok(self.spawn_result())
+        }
 
         fn is_pane_idle(&self, _pane_output: &str) -> bool {
             true
         }
+    }
+
+    /// Bundle a service together with the shared call log and runtime handle
+    /// so tests can both drive the service and inspect the recorded calls.
+    struct TestRig {
+        service: ClatApp<FakeRuntime>,
+        calls: Calls,
+    }
+
+    async fn build_rig(tmp: &Path) -> TestRig {
+        build_rig_with(tmp, |_| {}).await
+    }
+
+    async fn build_rig_with<F: FnOnce(&FakeRuntime)>(tmp: &Path, configure: F) -> TestRig {
+        let paths = test_paths(tmp);
+        let store = Store::open_in_memory().await.unwrap();
+        let calls: Calls = Arc::new(Mutex::new(Vec::new()));
+        let runtime = FakeRuntime::new(tmp, Arc::clone(&calls));
+        configure(&runtime);
+        let harness: Arc<dyn Harness<FakeRuntime>> = Arc::new(FakeHarness::new(Arc::clone(&calls)));
+        let service = ClatApp::new_with_harness(store, runtime, harness, paths).await;
+        TestRig { service, calls }
     }
 
     fn test_paths(tmp: &Path) -> Paths {
@@ -1151,7 +1229,7 @@ prompt = "noop prompt"
         }
     }
 
-    async fn spawn_test_task(service: &ClatApp) -> SpawnOutput {
+    async fn spawn_test_task(service: &ClatApp<FakeRuntime>) -> SpawnOutput {
         service
             .spawn(SpawnRequest {
                 task_name: "test-task",
@@ -1163,7 +1241,7 @@ prompt = "noop prompt"
                 },
                 prompt_mode: PromptMode::Full,
                 project: None,
-                runtime: None,
+                harness: None,
             })
             .await
             .expect("spawn should succeed")
@@ -1172,18 +1250,15 @@ prompt = "noop prompt"
     #[tokio::test]
     async fn spawn_creates_task_and_calls_runtime() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().await.unwrap();
-        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
-        let service = ClatApp::new(store, runtime.clone(), paths).await;
+        let rig = build_rig(tmp.path()).await;
 
-        let output = spawn_test_task(&service).await;
+        let output = spawn_test_task(&rig.service).await;
 
         assert_eq!(output.task_name, "test-task");
         assert_eq!(output.skill_name, "noop");
         assert_eq!(output.window_id, "@fake-win");
 
-        let tasks = service.store().tasks.list_active().await.unwrap();
+        let tasks = rig.service.store().tasks.list_active().await.unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].name, "test-task");
         assert_eq!(
@@ -1192,14 +1267,15 @@ prompt = "noop prompt"
         );
 
         let chat = ChatId::Task(tasks[0].id);
-        let messages = service.store().list_messages(&chat).await.unwrap();
+        let messages = rig.service.store().list_messages(&chat).await.unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, MessageRole::System);
 
-        let calls = runtime.calls.lock().unwrap();
+        let calls = rig.calls.lock().unwrap();
         assert!(matches!(calls[0], Call::CreateWorktree { .. }));
+        assert!(matches!(calls[1], Call::SetupDirConfig { .. }));
         assert!(matches!(
-            calls[1],
+            calls[2],
             Call::LaunchAgent {
                 has_user_prompt: true,
                 ..
@@ -1210,17 +1286,19 @@ prompt = "noop prompt"
     #[tokio::test]
     async fn close_captures_output_before_killing_window() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().await.unwrap();
-        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
-        let service = ClatApp::new(store, runtime.clone(), paths).await;
+        let rig = build_rig(tmp.path()).await;
 
-        let spawned = spawn_test_task(&service).await;
-        let result = service.close(&spawned.task_id.to_string()).await.unwrap();
+        let spawned = spawn_test_task(&rig.service).await;
+        let result = rig
+            .service
+            .close(&spawned.task_id.to_string())
+            .await
+            .unwrap();
 
         assert_eq!(result.task_name, "test-task");
 
-        let task = service
+        let task = rig
+            .service
             .store()
             .tasks
             .maybe_find_by_id_prefix(&spawned.task_id.to_string())
@@ -1230,7 +1308,7 @@ prompt = "noop prompt"
         assert_eq!(task.status, TaskStatus::Closed);
         assert_eq!(task.output.as_deref(), Some("captured output"));
 
-        let calls = runtime.calls.lock().unwrap();
+        let calls = rig.calls.lock().unwrap();
         let capture_pos = calls
             .iter()
             .position(|c| matches!(c, Call::CaptureOutput { .. }))
@@ -1245,18 +1323,15 @@ prompt = "noop prompt"
     #[tokio::test]
     async fn close_rejects_non_running_task() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().await.unwrap();
-        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
-        let service = ClatApp::new(store, runtime.clone(), paths).await;
+        let rig = build_rig(tmp.path()).await;
 
-        let spawned = spawn_test_task(&service).await;
-        service
+        let spawned = spawn_test_task(&rig.service).await;
+        rig.service
             .complete(&spawned.task_id.to_string(), 0, None)
             .await
             .unwrap();
 
-        let err = service.close(&spawned.task_id.to_string()).await;
+        let err = rig.service.close(&spawned.task_id.to_string()).await;
         assert!(err.is_err());
         assert!(err.unwrap_err().to_string().contains("not 'running'"));
     }
@@ -1264,27 +1339,24 @@ prompt = "noop prompt"
     #[tokio::test]
     async fn close_succeeds_even_if_kill_fails() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().await.unwrap();
-        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
-        *runtime.kill_should_fail.lock().unwrap() = true;
-        let service = ClatApp::new(store, runtime.clone(), paths).await;
+        let rig = build_rig_with(tmp.path(), |runtime| {
+            *runtime.kill_should_fail.lock().unwrap() = true;
+        })
+        .await;
 
-        let spawned = spawn_test_task(&service).await;
-        let result = service.close(&spawned.task_id.to_string()).await;
+        let spawned = spawn_test_task(&rig.service).await;
+        let result = rig.service.close(&spawned.task_id.to_string()).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn send_dispatches_and_records_message() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().await.unwrap();
-        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
-        let service = ClatApp::new(store, runtime.clone(), paths).await;
+        let rig = build_rig(tmp.path()).await;
 
-        let spawned = spawn_test_task(&service).await;
-        let result = service
+        let spawned = spawn_test_task(&rig.service).await;
+        let result = rig
+            .service
             .send(&spawned.task_id.to_string(), "hello agent")
             .await
             .unwrap();
@@ -1292,14 +1364,15 @@ prompt = "noop prompt"
         assert_eq!(result.task_name, "test-task");
 
         {
-            let calls = runtime.calls.lock().unwrap();
+            let calls = rig.calls.lock().unwrap();
             assert!(calls.iter().any(|c| matches!(c,
                 Call::SendKeys { pane_id, message }
                 if pane_id == "%fake-pane" && message == "hello agent"
             )));
         }
 
-        let task = service
+        let task = rig
+            .service
             .store()
             .tasks
             .maybe_find_by_id_prefix(&spawned.task_id.to_string())
@@ -1307,7 +1380,7 @@ prompt = "noop prompt"
             .unwrap()
             .unwrap();
         let chat = ChatId::Task(task.id);
-        let messages = service.store().list_messages(&chat).await.unwrap();
+        let messages = rig.service.store().list_messages(&chat).await.unwrap();
         assert!(
             messages
                 .iter()
@@ -1318,15 +1391,15 @@ prompt = "noop prompt"
     #[tokio::test]
     async fn goto_calls_select_window() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().await.unwrap();
-        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
-        let service = ClatApp::new(store, runtime.clone(), paths).await;
+        let rig = build_rig(tmp.path()).await;
 
-        let spawned = spawn_test_task(&service).await;
-        service.goto(&spawned.task_id.to_string()).await.unwrap();
+        let spawned = spawn_test_task(&rig.service).await;
+        rig.service
+            .goto(&spawned.task_id.to_string())
+            .await
+            .unwrap();
 
-        let calls = runtime.calls.lock().unwrap();
+        let calls = rig.calls.lock().unwrap();
         assert!(calls.iter().any(|c| matches!(c,
             Call::SelectWindow { window_id } if window_id == "@fake-win"
         )));
@@ -1335,10 +1408,7 @@ prompt = "noop prompt"
     #[tokio::test]
     async fn goto_errors_on_missing_window() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().await.unwrap();
-        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
-        let service = ClatApp::new(store, runtime.clone(), paths).await;
+        let rig = build_rig(tmp.path()).await;
 
         // Create a task without launching agent (no tmux_window)
         let new_task = NewTask {
@@ -1349,11 +1419,11 @@ prompt = "noop prompt"
             work_dir: None,
             session_id: ClaudeSessionId::new(),
             project_id: None,
-            runtime: RuntimeKind::Claude,
+            harness: HarnessKind::Claude,
         };
-        let task = service.store().tasks.create(new_task).await.unwrap();
+        let task = rig.service.store().tasks.create(new_task).await.unwrap();
 
-        let err = service.goto(&task.id.to_string()).await;
+        let err = rig.service.goto(&task.id.to_string()).await;
         assert!(err.is_err());
         assert!(err.unwrap_err().to_string().contains("no tmux window"));
     }
@@ -1361,18 +1431,15 @@ prompt = "noop prompt"
     #[tokio::test]
     async fn log_returns_messages_and_live_output() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().await.unwrap();
-        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
-        let service = ClatApp::new(store, runtime.clone(), paths).await;
+        let rig = build_rig(tmp.path()).await;
 
-        let spawned = spawn_test_task(&service).await;
-        service
+        let spawned = spawn_test_task(&rig.service).await;
+        rig.service
             .send(&spawned.task_id.to_string(), "hello")
             .await
             .unwrap();
 
-        let log = service.log(&spawned.task_id.to_string()).await.unwrap();
+        let log = rig.service.log(&spawned.task_id.to_string()).await.unwrap();
         assert_eq!(log.task.name, "test-task");
         assert_eq!(log.messages.len(), 2);
         assert!(log.live_output.is_some());
@@ -1382,32 +1449,32 @@ prompt = "noop prompt"
     #[tokio::test]
     async fn list_active_excludes_completed() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().await.unwrap();
-        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
-        let service = ClatApp::new(store, runtime.clone(), paths).await;
+        let rig = build_rig(tmp.path()).await;
 
-        let spawned1 = spawn_test_task(&service).await;
-        let _spawned2 = spawn_test_task(&service).await;
+        let spawned1 = spawn_test_task(&rig.service).await;
+        let _spawned2 = spawn_test_task(&rig.service).await;
 
-        service
+        rig.service
             .complete(&spawned1.task_id.to_string(), 0, None)
             .await
             .unwrap();
 
-        let active = service.list_active().await.unwrap();
+        let active = rig.service.list_active().await.unwrap();
         assert_eq!(active.len(), 1);
 
-        let all = service.list_tasks(true, None).await.unwrap();
+        let all = rig.service.list_tasks(true, None).await.unwrap();
         assert_eq!(all.len(), 2);
     }
 
     #[tokio::test]
     async fn list_skills_returns_available_skills() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
+        let rig = build_rig(tmp.path()).await;
         std::fs::write(
-            paths.skills_dir.join("deploy.toml"),
+            rig.service
+                .project_root()
+                .join("skills")
+                .join("deploy.toml"),
             r#"
 [skill]
 name = "deploy"
@@ -1423,11 +1490,7 @@ prompt = "deploy to {{ env }}"
         )
         .unwrap();
 
-        let store = Store::open_in_memory().await.unwrap();
-        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
-        let service = ClatApp::new(store, runtime.clone(), paths).await;
-
-        let skills = service.list_skills().unwrap();
+        let skills = rig.service.list_skills().unwrap();
         assert_eq!(skills.len(), 2);
         assert_eq!(skills[0].name, "deploy");
         assert_eq!(skills[0].description, "deploy to prod");
@@ -1438,22 +1501,23 @@ prompt = "deploy to {{ env }}"
     #[tokio::test]
     async fn reopen_passes_work_dir_to_resume_agent() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().await.unwrap();
-        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
-        let service = ClatApp::new(store, runtime.clone(), paths).await;
+        let rig = build_rig(tmp.path()).await;
 
-        let spawned = spawn_test_task(&service).await;
-        service
+        let spawned = spawn_test_task(&rig.service).await;
+        rig.service
             .complete(&spawned.task_id.to_string(), 0, None)
             .await
             .unwrap();
 
-        let window_id = service.reopen(&spawned.task_id.to_string()).await.unwrap();
+        let window_id = rig
+            .service
+            .reopen(&spawned.task_id.to_string())
+            .await
+            .unwrap();
         assert_eq!(window_id, "@fake-win");
 
         {
-            let calls = runtime.calls.lock().unwrap();
+            let calls = rig.calls.lock().unwrap();
             let resume_call = calls
                 .iter()
                 .find(|c| matches!(c, Call::ResumeAgent { .. }))
@@ -1471,7 +1535,8 @@ prompt = "deploy to {{ env }}"
             }
         }
 
-        let task = service
+        let task = rig
+            .service
             .store()
             .tasks
             .maybe_find_by_id_prefix(&spawned.task_id.to_string())
@@ -1492,18 +1557,16 @@ prompt = "deploy to {{ env }}"
     #[tokio::test]
     async fn reopen_recreates_missing_worktree() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().await.unwrap();
-        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
-        let service = ClatApp::new(store, runtime.clone(), paths).await;
+        let rig = build_rig(tmp.path()).await;
 
-        let spawned = spawn_test_task(&service).await;
-        service
+        let spawned = spawn_test_task(&rig.service).await;
+        rig.service
             .complete(&spawned.task_id.to_string(), 0, None)
             .await
             .unwrap();
 
-        let task = service
+        let task = rig
+            .service
             .store()
             .tasks
             .maybe_find_by_id_prefix(&spawned.task_id.to_string())
@@ -1513,11 +1576,15 @@ prompt = "deploy to {{ env }}"
         let work_dir = task.work_dir.as_deref().unwrap();
         std::fs::remove_dir_all(work_dir).unwrap();
 
-        let window_id = service.reopen(&spawned.task_id.to_string()).await.unwrap();
+        let window_id = rig
+            .service
+            .reopen(&spawned.task_id.to_string())
+            .await
+            .unwrap();
         assert_eq!(window_id, "@fake-win");
 
         {
-            let calls = runtime.calls.lock().unwrap();
+            let calls = rig.calls.lock().unwrap();
             assert!(
                 calls
                     .iter()
@@ -1526,7 +1593,8 @@ prompt = "deploy to {{ env }}"
             );
         }
 
-        let task = service
+        let task = rig
+            .service
             .store()
             .tasks
             .maybe_find_by_id_prefix(&spawned.task_id.to_string())
@@ -1539,14 +1607,11 @@ prompt = "deploy to {{ env }}"
     #[tokio::test]
     async fn reopen_rejects_already_running_task() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().await.unwrap();
-        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
-        let service = ClatApp::new(store, runtime.clone(), paths).await;
+        let rig = build_rig(tmp.path()).await;
 
-        let spawned = spawn_test_task(&service).await;
+        let spawned = spawn_test_task(&rig.service).await;
 
-        let err = service.reopen(&spawned.task_id.to_string()).await;
+        let err = rig.service.reopen(&spawned.task_id.to_string()).await;
         assert!(err.is_err());
         assert!(err.unwrap_err().to_string().contains("already running"));
     }
@@ -1554,22 +1619,20 @@ prompt = "deploy to {{ env }}"
     #[tokio::test]
     async fn spawn_existing_uses_setup_dir_config_and_interactive() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().await.unwrap();
-        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
-        let service = ClatApp::new(store, runtime.clone(), paths).await;
+        let rig = build_rig(tmp.path()).await;
 
-        let output = service
+        let output = rig
+            .service
             .spawn(SpawnRequest {
                 task_name: "nw-task",
                 skill_name: "noop",
                 params: vec![],
                 work_dir_mode: WorkDirMode::Existing {
-                    dir: service.project_root(),
+                    dir: rig.service.project_root(),
                 },
                 prompt_mode: PromptMode::Interactive,
                 project: None,
-                runtime: None,
+                harness: None,
             })
             .await
             .unwrap();
@@ -1578,11 +1641,11 @@ prompt = "deploy to {{ env }}"
         assert_eq!(output.skill_name, "noop");
         assert_eq!(output.window_id, "@fake-win");
 
-        let tasks = service.store().tasks.list_active().await.unwrap();
+        let tasks = rig.service.store().tasks.list_active().await.unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].name, "nw-task");
 
-        let calls = runtime.calls.lock().unwrap();
+        let calls = rig.calls.lock().unwrap();
         assert!(
             !calls
                 .iter()
@@ -1602,15 +1665,13 @@ prompt = "deploy to {{ env }}"
     #[tokio::test]
     async fn spawn_existing_uses_custom_dir_path() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().await.unwrap();
-        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
-        let service = ClatApp::new(store, runtime.clone(), paths).await;
+        let rig = build_rig(tmp.path()).await;
 
         let custom_repo = tmp.path().join("other-repo");
         std::fs::create_dir_all(&custom_repo).unwrap();
 
-        let output = service
+        let output = rig
+            .service
             .spawn(SpawnRequest {
                 task_name: "nw-task",
                 skill_name: "noop",
@@ -1618,13 +1679,14 @@ prompt = "deploy to {{ env }}"
                 work_dir_mode: WorkDirMode::Existing { dir: &custom_repo },
                 prompt_mode: PromptMode::Interactive,
                 project: None,
-                runtime: None,
+                harness: None,
             })
             .await
             .unwrap();
         assert_eq!(output.task_name, "nw-task");
 
-        let task = service
+        let task = rig
+            .service
             .store()
             .tasks
             .maybe_find_by_id_prefix(&output.task_id.to_string())
@@ -1636,7 +1698,7 @@ prompt = "deploy to {{ env }}"
             Some(custom_repo.to_str().unwrap())
         );
 
-        let calls = runtime.calls.lock().unwrap();
+        let calls = rig.calls.lock().unwrap();
         let setup_call = calls
             .iter()
             .find(|c| matches!(c, Call::SetupDirConfig { .. }))
@@ -1649,12 +1711,10 @@ prompt = "deploy to {{ env }}"
     #[tokio::test]
     async fn spawn_scratch_creates_scratch_dir_and_launches_agent() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().await.unwrap();
-        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
-        let service = ClatApp::new(store, runtime.clone(), paths).await;
+        let rig = build_rig(tmp.path()).await;
 
-        let output = service
+        let output = rig
+            .service
             .spawn(SpawnRequest {
                 task_name: "scratch-task",
                 skill_name: "noop",
@@ -1662,7 +1722,7 @@ prompt = "deploy to {{ env }}"
                 work_dir_mode: WorkDirMode::Scratch,
                 prompt_mode: PromptMode::Full,
                 project: None,
-                runtime: None,
+                harness: None,
             })
             .await
             .unwrap();
@@ -1671,7 +1731,7 @@ prompt = "deploy to {{ env }}"
         assert_eq!(output.skill_name, "noop");
         assert_eq!(output.window_id, "@fake-win");
 
-        let tasks = service.store().tasks.list_active().await.unwrap();
+        let tasks = rig.service.store().tasks.list_active().await.unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].name, "scratch-task");
 
@@ -1681,7 +1741,7 @@ prompt = "deploy to {{ env }}"
             Some(expected_scratch.to_str().unwrap())
         );
 
-        let calls = runtime.calls.lock().unwrap();
+        let calls = rig.calls.lock().unwrap();
         assert!(
             !calls
                 .iter()
@@ -1702,12 +1762,10 @@ prompt = "deploy to {{ env }}"
     #[tokio::test]
     async fn create_and_list_projects() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().await.unwrap();
-        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
-        let service = ClatApp::new(store, runtime.clone(), paths).await;
+        let rig = build_rig(tmp.path()).await;
 
-        let project = service
+        let project = rig
+            .service
             .create_project("web-app", "frontend project")
             .await
             .unwrap();
@@ -1715,7 +1773,7 @@ prompt = "deploy to {{ env }}"
         assert_eq!(project.description, "frontend project");
         assert!(!project.id.to_string().is_empty());
 
-        let projects = service.list_projects().await.unwrap();
+        let projects = rig.service.list_projects().await.unwrap();
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].name, "web-app");
     }
@@ -1723,58 +1781,59 @@ prompt = "deploy to {{ env }}"
     #[tokio::test]
     async fn delete_project_by_name() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().await.unwrap();
-        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
-        let service = ClatApp::new(store, runtime.clone(), paths).await;
+        let rig = build_rig(tmp.path()).await;
 
-        service.create_project("temp-proj", "").await.unwrap();
-        assert_eq!(service.list_projects().await.unwrap().len(), 1);
+        rig.service.create_project("temp-proj", "").await.unwrap();
+        assert_eq!(rig.service.list_projects().await.unwrap().len(), 1);
 
-        service.delete_project("temp-proj").await.unwrap();
-        assert!(service.list_projects().await.unwrap().is_empty());
+        rig.service.delete_project("temp-proj").await.unwrap();
+        assert!(rig.service.list_projects().await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn delete_project_cascades_to_tasks() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().await.unwrap();
-        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
-        let service = ClatApp::new(store, runtime.clone(), paths).await;
+        let rig = build_rig(tmp.path()).await;
 
-        let proj = service.create_project("doomed", "").await.unwrap();
+        let proj = rig.service.create_project("doomed", "").await.unwrap();
         let proj_id = proj.id;
 
         // Spawn a task inside the project.
-        service
+        rig.service
             .spawn(SpawnRequest {
                 task_name: "proj-task",
                 skill_name: "noop",
                 params: vec![],
                 work_dir_mode: WorkDirMode::Worktree {
-                    repo: service.project_root(),
+                    repo: rig.service.project_root(),
                     branch: None,
                 },
                 prompt_mode: PromptMode::Full,
                 project: Some("doomed".to_string()),
-                runtime: None,
+                harness: None,
             })
             .await
             .unwrap();
 
         // Spawn an unscoped task that should survive.
-        spawn_test_task(&service).await;
+        spawn_test_task(&rig.service).await;
 
-        assert_eq!(service.list_visible(Some(&proj_id)).await.unwrap().len(), 1);
-        assert_eq!(service.list_visible(None).await.unwrap().len(), 1);
+        assert_eq!(
+            rig.service
+                .list_visible(Some(&proj_id))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(rig.service.list_visible(None).await.unwrap().len(), 1);
 
         // Delete the project — should cascade-delete the project task.
-        service.delete_project("doomed").await.unwrap();
+        rig.service.delete_project("doomed").await.unwrap();
 
-        assert!(service.list_projects().await.unwrap().is_empty());
+        assert!(rig.service.list_projects().await.unwrap().is_empty());
         assert!(
-            service
+            rig.service
                 .list_visible(Some(&proj_id))
                 .await
                 .unwrap()
@@ -1782,7 +1841,7 @@ prompt = "deploy to {{ env }}"
             "project task should be deleted"
         );
         assert_eq!(
-            service.list_visible(None).await.unwrap().len(),
+            rig.service.list_visible(None).await.unwrap().len(),
             1,
             "unscoped task should survive"
         );
@@ -1791,47 +1850,42 @@ prompt = "deploy to {{ env }}"
     #[tokio::test]
     async fn delete_project_errors_on_unknown_name() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().await.unwrap();
-        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
-        let service = ClatApp::new(store, runtime.clone(), paths).await;
+        let rig = build_rig(tmp.path()).await;
 
-        let err = service.delete_project("ghost").await;
+        let err = rig.service.delete_project("ghost").await;
         assert!(err.is_err());
     }
 
     #[tokio::test]
     async fn list_visible_scoped_to_project() {
         let tmp = tempfile::tempdir().unwrap();
-        let paths = test_paths(tmp.path());
-        let store = Store::open_in_memory().await.unwrap();
-        let runtime = std::sync::Arc::new(FakeRuntime::new(tmp.path()));
-        let service = ClatApp::new(store, runtime.clone(), paths).await;
+        let rig = build_rig(tmp.path()).await;
 
-        let proj = service.create_project("test-proj", "").await.unwrap();
+        let proj = rig.service.create_project("test-proj", "").await.unwrap();
         let proj_id = proj.id;
-        let out1 = service
+        let out1 = rig
+            .service
             .spawn(SpawnRequest {
                 task_name: "proj-task",
                 skill_name: "noop",
                 params: vec![],
                 work_dir_mode: WorkDirMode::Worktree {
-                    repo: service.project_root(),
+                    repo: rig.service.project_root(),
                     branch: None,
                 },
                 prompt_mode: PromptMode::Full,
                 project: Some("test-proj".to_string()),
-                runtime: None,
+                harness: None,
             })
             .await
             .unwrap();
-        let out2 = spawn_test_task(&service).await;
+        let out2 = spawn_test_task(&rig.service).await;
 
-        let unscoped = service.list_visible(None).await.unwrap();
+        let unscoped = rig.service.list_visible(None).await.unwrap();
         assert_eq!(unscoped.len(), 1);
         assert_eq!(unscoped[0].id, out2.task_id);
 
-        let scoped = service.list_visible(Some(&proj_id)).await.unwrap();
+        let scoped = rig.service.list_visible(Some(&proj_id)).await.unwrap();
         assert_eq!(scoped.len(), 1);
         assert_eq!(scoped[0].id, out1.task_id);
     }
