@@ -320,6 +320,490 @@ impl Runtime for TmuxRuntime {
     }
 }
 
+/// Copy hooks config and write settings into a worktree's `.claude/` directory.
+/// This is shared between initial creation and worktree recreation (reopen).
+fn setup_worktree_config(
+    repo_root: &Path,
+    worktree_path: &Path,
+    perms: &SkillPermissions,
+    jwt_token: &str,
+    task_name: Option<&str>,
+) -> anyhow::Result<()> {
+    let source_claude_dir = repo_root.join(".claude");
+    let target_claude_dir = worktree_path.join(".claude");
+    if source_claude_dir.is_dir() {
+        std::fs::create_dir_all(&target_claude_dir)?;
+
+        // Copy hooks directory
+        let source_hooks = source_claude_dir.join("hooks");
+        let target_hooks = target_claude_dir.join("hooks");
+        if source_hooks.is_dir() {
+            copy_dir_recursive(&source_hooks, &target_hooks)?;
+        }
+
+        // Write settings with hooks and base allowed tools.
+        // Hooks route permission requests to the dashboard.
+        // Base allowed tools let agents run common safe commands
+        // (git, cargo, nix, etc.) without manual approval each time.
+        let target_settings = target_claude_dir.join("settings.local.json");
+        let mut settings = serde_json::json!({
+            "hooks": hooks_json()
+        });
+        // Merge skill-level tools (Read, Glob, Edit, etc.) with base
+        // Bash-pattern tools (nix develop, cargo fmt, etc.) into a single
+        // permissions.allow list.  Claude Code reads this key from settings
+        // files — "allowedTools" is only valid as a CLI flag.
+        let mut allowed: Vec<String> = perms.allowed_tools.to_vec();
+        for tool in base_tools_for(perms.base_tools) {
+            allowed.push(tool.to_string());
+        }
+        for pattern in perms.bash_patterns {
+            allowed.push(format!("Bash({pattern})"));
+        }
+        settings["permissions"] = serde_json::json!({"allow": allowed});
+        // Embed CC_PERM_SOCKET into hook commands so agents connect
+        // to this dashboard's session-scoped permission socket.
+        // Try env var first (TUI process), then breadcrumb file (CLI spawns).
+        let sock_path = std::env::var(crate::permission::SOCKET_ENV)
+            .ok()
+            .or_else(|| crate::permission::read_socket_breadcrumb(repo_root));
+        if let Some(sock_path) = sock_path {
+            embed_env_in_hooks(&mut settings, &sock_path, task_name);
+            // Write perm-socket breadcrumb into the worktree so that
+            // send_pm_message / send_exo_message can discover the socket.
+            let _ = std::fs::write(target_claude_dir.join("perm-socket"), &sock_path);
+        }
+
+        // Write .mcp.json at worktree root so Claude Code discovers the MCP server.
+        // Claude Code reads MCP servers from .mcp.json (project scope), NOT from
+        // the mcpServers key in settings.local.json.
+        if let Some(mcp_url) = crate::mcp::read_mcp_url_breadcrumb(repo_root) {
+            // Read existing .mcp.json (target repo may have committed servers) or start fresh.
+            let mcp_path = worktree_path.join(".mcp.json");
+            let mut mcp_config: serde_json::Value = if mcp_path.exists() {
+                let content = std::fs::read_to_string(&mcp_path)?;
+                serde_json::from_str(&content)
+                    .unwrap_or_else(|_| serde_json::json!({"mcpServers": {}}))
+            } else {
+                serde_json::json!({"mcpServers": {}})
+            };
+
+            // Ensure mcpServers key exists as an object.
+            if !mcp_config.get("mcpServers").is_some_and(|v| v.is_object()) {
+                mcp_config["mcpServers"] = serde_json::json!({});
+            }
+            let servers = mcp_config["mcpServers"].as_object_mut().unwrap();
+
+            // Always add clat MCP server.
+            // Include the JWT in both the URL query param and Authorization header
+            // for resilience against Claude Code header bugs.
+            servers.insert(
+                "clat".to_string(),
+                serde_json::json!({
+                    "type": "http",
+                    "url": format!("{mcp_url}?token={jwt_token}"),
+                    "headers": {
+                        "Authorization": format!("Bearer {jwt_token}")
+                    }
+                }),
+            );
+
+            std::fs::write(&mcp_path, serde_json::to_string_pretty(&mcp_config)?)?;
+
+            // Register MCP servers as local-scoped so Claude Code trusts them
+            // immediately — no "N new MCP servers found" approval prompt.
+            let clat_url = format!("{mcp_url}?token={jwt_token}");
+            let auth_value = format!("Bearer {jwt_token}");
+            register_local_mcp_server(
+                worktree_path,
+                "clat",
+                &clat_url,
+                &[("Authorization", &auth_value)],
+            );
+            settings["enableAllProjectMcpServers"] = serde_json::json!(true);
+
+            // Auto-allow MCP tools so agents don't need manual approval.
+            if let Some(perms_allow) = settings
+                .get_mut("permissions")
+                .and_then(|p| p.get_mut("allow"))
+                .and_then(|a| a.as_array_mut())
+            {
+                perms_allow.push(serde_json::json!("mcp__clat__clat_spawn"));
+                perms_allow.push(serde_json::json!("mcp__clat__create_watch"));
+                perms_allow.push(serde_json::json!("mcp__clat__send_message"));
+                perms_allow.push(serde_json::json!("mcp__clat__list_tasks"));
+                perms_allow.push(serde_json::json!("mcp__clat__task_log"));
+                perms_allow.push(serde_json::json!("mcp__clat__store_memory"));
+                perms_allow.push(serde_json::json!("mcp__clat__search_memory"));
+                perms_allow.push(serde_json::json!("mcp__clat__list_memories"));
+                perms_allow.push(serde_json::json!("mcp__galoy-agents__search_tools"));
+                perms_allow.push(serde_json::json!("mcp__galoy-agents__describe_tool"));
+                perms_allow.push(serde_json::json!("mcp__galoy-agents__call_tool"));
+                perms_allow.push(serde_json::json!("mcp__galoy-agents__hello"));
+                perms_allow.push(serde_json::json!("mcp__galoy-agents__search_code"));
+                perms_allow.push(serde_json::json!("mcp__drua__whoami"));
+                perms_allow.push(serde_json::json!("mcp__drua__search_tools"));
+                perms_allow.push(serde_json::json!("mcp__drua__describe_tool"));
+                perms_allow.push(serde_json::json!("mcp__drua__call_tool"));
+                perms_allow.push(serde_json::json!("mcp__drua__compose"));
+                perms_allow.push(serde_json::json!("mcp__drua__compose_types"));
+            }
+
+            // Use .git/info/exclude instead of .gitignore — never committed.
+            exclude_from_git(worktree_path, ".mcp.json")?;
+        }
+
+        std::fs::write(&target_settings, settings.to_string())?;
+
+        // Ignore all generated files so agents don't commit them.
+        std::fs::write(
+            target_claude_dir.join(".gitignore"),
+            "launch.sh\nprompt.txt\nidle-prompt.txt\nsystem-prompt.txt\nsettings.local.json\nhooks/\n.gitignore\nperm-socket\nskip-permissions\n",
+        )?;
+    }
+    Ok(())
+}
+
+/// Merge non-managed keys from the source repo's `.claude/settings.local.json`
+/// into the worktree's settings. Keys like `mcpServers` are preserved while
+/// managed keys (`hooks`, `permissions`) already set by [`setup_worktree_config`]
+/// take precedence.
+fn merge_repo_settings(repo_root: &Path, worktree_path: &Path) -> anyhow::Result<()> {
+    let repo_settings_path = repo_root.join(".claude").join("settings.local.json");
+    if !repo_settings_path.is_file() {
+        return Ok(());
+    }
+
+    let repo_content = std::fs::read_to_string(&repo_settings_path)?;
+    let repo_settings: serde_json::Value = serde_json::from_str(&repo_content)?;
+    let Some(repo_obj) = repo_settings.as_object() else {
+        return Ok(());
+    };
+
+    let wt_settings_path = worktree_path.join(".claude").join("settings.local.json");
+    let wt_content = std::fs::read_to_string(&wt_settings_path).unwrap_or_default();
+    let mut wt_settings: serde_json::Value =
+        serde_json::from_str(&wt_content).unwrap_or_else(|_| serde_json::json!({}));
+
+    if let Some(wt_obj) = wt_settings.as_object_mut() {
+        for (key, value) in repo_obj {
+            if !wt_obj.contains_key(key) {
+                wt_obj.insert(key.clone(), value.clone());
+            }
+        }
+    }
+
+    std::fs::write(&wt_settings_path, wt_settings.to_string())?;
+    Ok(())
+}
+
+/// Generate the hooks JSON for spawned agent settings.
+///
+/// Hook events:
+/// - `Notification` with matchers for idle/active detection
+/// - `PostToolUse` for in-pane permission clearing
+/// - `PermissionRequest` for routing permissions to the dashboard
+/// - `PreToolUse` for pre-execution observation
+/// - `Stop` for agent stop signals
+/// - `UserPromptSubmit` for user prompt tracking
+/// - `SubagentStop` for sub-agent lifecycle tracking
+fn hooks_json() -> serde_json::Value {
+    let hook = |script: &str, timeout: u64| -> serde_json::Value {
+        serde_json::json!({
+            "type": "command",
+            "command": format!("\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/{script}"),
+            "timeout": timeout
+        })
+    };
+
+    serde_json::json!({
+        "Notification": [
+            {
+                "matcher": "idle_prompt",
+                "hooks": [hook("notification-idle.sh", 10)]
+            },
+            {
+                "matcher": "permission_prompt",
+                "hooks": [hook("notification-active.sh", 10)]
+            },
+            {
+                "matcher": "elicitation_dialog",
+                "hooks": [hook("notification-active.sh", 10)]
+            }
+        ],
+        "PostToolUse": [
+            { "hooks": [hook("post-tool-resolved.sh", 10)] }
+        ],
+        "PermissionRequest": [
+            { "hooks": [hook("permission-gate.sh", 620)] }
+        ],
+        "PreToolUse": [
+            { "hooks": [hook("pre-tool-use.sh", 10)] }
+        ],
+        "Stop": [
+            { "hooks": [hook("stop.sh", 10)] }
+        ],
+        "UserPromptSubmit": [
+            { "hooks": [hook("user-prompt-submit.sh", 10)] }
+        ],
+        "SubagentStop": [
+            { "hooks": [hook("subagent-stop.sh", 10)] }
+        ]
+    })
+}
+
+/// Return the base tool set for the given tier.
+fn base_tools_for(bt: &BaseTools) -> Vec<&'static str> {
+    match bt {
+        BaseTools::Full => base_allowed_tools_full(),
+        BaseTools::Minimal => base_allowed_tools_minimal(),
+        BaseTools::None => vec![],
+    }
+}
+
+/// Full base set: all git/cargo/nix/shell tools.
+/// Used by engineer, reviewer, researcher, and other dev-oriented skills.
+fn base_allowed_tools_full() -> Vec<&'static str> {
+    vec![
+        // Git (read-only + staging/committing — no push/force)
+        "Bash(git status:*)",
+        "Bash(git diff:*)",
+        "Bash(git add:*)",
+        "Bash(git log:*)",
+        "Bash(git commit:*)",
+        "Bash(git branch:*)",
+        "Bash(git show:*)",
+        "Bash(git reset:*)",
+        "Bash(git checkout:*)",
+        "Bash(git worktree:*)",
+        "Bash(git cherry-pick:*)",
+        "Bash(git rebase:*)",
+        "Bash(git fetch:*)",
+        "Bash(git -C:*)",
+        "Bash(git pull:*)",
+        "Bash(git stash:*)",
+        "Bash(git rev-parse:*)",
+        "Bash(git ls-files:*)",
+        "Bash(git remote:*)",
+        "Bash(git merge:*)",
+        // Nix (blanket — covers flake check, develop, build, run, eval, etc.)
+        "Bash(nix:*)",
+        // Cargo (typically run inside nix develop, but allow direct too)
+        "Bash(cargo fmt:*)",
+        "Bash(cargo clippy:*)",
+        "Bash(cargo nextest:*)",
+        "Bash(cargo build:*)",
+        "Bash(cargo test:*)",
+        "Bash(cargo check:*)",
+        // Basic shell commands
+        "Bash(ls:*)",
+        "Bash(cat:*)",
+        "Bash(head:*)",
+        "Bash(tail:*)",
+        "Bash(wc:*)",
+        "Bash(which:*)",
+        "Bash(pwd)",
+        "Bash(find:*)",
+        "Bash(grep:*)",
+        "Bash(rg:*)",
+        "Bash(tree:*)",
+        "Bash(mkdir:*)",
+        "Bash(echo:*)",
+        "Bash(sort:*)",
+        "Bash(uniq:*)",
+        "Bash(jq:*)",
+        // Local HTTP (curl restricted to localhost)
+        "Bash(curl localhost:*)",
+        "Bash(curl 127.0.0.1:*)",
+        // GitHub CLI
+        "Bash(gh:*)",
+        // Containers
+        "Bash(podman:*)",
+        "Bash(docker:*)",
+    ]
+}
+
+/// Minimal base set: only basic read-only shell commands.
+/// Used by non-dev skills like reporter that don't need git/cargo/nix.
+fn base_allowed_tools_minimal() -> Vec<&'static str> {
+    vec![
+        "Bash(ls:*)",
+        "Bash(cat:*)",
+        "Bash(head:*)",
+        "Bash(tail:*)",
+        "Bash(wc:*)",
+        "Bash(which:*)",
+        "Bash(pwd)",
+    ]
+}
+
+/// Rewrite hook commands in settings JSON to prefix environment variables
+/// (`CC_PERM_SOCKET=<path>` and optionally `CC_TASK_NAME=<name>`), so spawned
+/// agents' hooks connect to the correct dashboard socket and can be identified
+/// even when their CWD is outside the worktree.
+pub(crate) fn embed_env_in_hooks(
+    settings: &mut serde_json::Value,
+    sock_path: &str,
+    task_name: Option<&str>,
+) {
+    let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
+        return;
+    };
+    for hook_list in hooks.values_mut() {
+        let Some(matchers) = hook_list.as_array_mut() else {
+            continue;
+        };
+        for matcher in matchers {
+            let Some(hook_arr) = matcher.get_mut("hooks").and_then(|h| h.as_array_mut()) else {
+                continue;
+            };
+            for hook in hook_arr {
+                if hook.get("type").and_then(|t| t.as_str()) == Some("command")
+                    && let Some(cmd) = hook.get("command").and_then(|c| c.as_str())
+                    && cmd.contains(".claude/hooks/")
+                {
+                    // Strip existing env var prefixes to avoid stacking
+                    let clean_cmd = strip_env_prefixes(cmd);
+                    let mut prefix = format!("{}={}", crate::permission::SOCKET_ENV, sock_path,);
+                    if let Some(name) = task_name {
+                        prefix
+                            .push_str(&format!(" {}={}", crate::permission::TASK_NAME_ENV, name,));
+                    }
+                    hook["command"] = serde_json::json!(format!("{prefix} {clean_cmd}"));
+                }
+            }
+        }
+    }
+}
+
+/// Strip leading `CC_PERM_SOCKET=... ` and `CC_TASK_NAME=... ` prefixes from
+/// a hook command string, returning the original command.
+fn strip_env_prefixes(cmd: &str) -> &str {
+    let mut rest = cmd;
+    loop {
+        let trimmed = rest.trim_start();
+        if trimmed.starts_with(crate::permission::SOCKET_ENV)
+            || trimmed.starts_with(crate::permission::TASK_NAME_ENV)
+        {
+            // Skip "VAR=value " — find the next space after the value
+            if let Some((_prefix, after)) = trimmed.split_once(' ') {
+                rest = after;
+                continue;
+            }
+        }
+        break;
+    }
+    rest
+}
+
+/// Re-embed the current socket path and task names into all active worktrees' settings.
+/// Called at dashboard startup so hooks from pre-existing tasks connect
+/// to the new socket and carry the correct task identity.
+///
+/// Each entry is `(task_name, work_dir)`.
+pub fn reembed_env_in_worktrees(tasks: &[(String, String)], sock_path: &str) {
+    for (name, wd) in tasks {
+        let settings_path = Path::new(wd).join(".claude/settings.local.json");
+        let Ok(content) = std::fs::read_to_string(&settings_path) else {
+            continue;
+        };
+        let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
+        embed_env_in_hooks(&mut settings, sock_path, Some(name));
+        let _ = std::fs::write(&settings_path, settings.to_string());
+        // Also refresh the perm-socket breadcrumb so send_pm_message /
+        // send_exo_message can discover the (possibly new) socket path.
+        let _ = std::fs::write(Path::new(wd).join(".claude/perm-socket"), sock_path);
+    }
+}
+
+/// Register an MCP server as local-scoped via `claude mcp add`.
+///
+/// Local-scoped servers are trusted by Claude Code and don't trigger the
+/// "N new MCP servers found" approval prompt that project-scoped (.mcp.json)
+/// servers do. We keep .mcp.json as a fallback but use this to pre-register
+/// so agents can start working immediately.
+fn register_local_mcp_server(work_dir: &Path, name: &str, url: &str, headers: &[(&str, &str)]) {
+    let mut args = vec![
+        "mcp".to_string(),
+        "add".to_string(),
+        "--transport".to_string(),
+        "http".to_string(),
+        "--scope".to_string(),
+        "local".to_string(),
+        name.to_string(),
+        url.to_string(),
+    ];
+    // --header is variadic (<header...>), so it must come after the
+    // positional <name> and <url> arguments to avoid swallowing them.
+    for (key, value) in headers {
+        args.push("--header".to_string());
+        args.push(format!("{key}: {value}"));
+    }
+
+    let result = Command::new("claude")
+        .args(&args)
+        .current_dir(work_dir)
+        .output();
+
+    match result {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!("claude mcp add {name} failed: {stderr}");
+        }
+        Err(e) => {
+            tracing::warn!("could not run claude mcp add {name}: {e}");
+        }
+    }
+}
+
+/// Add an entry to `.git/info/exclude` so it's ignored without touching `.gitignore`.
+fn exclude_from_git(worktree_path: &Path, pattern: &str) -> anyhow::Result<()> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(worktree_path)
+        .output()
+        .context("failed to run git rev-parse --git-common-dir")?;
+    if !output.status.success() {
+        bail!(
+            "git rev-parse --git-common-dir failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let git_common_dir = String::from_utf8(output.stdout)?.trim().to_string();
+    let exclude_path = PathBuf::from(&git_common_dir).join("info").join("exclude");
+
+    std::fs::create_dir_all(exclude_path.parent().unwrap())?;
+
+    let content = std::fs::read_to_string(&exclude_path).unwrap_or_default();
+    if !content.lines().any(|l| l.trim() == pattern) {
+        let mut new_content = content;
+        if !new_content.is_empty() && !new_content.ends_with('\n') {
+            new_content.push('\n');
+        }
+        new_content.push_str(pattern);
+        new_content.push('\n');
+        std::fs::write(&exclude_path, new_content)?;
+    }
+    Ok(())
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
 /// Returns a mapping from tmux window ID (e.g. "@24") to window index (e.g. "2").
 pub fn tmux_window_numbers() -> HashMap<WindowId, String> {
     let mut map = HashMap::new();
