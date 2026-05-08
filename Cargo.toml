@@ -33,7 +33,7 @@ shell-escape = "0.1"
 libc = "0.2"
 tracing = "0.1"
 ureq = { version = "2", features = ["json"] }
-rmcp = { version = "1.2", features = ["server", "transport-streamable-http-server"] }
+rmcp = { version = "1.4", features = ["server", "transport-streamable-http-server"] }
 schemars = "1.0"
 axum = "0.8"
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
