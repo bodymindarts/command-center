@@ -1023,7 +1023,7 @@ struct SpawnParams {
     harness: Option<HarnessKind>,
 }
 
-#[tool_router]
+#[tool_router(router = tool_router)]
 impl<R: Runtime> ClatMcpServer<R> {
     #[tool(
         description = "Spawn a new task agent. Creates a git worktree, loads the skill template, and launches a Claude Code session."
@@ -1102,7 +1102,7 @@ impl<R: Runtime> ClatMcpServer<R> {
     }
 }
 
-#[tool_handler]
+#[tool_handler(router = self.tool_router)]
 impl<R: Runtime> ServerHandler for ClatMcpServer<R> {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
@@ -1212,11 +1212,9 @@ pub async fn start_mcp_server<R: Runtime>(
 
     app.init_watch().await?;
     let jwt_signer = app.jwt_signer().clone();
-    let config = StreamableHttpServerConfig {
-        stateful_mode: false,
-        json_response: true,
-        ..Default::default()
-    };
+    let config = StreamableHttpServerConfig::default()
+        .with_stateful_mode(false)
+        .with_json_response(true);
     let service = StreamableHttpService::new(
         move || Ok(ClatMcpServer::new(Arc::clone(&app))),
         LocalSessionManager::default().into(),
