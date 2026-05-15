@@ -144,11 +144,13 @@ task_field() {
     # Skill-level tool (noop skill declares allowed_tools = ["Bash"])
     echo "$settings" | jq -e '.permissions.allow | index("Bash")' > /dev/null
 
-    # Base Bash-pattern tools for common dev operations
-    echo "$settings" | jq -e '.permissions.allow | index("Bash(nix develop:*)")' > /dev/null
+    # Base Bash-pattern tools for common dev operations.
+    # Nix is allowed via the broad `Bash(nix:*)` pattern (covers `nix develop`,
+    # `nix flake check`, etc.) — narrower per-subcommand entries would be a
+    # regression in agent ergonomics.
+    echo "$settings" | jq -e '.permissions.allow | index("Bash(nix:*)")' > /dev/null
     echo "$settings" | jq -e '.permissions.allow | index("Bash(cargo fmt:*)")' > /dev/null
     echo "$settings" | jq -e '.permissions.allow | index("Bash(git commit:*)")' > /dev/null
-    echo "$settings" | jq -e '.permissions.allow | index("Bash(nix flake check:*)")' > /dev/null
 }
 
 @test "spawn creates tmux window with 3 panes" {
