@@ -271,10 +271,25 @@ DASHSCRIPT
     fi
     [ "$found_sock" = true ]
 
+    # Wait until the dashboard has refreshed its task mapping.  The socket is
+    # created before the first task refresh, but permission CWD routing needs
+    # the task worktree map to be populated.
+    local found_task=false
+    for i in $(seq 1 40); do
+        local capture
+        capture=$(tmux capture-pane -t "$dash_pane" -p)
+        if echo "$capture" | grep -q "perm-rt"; then
+            found_task=true
+            break
+        fi
+        sleep 0.5
+    done
+    [ "$found_task" = true ]
+
     # Pipe request JSON to gate in background — it connects to socket
     local req_json
     req_json=$(cat <<REQJSON
-{"tool_name":"Bash","tool_input":{"command":"echo hi"},"cwd":"$worktree"}
+{"tool_name":"WebFetch","tool_input":{"url":"https://example.com","prompt":"summarize"},"cwd":"$worktree"}
 REQJSON
     )
     printf '%s' "$req_json" | CC_PERM_SOCKET="$sock" clat agent permission-gate > "$TEST_DIR/gate-stdout" &
@@ -285,7 +300,7 @@ REQJSON
     for i in $(seq 1 20); do
         local capture
         capture=$(tmux capture-pane -t "$dash_pane" -p)
-        if echo "$capture" | grep -q "! Bash"; then
+        if echo "$capture" | grep -q "! WebFetch"; then
             found=true
             break
         fi
