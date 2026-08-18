@@ -205,6 +205,10 @@ impl AssistantSession {
             "stream-json".to_string(),
             "--verbose".to_string(),
             "--include-partial-messages".to_string(),
+            // ExO and PM roles always run on opus, regardless of the
+            // ambient `claude` CLI default model.
+            "--model".to_string(),
+            "opus".to_string(),
         ];
         if self.skip_permissions {
             args.push("--dangerously-skip-permissions".to_string());
