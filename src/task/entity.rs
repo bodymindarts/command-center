@@ -391,5 +391,9 @@ pub struct TaskMessage {
     pub chat_id: String,
     pub role: MessageRole,
     pub content: String,
+    /// Display name of the message's sender (e.g. "ExO", a PM, another
+    /// task). `None` for messages sent without attribution — these render
+    /// as "YOU" for backward compatibility.
+    pub sender: Option<String>,
     pub created_at: DateTime<Utc>,
 }

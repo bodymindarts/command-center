@@ -63,9 +63,12 @@ pub(in crate::tui) fn render_chat(
         } else {
             for msg in task_list.selected_messages() {
                 let (label, label_color) = match msg.role {
-                    MessageRole::System => ("PROMPT", Color::Cyan),
-                    MessageRole::User => ("YOU", Color::Green),
-                    MessageRole::Assistant => ("ASSISTANT", Color::White),
+                    MessageRole::System => ("PROMPT".to_string(), Color::Cyan),
+                    MessageRole::User => (
+                        msg.sender.clone().unwrap_or_else(|| "YOU".to_string()),
+                        Color::Green,
+                    ),
+                    MessageRole::Assistant => ("ASSISTANT".to_string(), Color::White),
                 };
 
                 lines.push(Line::from(Span::styled(
