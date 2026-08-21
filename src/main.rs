@@ -13,6 +13,7 @@ mod project;
 mod runtime;
 mod skill;
 mod store;
+mod suggest;
 mod task;
 mod tui;
 mod watch;
