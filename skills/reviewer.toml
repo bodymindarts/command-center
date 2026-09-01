@@ -6,7 +6,6 @@ params = [{ name = "task", required = false, default = "Review the full codebase
 [agent]
 allowed_tools = []
 base_tools = "full"
-model = "opus"
 
 [template]
 system = """

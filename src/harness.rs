@@ -159,6 +159,10 @@ impl<R: Runtime> Harness<R> for ClaudeHarness {
         if config.skip_permissions {
             script.push_str(" --dangerously-skip-permissions");
         }
+        // Tasks always run on sonnet, regardless of the ambient `claude` CLI
+        // default model. ExO and PM roles are pinned to opus separately
+        // (see assistant.rs).
+        script.push_str(" --model sonnet");
         script.push_str(&format!(" --session-id {}", config.session_id));
 
         if let Some(user_prompt) = config.user_prompt {
@@ -207,6 +211,9 @@ impl<R: Runtime> Harness<R> for ClaudeHarness {
         } else {
             ""
         };
+        // No --model here: --resume should continue whatever model the
+        // session was last on (the user may have switched it live via
+        // /model), not reset it back to the launch-time default.
         let claude_cmd = format!("env -u CLAUDECODE {claude_bin}{skip_flag} --resume {session_id}");
 
         runtime.launch_agent_window(task_name, work_dir, &claude_cmd)

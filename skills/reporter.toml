@@ -7,7 +7,6 @@ params = [{ name = "task", required = true }]
 allowed_tools = ["WebSearch", "WebFetch"]
 base_tools = "minimal"
 allowed_bash_patterns = ["gh:*", "curl:*", "jq:*"]
-model = "sonnet"
 
 [template]
 system = """

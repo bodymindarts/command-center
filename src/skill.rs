@@ -48,8 +48,6 @@ pub struct ParamDef {
 #[allow(dead_code)]
 pub struct AgentConfig {
     pub allowed_tools: Vec<String>,
-    #[serde(default = "default_model")]
-    pub model: String,
     #[serde(default)]
     pub base_tools: BaseTools,
     #[serde(default)]
@@ -58,10 +56,6 @@ pub struct AgentConfig {
     /// when unset so existing skill TOMLs don't need updates.
     #[serde(default)]
     pub harness: Option<HarnessKind>,
-}
-
-fn default_model() -> String {
-    "opus".to_string()
 }
 
 #[derive(Debug, Deserialize)]

@@ -6,7 +6,6 @@ params = [{ name = "task", required = false, default = "Audit the full codebase 
 [agent]
 allowed_tools = ["Bash", "WebSearch", "WebFetch"]
 base_tools = "full"
-model = "opus"
 
 [template]
 system = """
