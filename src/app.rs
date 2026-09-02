@@ -307,8 +307,17 @@ impl<R: Runtime> ClatApp<R> {
     }
 
     pub async fn spawn(&self, req: SpawnRequest<'_>) -> anyhow::Result<SpawnOutput> {
-        // 1. Load skill, validate params
+        // 1. Validate every caller-supplied name up front, before anything is
+        //    created. A bad name that is only caught mid-session (or after the
+        //    worktree exists) leaves the task running without the capability it
+        //    silently lost — e.g. an unknown project means the agent can never
+        //    reach its PM.
         let skill = SkillFile::load(&self.paths.skills_dir, req.skill_name)?;
+        validate_work_dir_mode(&req.work_dir_mode)?;
+        let project_id = match req.project.as_deref() {
+            Some(name) => Some(self.resolve_project_id(name).await?),
+            None => None,
+        };
 
         let mut params_map: HashMap<String, String> = req.params.into_iter().collect();
         params_map
@@ -382,12 +391,7 @@ impl<R: Runtime> ClatApp<R> {
             }
         };
 
-        // 4. Resolve project name → ID (if given)
-        //    Also write a breadcrumb so spawned sub-tasks can inherit the project.
-        let project_id = match req.project.as_deref() {
-            Some(name) => Some(self.resolve_project_id(name).await?),
-            None => None,
-        };
+        // 4. Write a breadcrumb so spawned sub-tasks can inherit the project.
         if let Some(ref name) = req.project {
             let breadcrumb = work_dir.join(".claude").join("project");
             let _ = std::fs::write(&breadcrumb, name);
@@ -720,18 +724,7 @@ impl<R: Runtime> ClatApp<R> {
 
     pub fn list_skills(&self) -> anyhow::Result<Vec<SkillSummary>> {
         let mut skills = Vec::new();
-        let entries = std::fs::read_dir(&self.paths.skills_dir)?;
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
-                continue;
-            }
-            let name = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or_default()
-                .to_string();
+        for name in crate::skill::available_skills(&self.paths.skills_dir) {
             if let Ok(skill) = SkillFile::load(&self.paths.skills_dir, &name) {
                 skills.push(SkillSummary {
                     name: skill.skill.name,
@@ -787,8 +780,7 @@ impl<R: Runtime> ClatApp<R> {
     }
 
     pub async fn delete_project(&self, name: &str) -> anyhow::Result<()> {
-        let name = ProjectName::from(name.to_string());
-        let mut project = self.store.projects.find_by_name(name).await?;
+        let mut project = self.resolve_project(name).await?;
 
         // Cascade-delete all tasks belonging to this project.
         let tasks = self
@@ -819,8 +811,21 @@ impl<R: Runtime> ClatApp<R> {
     }
 
     pub async fn resolve_project(&self, name: &str) -> anyhow::Result<Project> {
-        let name = ProjectName::from(name.to_string());
-        Ok(self.store.projects.find_by_name(name).await?)
+        if let Some(project) = self
+            .store
+            .projects
+            .maybe_find_by_name(ProjectName::from(name.to_string()))
+            .await?
+        {
+            return Ok(project);
+        }
+        let known = self
+            .list_projects()
+            .await?
+            .into_iter()
+            .map(|p| p.name.to_string())
+            .collect();
+        Err(crate::suggest::unknown_name_error("project", name, known))
     }
 
     pub async fn resolve_project_id(&self, name: &str) -> anyhow::Result<ProjectId> {
@@ -922,6 +927,31 @@ impl<R: Runtime> ClatApp<R> {
             .await?
             .ok_or_else(|| anyhow::anyhow!("no task found matching '{id_or_name}'"))
     }
+}
+
+/// Reject a working-directory target that cannot possibly work, before the
+/// spawn starts creating directories or tmux windows for it.
+fn validate_work_dir_mode(mode: &WorkDirMode<'_>) -> anyhow::Result<()> {
+    match mode {
+        WorkDirMode::Worktree { repo, .. } => {
+            if !repo.is_dir() {
+                bail!("repo path does not exist: {}", repo.display());
+            }
+            // `git worktree add` needs a real repo; without this check the
+            // failure only shows up after `.claude/worktrees/` has been
+            // created under whatever path was passed.
+            if !repo.join(".git").exists() {
+                bail!("repo path is not a git repository: {}", repo.display());
+            }
+        }
+        WorkDirMode::Existing { dir } => {
+            if !dir.is_dir() {
+                bail!("work dir does not exist: {}", dir.display());
+            }
+        }
+        WorkDirMode::Scratch => {}
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1202,6 +1232,8 @@ mod tests {
     fn test_paths(tmp: &Path) -> Paths {
         let skills_dir = tmp.join("skills");
         std::fs::create_dir_all(&skills_dir).unwrap();
+        // Worktree spawns validate that the repo root is a git repo.
+        std::fs::create_dir_all(tmp.join(".git")).unwrap();
         // Write a minimal noop skill
         std::fs::write(
             skills_dir.join("noop.toml"),
@@ -1245,6 +1277,173 @@ prompt = "noop prompt"
             })
             .await
             .expect("spawn should succeed")
+    }
+
+    /// Spawn `test-task` against `project`, returning the raw result so
+    /// validation failures can be asserted on.
+    async fn spawn_with_project(
+        service: &ClatApp<FakeRuntime>,
+        project: &str,
+    ) -> anyhow::Result<SpawnOutput> {
+        service
+            .spawn(SpawnRequest {
+                task_name: "test-task",
+                skill_name: "noop",
+                params: vec![],
+                work_dir_mode: WorkDirMode::Worktree {
+                    repo: service.project_root(),
+                    branch: None,
+                },
+                prompt_mode: PromptMode::Full,
+                project: Some(project.to_string()),
+                harness: None,
+            })
+            .await
+    }
+
+    #[tokio::test]
+    async fn spawn_rejects_unknown_project_with_near_match_and_valid_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rig = build_rig(tmp.path()).await;
+        rig.service
+            .create_project("lana-payments", "payments")
+            .await
+            .unwrap();
+        rig.service.create_project("poker", "poker").await.unwrap();
+
+        let err = spawn_with_project(&rig.service, "lana")
+            .await
+            .expect_err("unknown project must fail the spawn")
+            .to_string();
+
+        assert!(err.contains("unknown project 'lana'"), "{err}");
+        assert!(err.contains("did you mean 'lana-payments'?"), "{err}");
+        assert!(err.contains("poker"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn spawn_with_unknown_project_creates_no_task_and_no_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rig = build_rig(tmp.path()).await;
+        rig.service
+            .create_project("lana-payments", "payments")
+            .await
+            .unwrap();
+
+        assert!(spawn_with_project(&rig.service, "lana").await.is_err());
+
+        assert!(
+            rig.service
+                .store()
+                .tasks
+                .list_active()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            rig.calls.lock().unwrap().is_empty(),
+            "validation must run before any runtime side effects"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_accepts_valid_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rig = build_rig(tmp.path()).await;
+        let project = rig
+            .service
+            .create_project("lana-payments", "payments")
+            .await
+            .unwrap();
+
+        let output = spawn_with_project(&rig.service, "lana-payments")
+            .await
+            .expect("known project must spawn");
+
+        let task = rig
+            .service
+            .store()
+            .tasks
+            .maybe_find_by_id_prefix(&output.task_id.to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(task.project_id, Some(project.id));
+    }
+
+    #[tokio::test]
+    async fn spawn_rejects_unknown_skill_with_near_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rig = build_rig(tmp.path()).await;
+
+        let err = rig
+            .service
+            .spawn(SpawnRequest {
+                task_name: "test-task",
+                skill_name: "nooo",
+                params: vec![],
+                work_dir_mode: WorkDirMode::Worktree {
+                    repo: rig.service.project_root(),
+                    branch: None,
+                },
+                prompt_mode: PromptMode::Full,
+                project: None,
+                harness: None,
+            })
+            .await
+            .expect_err("unknown skill must fail the spawn")
+            .to_string();
+
+        assert!(err.contains("unknown skill 'nooo'"), "{err}");
+        assert!(err.contains("did you mean 'noop'?"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn spawn_rejects_repo_path_that_is_not_a_git_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rig = build_rig(tmp.path()).await;
+
+        let missing = tmp.path().join("nope");
+        let err = rig
+            .service
+            .spawn(SpawnRequest {
+                task_name: "test-task",
+                skill_name: "noop",
+                params: vec![],
+                work_dir_mode: WorkDirMode::Worktree {
+                    repo: &missing,
+                    branch: None,
+                },
+                prompt_mode: PromptMode::Full,
+                project: None,
+                harness: None,
+            })
+            .await
+            .expect_err("missing repo must fail the spawn")
+            .to_string();
+        assert!(err.contains("repo path does not exist"), "{err}");
+
+        let not_a_repo = tmp.path().join("plain-dir");
+        std::fs::create_dir_all(&not_a_repo).unwrap();
+        let err = rig
+            .service
+            .spawn(SpawnRequest {
+                task_name: "test-task",
+                skill_name: "noop",
+                params: vec![],
+                work_dir_mode: WorkDirMode::Worktree {
+                    repo: &not_a_repo,
+                    branch: None,
+                },
+                prompt_mode: PromptMode::Full,
+                project: None,
+                harness: None,
+            })
+            .await
+            .expect_err("non-repo path must fail the spawn")
+            .to_string();
+        assert!(err.contains("not a git repository"), "{err}");
     }
 
     #[tokio::test]

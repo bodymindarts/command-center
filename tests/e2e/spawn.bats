@@ -463,3 +463,43 @@ REQJSON
     [[ "$output" == *"first message"* ]]
     [[ "$output" == *"second message"* ]]
 }
+
+# --- spawn argument validation ---
+
+@test "spawn rejects unknown project and suggests the near match" {
+    cd "$PROJECT_DIR"
+    clat project create lana-payments -d "payments"
+
+    run clat spawn --repo . bad-proj --skill noop --project lana
+    echo "$output"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"unknown project 'lana'"* ]]
+    [[ "$output" == *"did you mean 'lana-payments'?"* ]]
+
+    # Nothing was created for the rejected spawn.
+    [ -z "$(find_worktree bad-proj)" ]
+    [ -z "$(task_field id bad-proj)" ]
+}
+
+@test "spawn rejects unknown skill and suggests the near match" {
+    cd "$PROJECT_DIR"
+
+    run clat spawn --repo . bad-skill --skill nooo
+    echo "$output"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"unknown skill 'nooo'"* ]]
+    [[ "$output" == *"did you mean 'noop'?"* ]]
+}
+
+@test "spawn rejects a repo path that is not a git repository" {
+    cd "$PROJECT_DIR"
+    mkdir -p "$TEST_DIR/not-a-repo"
+
+    run clat spawn --repo "$TEST_DIR/not-a-repo" bad-repo --skill noop
+    echo "$output"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"not a git repository"* ]]
+
+    # The failed spawn must not have littered the target path.
+    [ ! -d "$TEST_DIR/not-a-repo/.claude" ]
+}

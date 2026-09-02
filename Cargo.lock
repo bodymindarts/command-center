@@ -547,6 +547,7 @@ dependencies = [
  "serde_json",
  "shell-escape",
  "sqlx",
+ "strsim",
  "tabled",
  "tempfile",
  "thiserror",
