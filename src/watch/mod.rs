@@ -303,7 +303,7 @@ impl<R: Runtime> JobRunner for TimerJobRunner<R> {
             message.push_str(&format!("\nContext: {}", ctx));
         }
 
-        if let Err(e) = self.app.send(&self.config.task_id, &message).await {
+        if let Err(e) = self.app.send(&self.config.task_id, &message, None).await {
             tracing::warn!(
                 task_id = %self.config.task_id,
                 label = %self.config.label,
@@ -431,7 +431,11 @@ impl<R: Runtime> JobRunner for CommandJobRunner<R> {
             message
         };
 
-        if let Err(e) = self.app.send(&self.config.task_id, &full_message).await {
+        if let Err(e) = self
+            .app
+            .send(&self.config.task_id, &full_message, None)
+            .await
+        {
             tracing::warn!(
                 task_id = %self.config.task_id,
                 label = %self.config.label,

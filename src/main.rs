@@ -102,7 +102,7 @@ async fn main() -> anyhow::Result<()> {
             args,
         } => match (project, args.len()) {
             (None, 2) if args[0] == "exo" => cmd_exo_send(&app, &args[1], from.as_deref())?,
-            (None, 2) => cmd_send(app, &args[0], &args[1]).await?,
+            (None, 2) => cmd_send(app, &args[0], &args[1], from.as_deref()).await?,
             (Some(name), 1) => cmd_project_send(&app, &name, &args[0], from.as_deref()).await?,
             (None, 1) => bail!("missing message: usage: clat send <ID> <message>"),
             (Some(_), n) if n >= 2 => {
@@ -388,9 +388,9 @@ async fn cmd_log<R: Runtime>(app: ClatApp<R>, id_prefix: &str) -> anyhow::Result
 
     for msg in &log.messages {
         let label = match msg.role {
-            MessageRole::System => "PROMPT",
-            MessageRole::User => "YOU",
-            MessageRole::Assistant => "ASSISTANT",
+            MessageRole::System => "PROMPT".to_string(),
+            MessageRole::User => msg.sender.clone().unwrap_or_else(|| "YOU".to_string()),
+            MessageRole::Assistant => "ASSISTANT".to_string(),
         };
         let time = msg.created_at.format("%H:%M:%S");
         println!("[{time}] {label}:");
@@ -463,8 +463,13 @@ fn cmd_start(
     Ok(())
 }
 
-async fn cmd_send<R: Runtime>(app: ClatApp<R>, id: &str, message: &str) -> anyhow::Result<()> {
-    let result = app.send(id, message).await?;
+async fn cmd_send<R: Runtime>(
+    app: ClatApp<R>,
+    id: &str,
+    message: &str,
+    from: Option<&str>,
+) -> anyhow::Result<()> {
+    let result = app.send(id, message, from).await?;
     println!(
         "Sent message to {} ({})",
         result.task_name,

@@ -582,7 +582,7 @@ async fn handle_task_chat_input_key<R: Runtime>(
                 if let Some(task) = active.task_list.selected_task() {
                     let task_id = task.id.to_string();
                     let pane = task.tmux_pane.clone();
-                    match app.send(&task_id, &msg).await {
+                    match app.send(&task_id, &msg, None).await {
                         Ok(_) => {
                             if let Some(pane) = pane {
                                 active.task_list.mark_pane_active(pane);
