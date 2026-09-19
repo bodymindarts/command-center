@@ -243,6 +243,7 @@ impl AssistantSession {
         let mut cmd = Command::new("claude");
         cmd.args(&args)
             .env_remove("CLAUDECODE")
+            .env("CLAUDE_CODE_DISABLE_1M_CONTEXT", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
