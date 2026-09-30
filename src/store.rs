@@ -23,6 +23,7 @@ fn row_to_message(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<TaskMessage> 
         chat_id: row.try_get("task_id")?,
         role: MessageRole::from(row.try_get::<String, _>("role")?),
         content: row.try_get("content")?,
+        sender: row.try_get("sender")?,
         created_at: DateTime::parse_from_rfc3339(&created_at)
             .unwrap_or_default()
             .with_timezone(&Utc),
@@ -99,17 +100,19 @@ impl Store {
         chat_id: &ChatId,
         role: MessageRole,
         content: &str,
+        sender: Option<&str>,
     ) -> anyhow::Result<()> {
         let id = uuid::Uuid::now_v7().to_string();
         let now = Utc::now().to_rfc3339();
         sqlx::query(
-            "INSERT INTO task_messages (id, task_id, role, content, created_at)
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO task_messages (id, task_id, role, content, sender, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(chat_id.as_db_key())
         .bind(role.as_str())
         .bind(content)
+        .bind(sender)
         .bind(&now)
         .execute(&self.pool)
         .await?;
@@ -118,7 +121,7 @@ impl Store {
 
     pub async fn list_messages(&self, chat_id: &ChatId) -> anyhow::Result<Vec<TaskMessage>> {
         let rows = sqlx::query(
-            "SELECT id, task_id, role, content, created_at
+            "SELECT id, task_id, role, content, sender, created_at
              FROM task_messages WHERE task_id = ? ORDER BY created_at ASC",
         )
         .bind(chat_id.as_db_key())
@@ -133,8 +136,8 @@ impl Store {
         limit: u32,
     ) -> anyhow::Result<Vec<TaskMessage>> {
         let rows = sqlx::query(
-            "SELECT id, task_id, role, content, created_at FROM (
-                 SELECT id, task_id, role, content, created_at
+            "SELECT id, task_id, role, content, sender, created_at FROM (
+                 SELECT id, task_id, role, content, sender, created_at
                  FROM task_messages WHERE task_id = ? ORDER BY created_at DESC LIMIT ?
              ) ORDER BY created_at ASC",
         )
@@ -317,11 +320,11 @@ mod tests {
         let chat = ChatId::Task(task.id);
 
         store
-            .insert_message(&chat, MessageRole::System, "initial prompt")
+            .insert_message(&chat, MessageRole::System, "initial prompt", None)
             .await
             .unwrap();
         store
-            .insert_message(&chat, MessageRole::User, "hello agent")
+            .insert_message(&chat, MessageRole::User, "hello agent", None)
             .await
             .unwrap();
 
@@ -331,6 +334,23 @@ mod tests {
         assert_eq!(messages[0].content, "initial prompt");
         assert_eq!(messages[1].role, MessageRole::User);
         assert_eq!(messages[1].content, "hello agent");
+        assert_eq!(messages[1].sender, None);
+    }
+
+    #[tokio::test]
+    async fn insert_message_records_sender() {
+        let store = test_store().await;
+        let task = create_running_task(&store, "t1").await;
+        let chat = ChatId::Task(task.id);
+
+        store
+            .insert_message(&chat, MessageRole::User, "test", Some("ExO"))
+            .await
+            .unwrap();
+
+        let messages = store.list_messages(&chat).await.unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].sender.as_deref(), Some("ExO"));
     }
 
     #[tokio::test]
@@ -348,15 +368,15 @@ mod tests {
         let chat = ChatId::Task(task.id);
 
         store
-            .insert_message(&chat, MessageRole::System, "first")
+            .insert_message(&chat, MessageRole::System, "first", None)
             .await
             .unwrap();
         store
-            .insert_message(&chat, MessageRole::User, "second")
+            .insert_message(&chat, MessageRole::User, "second", None)
             .await
             .unwrap();
         store
-            .insert_message(&chat, MessageRole::User, "third")
+            .insert_message(&chat, MessageRole::User, "third", None)
             .await
             .unwrap();
 

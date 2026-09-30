@@ -411,7 +411,7 @@ impl<R: Runtime> ClatApp<R> {
         if let Some(ref prompt) = user_prompt {
             let chat = ChatId::Task(task.id);
             self.store
-                .insert_message(&chat, MessageRole::System, prompt)
+                .insert_message(&chat, MessageRole::System, prompt, None)
                 .await?;
         }
 
@@ -601,7 +601,12 @@ impl<R: Runtime> ClatApp<R> {
         })
     }
 
-    pub async fn send(&self, id_prefix: &str, message: &str) -> anyhow::Result<SendOutput> {
+    pub async fn send(
+        &self,
+        id_prefix: &str,
+        message: &str,
+        from: Option<&str>,
+    ) -> anyhow::Result<SendOutput> {
         let task = self.resolve_task(id_prefix).await?;
 
         let pane_id = task
@@ -609,10 +614,17 @@ impl<R: Runtime> ClatApp<R> {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("task {} has no tmux pane", task.id.short()))?;
 
-        self.runtime.send_keys_to_pane(pane_id.as_str(), message)?;
+        // Label the pane-injected text so the receiving agent can see who
+        // sent it, not just the CLI/`clat log` view.
+        let pane_message = match from {
+            Some(sender) => format!("[from {sender}] {message}"),
+            None => message.to_string(),
+        };
+        self.runtime
+            .send_keys_to_pane(pane_id.as_str(), &pane_message)?;
         let chat = ChatId::Task(task.id);
         self.store
-            .insert_message(&chat, MessageRole::User, message)
+            .insert_message(&chat, MessageRole::User, message, from)
             .await?;
 
         Ok(SendOutput {
@@ -759,7 +771,7 @@ impl<R: Runtime> ClatApp<R> {
         content: &str,
     ) -> anyhow::Result<()> {
         let chat = Self::chat_id(project_id);
-        self.store.insert_message(&chat, role, content).await
+        self.store.insert_message(&chat, role, content, None).await
     }
 
     pub async fn session_messages(
@@ -856,20 +868,35 @@ impl<R: Runtime> ClatApp<R> {
 
     /// Send a message from one agent to another task or to the PM/ExO.
     ///
-    /// When target is "pm": routes to the project PM chat if the caller has a
-    /// project, or to the ExO chat if it doesn't (ExO is the PM for unassigned
-    /// tasks). For task targets, enforces project scoping.
+    /// - "exo": always routes to the ExO chat, regardless of the caller's
+    ///   project attachment. This is the only target guaranteed to reach
+    ///   ExO — use it when the caller specifically needs to reach ExO
+    ///   (e.g. a task spawned directly by ExO with no project).
+    /// - "pm": routes to the project PM chat if the caller has a project,
+    ///   or to the ExO chat if it doesn't (ExO is the PM for unassigned
+    ///   tasks).
+    /// - anything else: treated as a task ID/prefix. Task targets enforce
+    ///   project scoping (caller and target must share a project).
     pub async fn send_from_agent(
         &self,
         claims: &crate::jwt::AgentClaims,
         target: &str,
         message: &str,
     ) -> anyhow::Result<AgentSendOutput> {
+        let sender = match self.resolve_task(&claims.sub).await {
+            Ok(task) => task.name.to_string(),
+            Err(_) => claims.sub.clone(),
+        };
+
+        if target == "exo" {
+            // Bypasses project scoping entirely so ExO stays reachable from
+            // any task, whether or not it has a project attached.
+            let content = format!("[from {sender} ({})] {message}", claims.role);
+            crate::permission::send_exo_message(self.project_root(), &content)?;
+            return Ok(AgentSendOutput::Exo);
+        }
+
         if target == "pm" {
-            let sender = match self.resolve_task(&claims.sub).await {
-                Ok(task) => task.name.to_string(),
-                Err(_) => claims.sub.clone(),
-            };
             let content = format!("[from {sender} ({})] {message}", claims.role);
             if let Some(caller_project) = claims.project.as_deref() {
                 // Forward to project PM session via socket (mirrors cmd_project_send)
@@ -883,10 +910,9 @@ impl<R: Runtime> ClatApp<R> {
                 Ok(AgentSendOutput::Exo)
             }
         } else {
-            let caller_project = claims
-                .project
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("agents without a project can only send to 'pm'"))?;
+            let caller_project = claims.project.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("agents without a project can only send to 'pm' or 'exo'")
+            })?;
             let caller_project_id = match self.resolve_project_id(caller_project).await {
                 Ok(id) => id,
                 Err(_) => caller_project.parse::<ProjectId>()?,
@@ -898,7 +924,7 @@ impl<R: Runtime> ClatApp<R> {
                     task.name
                 );
             }
-            let output = self.send(target, message).await?;
+            let output = self.send(target, message, Some(&sender)).await?;
             Ok(AgentSendOutput::Task(output))
         }
     }
@@ -1357,7 +1383,7 @@ prompt = "noop prompt"
         let spawned = spawn_test_task(&rig.service).await;
         let result = rig
             .service
-            .send(&spawned.task_id.to_string(), "hello agent")
+            .send(&spawned.task_id.to_string(), "hello agent", None)
             .await
             .unwrap();
 
@@ -1386,6 +1412,122 @@ prompt = "noop prompt"
                 .iter()
                 .any(|m| m.role == MessageRole::User && m.content == "hello agent")
         );
+    }
+
+    #[tokio::test]
+    async fn send_with_from_labels_pane_message_and_records_sender() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rig = build_rig(tmp.path()).await;
+
+        let spawned = spawn_test_task(&rig.service).await;
+        rig.service
+            .send(&spawned.task_id.to_string(), "test", Some("ExO"))
+            .await
+            .unwrap();
+
+        {
+            let calls = rig.calls.lock().unwrap();
+            assert!(calls.iter().any(|c| matches!(c,
+                Call::SendKeys { pane_id, message }
+                if pane_id == "%fake-pane" && message == "[from ExO] test"
+            )));
+        }
+
+        let task = rig
+            .service
+            .store()
+            .tasks
+            .maybe_find_by_id_prefix(&spawned.task_id.to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        let chat = ChatId::Task(task.id);
+        let messages = rig.service.store().list_messages(&chat).await.unwrap();
+        let sent = messages
+            .iter()
+            .find(|m| m.role == MessageRole::User && m.content == "test")
+            .expect("sent message recorded");
+        assert_eq!(sent.sender.as_deref(), Some("ExO"));
+    }
+
+    #[tokio::test]
+    async fn send_from_agent_exo_target_reaches_exo_without_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rig = build_rig(tmp.path()).await;
+
+        // write_socket_breadcrumb silently no-ops if `.claude/` doesn't exist,
+        // which would otherwise send this test's message to whatever socket
+        // path the (possibly real, running) dashboard falls back to.
+        std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+        let sock_path = tmp.path().join("perm.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
+        crate::permission::write_socket_breadcrumb(rig.service.project_root(), &sock_path);
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = String::new();
+            std::io::Read::read_to_string(&mut stream, &mut buf).unwrap();
+            std::io::Write::write_all(&mut stream, b"{}").unwrap();
+            buf
+        });
+
+        let claims = crate::jwt::AgentClaims {
+            sub: "unknown-task-id".to_string(),
+            role: "engineer".to_string(),
+            project: None,
+            iat: 0,
+        };
+
+        let result = rig
+            .service
+            .send_from_agent(&claims, "exo", "please help")
+            .await
+            .unwrap();
+        assert!(matches!(result, AgentSendOutput::Exo));
+
+        let received = handle.join().unwrap();
+        assert!(received.contains("\"_exo_message\":true"));
+        assert!(received.contains("please help"));
+    }
+
+    #[tokio::test]
+    async fn send_from_agent_exo_target_bypasses_project_scoping() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rig = build_rig(tmp.path()).await;
+
+        // write_socket_breadcrumb silently no-ops if `.claude/` doesn't exist,
+        // which would otherwise send this test's message to whatever socket
+        // path the (possibly real, running) dashboard falls back to.
+        std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+        let sock_path = tmp.path().join("perm.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
+        crate::permission::write_socket_breadcrumb(rig.service.project_root(), &sock_path);
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = String::new();
+            std::io::Read::read_to_string(&mut stream, &mut buf).unwrap();
+            std::io::Write::write_all(&mut stream, b"{}").unwrap();
+            buf
+        });
+
+        // Even a task with a project attached must be able to reach ExO
+        // directly via the "exo" target.
+        let claims = crate::jwt::AgentClaims {
+            sub: "unknown-task-id".to_string(),
+            role: "engineer".to_string(),
+            project: Some("some-project".to_string()),
+            iat: 0,
+        };
+
+        let result = rig
+            .service
+            .send_from_agent(&claims, "exo", "please help")
+            .await
+            .unwrap();
+        assert!(matches!(result, AgentSendOutput::Exo));
+
+        handle.join().unwrap();
     }
 
     #[tokio::test]
@@ -1435,7 +1577,7 @@ prompt = "noop prompt"
 
         let spawned = spawn_test_task(&rig.service).await;
         rig.service
-            .send(&spawned.task_id.to_string(), "hello")
+            .send(&spawned.task_id.to_string(), "hello", None)
             .await
             .unwrap();
 
