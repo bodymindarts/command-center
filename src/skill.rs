@@ -65,9 +65,33 @@ pub struct TemplateDef {
     pub prompt: String,
 }
 
+/// Names of every skill defined in `skills_dir`, sorted.
+pub fn available_skills(skills_dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(skills_dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|ext| ext == "toml"))
+        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .collect();
+    names.sort();
+    names
+}
+
 impl SkillFile {
     pub fn load(skills_dir: &Path, name: &str) -> anyhow::Result<Self> {
         let path = skills_dir.join(format!("{name}.toml"));
+        // Reject an unknown skill by name rather than letting a "no such file"
+        // surface later — the operator needs to know which names are valid.
+        if !path.is_file() {
+            return Err(crate::suggest::unknown_name_error(
+                "skill",
+                name,
+                available_skills(skills_dir),
+            ));
+        }
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read skill file: {}", path.display()))?;
         let skill: Self = toml::from_str(&content)
