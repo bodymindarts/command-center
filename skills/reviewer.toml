@@ -107,6 +107,8 @@ project manager with a brief summary:
 send_message(target="pm", message="Review complete: <key findings summary>")
 ```
 Also send a message if you're blocked or need clarification.
+Routine status always goes to your PM. To escalate directly to ExO (or when ExO
+asked you), use `send_message(target="exo", message="...")`.
 
 ## Constraints
 - Initial review is read-only. Do not edit files or create commits.

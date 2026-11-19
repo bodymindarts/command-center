@@ -327,7 +327,7 @@ impl<R: Runtime> ClatMcpServer<R> {
             "properties": {
                 "target": {
                     "type": "string",
-                    "description": "Task ID (or prefix) of the target task to send the message to. Use 'pm' to send to the PM/ExO session."
+                    "description": "Task ID (or prefix) of the target task to send the message to. Use 'pm' to send to the PM/ExO session, or 'exo' to send directly to ExO."
                 },
                 "message": {
                     "type": "string",
@@ -339,7 +339,7 @@ impl<R: Runtime> ClatMcpServer<R> {
         let input_schema = Arc::new(schema.as_object().unwrap().clone());
         let tool = rmcp::model::Tool::new(
             "send_message",
-            "Send a message to another running task or to the PM/ExO session. Messages to tasks are delivered to their tmux pane. Target 'pm' routes to the project PM chat if the caller has a project, or to the ExO chat if it doesn't. Task targets require the caller and target to be in the same project.",
+            "Send a message to another running task or to the PM/ExO session. Messages to tasks are delivered to their tmux pane. Target 'pm' routes to the project PM chat if the caller has a project, or to the ExO chat if it doesn't. Target 'exo' always routes to ExO, prefixed with your task name and project; use it only for escalations or when ExO asked, and send routine status to 'pm'. Task targets require the caller and target to be in the same project.",
             input_schema,
         );
 
