@@ -856,6 +856,9 @@ impl<R: Runtime> ClatApp<R> {
 
     /// Send a message from one agent to another task or to the PM/ExO.
     ///
+    /// When target is "exo": always routes to the ExO session, prefixed with
+    /// the sender task name and its project.
+    ///
     /// When target is "pm": routes to the project PM chat if the caller has a
     /// project, or to the ExO chat if it doesn't (ExO is the PM for unassigned
     /// tasks). For task targets, enforces project scoping.
@@ -865,11 +868,22 @@ impl<R: Runtime> ClatApp<R> {
         target: &str,
         message: &str,
     ) -> anyhow::Result<AgentSendOutput> {
-        if target == "pm" {
-            let sender = match self.resolve_task(&claims.sub).await {
-                Ok(task) => task.name.to_string(),
-                Err(_) => claims.sub.clone(),
+        if target == "exo" {
+            let sender = self.sender_name(claims).await;
+            let content = match claims.project.as_deref() {
+                Some(project) => {
+                    let project_name = match self.resolve_project(project).await {
+                        Ok(p) => p.name.to_string(),
+                        Err(_) => project.to_string(),
+                    };
+                    format!("[from {sender} ({project_name})] {message}")
+                }
+                None => format!("[from {sender}] {message}"),
             };
+            crate::permission::send_exo_message(self.project_root(), &content)?;
+            Ok(AgentSendOutput::Exo)
+        } else if target == "pm" {
+            let sender = self.sender_name(claims).await;
             let content = format!("[from {sender} ({})] {message}", claims.role);
             if let Some(caller_project) = claims.project.as_deref() {
                 // Forward to project PM session via socket (mirrors cmd_project_send)
@@ -883,10 +897,9 @@ impl<R: Runtime> ClatApp<R> {
                 Ok(AgentSendOutput::Exo)
             }
         } else {
-            let caller_project = claims
-                .project
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("agents without a project can only send to 'pm'"))?;
+            let caller_project = claims.project.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("agents without a project can only send to 'pm' or 'exo'")
+            })?;
             let caller_project_id = match self.resolve_project_id(caller_project).await {
                 Ok(id) => id,
                 Err(_) => caller_project.parse::<ProjectId>()?,
@@ -900,6 +913,13 @@ impl<R: Runtime> ClatApp<R> {
             }
             let output = self.send(target, message).await?;
             Ok(AgentSendOutput::Task(output))
+        }
+    }
+
+    async fn sender_name(&self, claims: &crate::jwt::AgentClaims) -> String {
+        match self.resolve_task(&claims.sub).await {
+            Ok(task) => task.name.to_string(),
+            Err(_) => claims.sub.clone(),
         }
     }
 
@@ -1888,5 +1908,105 @@ prompt = "deploy to {{ env }}"
         let scoped = rig.service.list_visible(Some(&proj_id)).await.unwrap();
         assert_eq!(scoped.len(), 1);
         assert_eq!(scoped[0].id, out1.task_id);
+    }
+
+    fn fake_dashboard(root: &Path) -> std::thread::JoinHandle<String> {
+        use std::io::{Read, Write};
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        let sock = root.join("d.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        std::fs::write(root.join(".claude/perm-socket"), sock.to_str().unwrap()).unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = String::new();
+            stream.read_to_string(&mut buf).unwrap();
+            stream.write_all(b"{\"ok\":true}").unwrap();
+            buf
+        })
+    }
+
+    fn claims(sub: &str, project: Option<&str>) -> crate::jwt::AgentClaims {
+        crate::jwt::AgentClaims {
+            sub: sub.to_string(),
+            role: "engineer".to_string(),
+            project: project.map(str::to_string),
+            iat: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn send_from_agent_exo_routes_to_exo_with_sender_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rig = build_rig(tmp.path()).await;
+        rig.service.create_project("test-proj", "").await.unwrap();
+        let spawned = rig
+            .service
+            .spawn(SpawnRequest {
+                task_name: "proj-task",
+                skill_name: "noop",
+                params: vec![],
+                work_dir_mode: WorkDirMode::Worktree {
+                    repo: rig.service.project_root(),
+                    branch: None,
+                },
+                prompt_mode: PromptMode::Full,
+                project: Some("test-proj".to_string()),
+                harness: None,
+            })
+            .await
+            .unwrap();
+        let dashboard = fake_dashboard(tmp.path());
+
+        let out = rig
+            .service
+            .send_from_agent(
+                &claims(&spawned.task_id.to_string(), Some("test-proj")),
+                "exo",
+                "need a decision",
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(out, AgentSendOutput::Exo));
+        let payload: serde_json::Value = serde_json::from_str(&dashboard.join().unwrap()).unwrap();
+        assert_eq!(payload["_exo_message"], true);
+        assert_eq!(
+            payload["message"],
+            "[from proj-task (test-proj)] need a decision"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_from_agent_exo_without_project_omits_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rig = build_rig(tmp.path()).await;
+        let dashboard = fake_dashboard(tmp.path());
+
+        rig.service
+            .send_from_agent(&claims("loose-task", None), "exo", "hi")
+            .await
+            .unwrap();
+
+        let payload: serde_json::Value = serde_json::from_str(&dashboard.join().unwrap()).unwrap();
+        assert_eq!(payload["message"], "[from loose-task] hi");
+    }
+
+    #[tokio::test]
+    async fn send_from_agent_unknown_target_still_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rig = build_rig(tmp.path()).await;
+        rig.service.create_project("test-proj", "").await.unwrap();
+
+        let result = rig
+            .service
+            .send_from_agent(&claims("whoever", Some("test-proj")), "nobody-here", "hi")
+            .await;
+        assert!(result.is_err());
+
+        let result = rig
+            .service
+            .send_from_agent(&claims("whoever", None), "nobody-here", "hi")
+            .await;
+        assert!(result.is_err());
     }
 }

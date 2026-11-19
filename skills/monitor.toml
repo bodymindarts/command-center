@@ -47,6 +47,8 @@ perform the next check immediately — don't ask for confirmation.
 - When monitoring is complete (done, failed, or timed out), use the `send_message`
   MCP tool to notify your project manager:
   `send_message(target="pm", message="Monitor <label>: <final status>")`
+- Routine status always goes to your PM. To escalate directly to ExO (or when ExO
+  asked you), use `send_message(target="exo", message="...")`.
 
 ## Memory
 When monitoring completes (done, failed, or timed out), persist the outcome using
